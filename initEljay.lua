@@ -9,6 +9,7 @@
 
 rune.config.set("mouse", true)
 
+
 require("eljayPlugins/annwnQuestSearch")
 require("eljayPlugins/asciiMapPane")
 require("eljayPlugins/bardSongTLAs")
@@ -17,6 +18,7 @@ require("eljayPlugins/characterLog")
 require("eljayPlugins/clipCommandOutput")
 require("eljayPlugins/crystalLocator")
 require("eljayPlugins/druidSpellTLAs")
+require("eljayPlugins/eqdb")
 require("eljayPlugins/fauxSextant")
 require("eljayPlugins/hangmanSolver")
 require("eljayPlugins/highlights")

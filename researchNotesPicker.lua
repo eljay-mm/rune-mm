@@ -1,5 +1,5 @@
 -- Filename: eljayPlugins/researchNotesPicker.lua
--- Purpose: Turns the output of `rrl` (research thesis list) into a searchable picker that stays open; selecting a thesis runs `rrr <number>`. Also owns the rrl and rrr aliases.
+-- Purpose: Turns the output of `rrl` (research research list) into a searchable picker that stays open; selecting a thesis runs `rrr <number>`. Also owns the rrl and rrr aliases.
 -- Version: 1.2
 -- Date: 2026-Oct-10
 --

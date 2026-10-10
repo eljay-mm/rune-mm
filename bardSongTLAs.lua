@@ -1,49 +1,48 @@
 -- Filename: eljayPlugins/bardSongTLAs.lua
--- Purpose: Bard Songs with TLAs
--- Version: 2.0 (converted from yBardSongs.xml)
+-- Purpose: Bard Songs with Three Letter Acronyms
+-- Version: 2.1 (converted from yBardSongs.xml; merged extra TLAs, checked against 'help music')
 -- Date: 2026-Oct-09
+--
+-- How it works:
+--  * play(tla, song) registers an exact alias that sends: play '<song>'
+--  * Songs are grouped as in 'help music': Peace, Martial, Versatile
 
--- Peace Songs
-rune.alias.exact("bbm", "play 'battle march'")
-rune.alias.exact("bdi", "play 'detect invisibility'")
-rune.alias.exact("bfl", "play footloose")
-rune.alias.exact("bes", "play 'enhanced strength'")
-rune.alias.exact("bep", "play epiphany")
-rune.alias.exact("bih", "play 'inspirational hymn'")
-rune.alias.exact("ble", "play levitation")
-rune.alias.exact("bli", "play light")
-rune.alias.exact("bml", "play 'mass levitation'")
-rune.alias.exact("bsh", "play shield")
-rune.alias.exact("bts", "play E C C C E C F")
-rune.alias.exact("bin", "play A C E")
+local function play(key, song)  rune.alias.exact(key, "play '" .. song .. "'") end
 
--- Martial Songs
-rune.alias.exact("bbl", "play blindness")
-rune.alias.exact("bsn", "play 'soothing nocturne'")
-rune.alias.exact("bew", "play earworm")
-rune.alias.exact("bfi", "play fireball")
-rune.alias.exact("bhw", "play 'hands of wind'")
-rune.alias.exact("bha", "play harmonize")
-rune.alias.exact("bsl", "play hinder")
-rune.alias.exact("bpd", "play 'pensive dirge'")
-rune.alias.exact("bpf", "play 'plodding fugue'")
-rune.alias.exact("btro", "play tremolo")
-rune.alias.exact("bom", "play 'ode to the moon'")
-rune.alias.exact("btrr", "play 'tempus rigor'")
+-- Peace Songs (only when not in combat)
+play("bbm", "battle march")
+play("bdi", "detect invisibility")
+play("bfl", "footloose")
+play("bes", "enhanced strength")
+play("bep", "epiphany")
+play("bih", "inspirational hymn")
+play("ble", "levitation")
+play("bli", "light")
+play("bml", "mass levitation")
+play("bsh", "shield")
+play("bts", "traveling song")
 
--- Versatile Songs
-rune.alias.exact("bca", "play calm")
-rune.alias.exact("bcl", "play 'cure light'")
-rune.alias.exact("bip", "play 'invigorating performance'")
-rune.alias.exact("bnf", "play 'nights fortune'")
-rune.alias.exact("bre", "play refresh")
-rune.alias.exact("brg", "play 'rime of the glacierbreaker'")
-rune.alias.exact("btc", "play thunderclap")
-rune.alias.exact("btr", "play tremor")
+-- Martial Songs (only in combat)
+play("bbl", "blindness")
+play("bcac", "cacophony")
+play("bfi", "fireball")
+play("bea", "earworm")
+play("bhw", "hands of wind")
+play("bha", "harmonize")
+play("bsl", "hinder")
+play("bpd", "pensive dirge")
+play("bpf", "plodding fugue")
+play("bsn", "soothing nocturne")
+play("btro", "tremolo")
+play("bom", "ode to the moon")
+play("btrr", "tempus rigor")
 
--- Musical Notation Songs
-rune.alias.exact("bfa", "play A A A A")
-rune.alias.exact("bfr", "play F F E F A")
-rune.alias.exact("bth", "play G C B G E A")
-rune.alias.exact("bcf", "play D# C# E#")
-rune.alias.exact("bda", "play A# A# A#")
+-- Versatile Songs (any time)
+play("bca", "calm")
+play("bcl", "cure light")
+play("bip", "invigorating performance")
+play("bnf", "nights fortune")
+play("bre", "refresh")
+play("bri", "rime of the glacierbreaker")
+play("bth", "thunderclap")
+play("btr", "tremor")

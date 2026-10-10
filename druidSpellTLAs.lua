@@ -1,49 +1,112 @@
 -- Filename: eljayPlugins/druidSpellTLAs.lua
 -- Purpose: Druid Spells with Three Letter Acronyms
--- Version: 2.0 (converted from yDruidSpells.xml)
+-- Version: 2.4
 -- Date: 2026-Oct-09
+--
+-- How it works:
+--  * Each row in the table below defines one alias: { alias, verb, element }
+--  * "<alias> <target>" sends "<verb> <element> <target>", e.g. "dfi orc" -> "evoke fire orc"
+--  * "<alias>" with no target sends just "<verb> <element>"
+--  * The trailing comment on each row is the analogue spell from "help druid analogues"
+--  * Newer TLAs are built from the analogue name (dsh = shield, des = enhanced strength,
+--    dre = refresh, dha = haste, dia = imprint aura)
+--  * Direct aliases are d + i/e (invoke/evoke) + element initial, e.g. dii = druid invoke ice;
+--    where the initial is already taken, a 4th letter (2nd letter of the element) differentiates,
+--    e.g. diai = invoke air, dias = invoke ash, desa = evoke salt
 
--- Evoke Magma / Invoke Magma
-rune.alias.regex("^dcf(?:[ ]+(.+))?$", function(m) rune.send("evoke magma " .. (m[1] or "")) end)
-rune.alias.regex("^dfs(?:[ ]+(.+))?$", function(m) rune.send("invoke magma " .. (m[1] or "")) end)
+local spells = {
+  -- Magma
+  { "dcf",    "evoke",  "magma" },           -- circle of fire
+  { "dfs",    "invoke", "magma" },           -- fireshield
 
--- Cure Series (Minerals / Ice / Salt)
-rune.alias.regex("^dcs(?:[ ]+(.+))?$", function(m) rune.send("evoke minerals " .. (m[1] or "")) end)
-rune.alias.regex("^dho(?:[ ]+(.+))?$", function(m) rune.send("evoke ice " .. (m[1] or "")) end)
-rune.alias.regex("^dcp(?:[ ]+(.+))?$", function(m) rune.send("evoke salt " .. (m[1] or "") .. " " .. (m[1] or "")) end)
-rune.alias.regex("^dcd(?:[ ]+(.+))?$", function(m) rune.send("invoke salt " .. (m[1] or "")) end)
+  -- Minerals / Ice / Salt
+  { "dcs",    "evoke",  "minerals" },        -- cure serious
+  { "des",    "invoke", "minerals" },        -- enhanced strength
+  { "dho",    "evoke",  "ice" },             -- (no analogue; heals someone else; 'heal other')
+  { "dsh",    "invoke", "ice" },             -- shield
+  { "dcp",    "evoke",  "salt" },            -- cure poison
+  { "dcd",    "invoke", "salt" },            -- cure disease
 
--- Ooze Series (Double Target / Single Target)
-rune.alias.regex("^doo(?:[ ]+(.+))?$", function(m) rune.send("evoke ooze " .. (m[1] or "") .. " " .. (m[1] or "")) end)
-rune.alias.regex("^deo(?:[ ]+(.+))?$", function(m) rune.send("evoke ooze " .. (m[1] or "") .. " " .. (m[1] or "")) end)
-rune.alias.regex("^dss(?:[ ]+(.+))?$", function(m) rune.send("invoke ooze " .. (m[1] or "")) end)
+  -- Ooze
+  { "deo",    "evoke",  "ooze" },            -- (no analogue)
+  { "dss",    "invoke", "ooze" },            -- stone skin
 
--- Vacuum / Air Series
-rune.alias.regex("^dblink(?:[ ]+(.+))?$", function(m) rune.send("invoke vacuum " .. (m[1] or "")) end)
-rune.alias.regex("^dev(?:[ ]+(.+))?$", function(m) rune.send("evoke vacuum " .. (m[1] or "")) end)
-rune.alias.regex("^dle(?:[ ]+(.+))?$", function(m) rune.send("invoke air " .. (m[1] or "")) end)
-rune.alias.regex("^dcy(?:[ ]+(.+))?$", function(m) rune.send("evoke air " .. (m[1] or "") .. " " .. (m[1] or "")) end)
+  -- Vacuum / Air
+  { "dblink", "invoke", "vacuum" },          -- blink
+  { "dev",    "evoke",  "vacuum" },          -- (no analogue)
+  { "dle",    "invoke", "air" },             -- levitation
+  { "dea",    "evoke",  "air" },             -- (no analogue)
 
--- Radiance / Smoke / Water
-rune.alias.regex("^dre(?:[ ]+(.+))?$", function(m) rune.send("evoke radiance " .. (m[1] or "")) end)
-rune.alias.regex("^dbl(?:[ ]+(.+))?$", function(m) rune.send("evoke smoke " .. (m[1] or "") .. " " .. (m[1] or "")) end)
-rune.alias.regex("^dwa(?:[ ]+(.+))?$", function(m) rune.send("evoke water " .. (m[1] or "")) end)
-rune.alias.regex("^drf(?:[ ]+(.+))?$", function(m) rune.send("invoke water " .. (m[1] or "")) end)
+  -- Radiance / Smoke / Water
+  { "dre",    "invoke", "radiance" },        -- refresh
+  { "drv",    "evoke",  "radiance" },        -- reveal
+  { "dbl",    "evoke",  "smoke" },           -- blindness
+  { "dis",    "invoke", "smoke" },           -- (no analogue)
+  { "dew",    "evoke",  "water" },           -- (no analogue)
+  { "diw",    "invoke", "water" },           -- (no analogue)
 
--- Steam / Ash / Life / Dust
-rune.alias.regex("^dha(?:[ ]+(.+))?$", function(m) rune.send("evoke steam " .. (m[1] or "") .. " " .. (m[1] or "")) end)
-rune.alias.regex("^dpd(?:[ ]+(.+))?$", function(m) rune.send("invoke steam " .. (m[1] or "")) end)
-rune.alias.regex("^dpn(?:[ ]+(.+))?$", function(m) rune.send("invoke ash " .. (m[1] or "")) end)
-rune.alias.regex("^dhb(?:[ ]+(.+))?$", function(m) rune.send("invoke life " .. (m[1] or "")) end)
-rune.alias.regex("^dcb(?:[ ]+(.+))?$", function(m) rune.send("invoke dust " .. (m[1] or "")) end)
+  -- Steam / Ash / Life / Dust
+  { "dst",    "evoke",  "steam" },           -- (no analogue)
+  { "dpd",    "invoke", "steam" },           -- pass door
+  { "dpn",    "invoke", "ash" },             -- (no analogue)
+  { "dhb",    "invoke", "life" },            -- cure blindness - heal blindness
+  { "dlf",    "evoke",  "life" },            -- (no analogue)
+  { "dcb",    "invoke", "dust" },            -- combat blink
+  { "dia",    "evoke",  "dust" },            -- imprint aura
 
--- Earth / Fire / Ether
-rune.alias.regex("^dwe(?:[ ]+(.+))?$", function(m) rune.send("evoke earth " .. (m[1] or "") .. " " .. (m[1] or "")) end)
-rune.alias.regex("^dhs(?:[ ]+(.+))?$", function(m) rune.send("invoke earth " .. (m[1] or "")) end)
-rune.alias.regex("^dfi(?:[ ]+(.+))?$", function(m) rune.send("evoke fire " .. (m[1] or "") .. " " .. (m[1] or "")) end)
-rune.alias.regex("^dsa(?:[ ]+(.+))?$", function(m) rune.send("invoke fire " .. (m[1] or "")) end)
-rune.alias.regex("^dsh(?:[ ]+(.+))?$", function(m) rune.send("invoke ether " .. (m[1] or "")) end)
-rune.alias.regex("^dlc(?:[ ]+(.+))?$", function(m) rune.send("evoke ether " .. (m[1] or "")) end)
+  -- Earth / Fire / Ether
+  { "dwe",    "evoke",  "earth" },           -- web
+  { "dhs",    "invoke", "earth" },           -- heal self
+  { "dfi",    "evoke",  "fire" },            -- fireball
+  { "dsa",    "invoke", "fire" },            -- sanctuary
+  { "die",    "invoke", "ether" },           -- (no analogue)
+  { "dee",    "evoke",  "ether" },           -- (no analogue)
 
--- Lightning
-rune.alias.regex("^dli(?:[ ]+(.+))?$", function(m) rune.send("evoke lightning " .. (m[1] or "") .. " " .. (m[1] or "")) end)
+  -- Lightning
+  { "dha",    "invoke", "lightning" },       -- haste
+  { "dli",    "evoke",  "lightning" },       -- lightning bolt
+
+  -- Direct aliases: evoke (de + initial)
+  { "deas",   "evoke",  "ash" },             -- 4th letter: air owns dea
+  { "ded",    "evoke",  "dust" },            -- imprint aura
+  { "deea",   "evoke",  "earth" },           -- 4th letter: ether owns dee; web
+  { "def",    "evoke",  "fire" },            -- fireball
+  { "dei",    "evoke",  "ice" },             -- heal other
+  { "del",    "evoke",  "lightning" },       -- lightning bolt
+  { "deli",   "evoke",  "life" },            -- 4th letter: lightning owns del
+  { "dem",    "evoke",  "magma" },           -- circle of fire
+  { "demi",   "evoke",  "minerals" },        -- 4th letter: magma owns dem; cure serious
+  { "der",    "evoke",  "radiance" },        -- reveal
+  { "desa",   "evoke",  "salt" },            -- 4th letter: des is enhanced strength; cure poison
+  { "desm",   "evoke",  "smoke" },           -- 4th letter: des is enhanced strength; blindness
+  { "dest",   "evoke",  "steam" },           -- 4th letter: des is enhanced strength
+
+  -- Direct aliases: invoke (di + initial)
+  { "diai",   "invoke", "air" },             -- 4th letter: dia is imprint aura; levitation
+  { "dias",   "invoke", "ash" },             -- 4th letter: air owns dia
+  { "did",    "invoke", "dust" },            -- combat blink
+  { "diea",   "invoke", "earth" },           -- 4th letter: ether owns die; heal
+  { "dif",    "invoke", "fire" },            -- sanctuary
+  { "dii",    "invoke", "ice" },             -- shield
+  { "dil",    "invoke", "lightning" },       -- haste
+  { "dili",   "invoke", "life" },            -- 4th letter: lightning owns dil; cure blindness
+  { "dim",    "invoke", "magma" },           -- fireshield
+  { "dimi",   "invoke", "minerals" },        -- 4th letter: magma owns dim; enhanced strength
+  { "dio",    "invoke", "ooze" },            -- stone skin
+  { "dir",    "invoke", "radiance" },        -- refresh
+  { "disa",   "invoke", "salt" },            -- 4th letter: smoke owns dis; cure disease
+  { "dist",   "invoke", "steam" },           -- 4th letter: smoke owns dis; pass door
+  { "div",    "invoke", "vacuum" },          -- blink
+}
+
+for _, s in ipairs(spells) do
+  local name, verb, element = s[1], s[2], s[3]
+  rune.alias.regex("^" .. name .. "(?:[ ]+(.+))?$", function(m)
+    local cmd = verb .. " " .. element
+    local target = m[1]
+    if target and target ~= "" then
+      cmd = cmd .. " " .. target
+    end
+    rune.send(cmd)
+  end)
+end

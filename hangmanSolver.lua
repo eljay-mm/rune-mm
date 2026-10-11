@@ -1,12 +1,31 @@
 -- Filename: eljayPlugins/hangmanSolver.lua
 -- Purpose: Hangman Solver - solves hangman puzzles using online solver
 -- Inspired by the MUSHclient plugin by Oona
--- Version: 2.0 
--- Date: 2026-Oct-09
+-- Version: 2.1
+-- Date: 2026-Oct-11
+--
+-- How it works:
+--   * When MM says "You hold a game of hangman ...", the plugin sends
+--     "hangman start" and "hangman e" (the best opening letter).
+--   * "Progress thus far: <pattern>" lines are remembered as the current pattern.
+--   * "Failed letters: <letters>" lines trigger a lookup: the pattern and the
+--     wrong guesses are sent to hangman-solver.com using curl, and the words
+--     it returns are echoed as possible guesses.
+--   * A few well-known "emp" patterns (e____, em___, emp__, empt_) are solved
+--     locally without any lookup (the answer is "empty").
+--   * v2.1: the lookup uses short curl timeouts (so Rune's Lua thread is never
+--     blocked for long), the wget fallback and temp files are gone, and the
+--     pattern/guesses are sanitized before reaching the shell.
+
+local DEBUG = false  -- set to false to silence the Debug: lines
 
 -- State variables
 local hangman_word = ""
 local possible_guesses = {}
+
+local function debug(msg)
+  if DEBUG then rune.echo("Debug: " .. msg) end
+end
 
 --[[ Extract Words from JSON Response ]]--
 local function extractWords(json_string)
@@ -18,7 +37,7 @@ local function extractWords(json_string)
   return words
 end
 
---[[ Solve Hangman - Uses curl with proper GET request ]]--
+--[[ Solve Hangman - short-timeout curl lookup ]]--
 local function solveHangman(wrong_guesses)
   if hangman_word == nil or hangman_word == "" then
     rune.echo("Unknown starting length?")
@@ -43,69 +62,38 @@ local function solveHangman(wrong_guesses)
     return
   end
 
-  -- Clean the guesses (remove spaces)
-  local cleaned_guesses = wrong_guesses:gsub(" ", "")
-  local url = "https://www.hangman-solver.com/.netlify/functions/answers?word=" .. hangman_word .. "&guesses=" .. cleaned_guesses
+  -- Sanitize everything that ends up in the shell command
+  local word = hangman_word:gsub("[^%a_]", "")
+  local cleaned_guesses = (wrong_guesses or ""):gsub("[^%a]", "")
 
-  -- Debug: show what we're fetching
-  rune.echo("Debug: Fetching " .. url)
+  local url = "https://www.hangman-solver.com/.netlify/functions/answers?word="
+    .. word .. "&guesses=" .. cleaned_guesses
+  debug("Fetching " .. url)
 
-  -- Use curl with proper GET request (not @ for temp file)
-  local output_file = "/tmp/hangman_result_" .. os.time() .. ".txt"
-  
-  local cmd = string.format("curl -s -L --max-time 10 '%s' > %s 2>&1", url, output_file)
-  
-  local ret = os.execute(cmd)
-  if ret ~= 0 then
-    rune.echo("Debug: curl returned error code " .. tostring(ret))
-  end
-
-  -- Read response
-  local result_file = io.open(output_file, "r")
-  if not result_file then
-    rune.echo("Error reading solver result file")
-    os.remove(output_file)
+  -- Short timeouts keep Rune's Lua thread from being blocked for long
+  local cmd = string.format(
+    "curl -s -L --connect-timeout 2 --max-time 3 '%s' 2>/dev/null", url)
+  local pipe = io.popen(cmd, "r")
+  if not pipe then
+    rune.echo("Solver unavailable - manual guessing needed")
     return
   end
-  
-  local response = result_file:read("*a")
-  result_file:close()
-  os.remove(output_file)
+  local response = pipe:read("*a") or ""
+  pipe:close()
 
-  -- Debug: show raw response
   if #response == 0 then
-    rune.echo("Debug: Empty response from solver")
+    debug("Empty response from solver")
+    rune.echo("Solver unavailable - manual guessing needed")
     return
   end
-  
-  rune.echo("Debug: Raw response (" .. #response .. " chars): " .. response:sub(1, 200))
+  debug("Raw response (" .. #response .. " chars): " .. response:sub(1, 200))
 
   -- Parse JSON response
   possible_guesses = extractWords(response)
   if #possible_guesses > 0 then
     rune.echo("Possible guesses: " .. table.concat(possible_guesses, ", "))
   else
-    rune.echo("Could not parse solver response - trying alternate method")
-    
-    -- Fallback: try wget if curl fails
-    local alt_output = "/tmp/hangman_alt_" .. os.time() .. ".txt"
-    local alt_cmd = string.format("wget -q -O %s '%s' 2>/dev/null", alt_output, url)
-    os.execute(alt_cmd)
-    
-    local alt_file = io.open(alt_output, "r")
-    if alt_file then
-      local alt_response = alt_file:read("*a")
-      alt_file:close()
-      possible_guesses = extractWords(alt_response)
-      os.remove(alt_output)
-      
-      if #possible_guesses > 0 then
-        rune.echo("Possible guesses (wget): " .. table.concat(possible_guesses, ", "))
-        return
-      end
-    end
-    
-    rune.echo("Solver unavailable - manual guessing needed")
+    rune.echo("Could not parse solver response - manual guessing needed")
   end
 end
 

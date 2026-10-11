@@ -1,27 +1,24 @@
 -- Filename: eljayPlugins/crystalLocator.lua
 -- Purpose: Crystal Locator - finds coords of crystals via the MMAtlas crystal finder
 -- Inspired by the MUSHclient plugin by Elbereth
--- Version: 3.4
--- Date: 2026-Oct-10
+-- Version: 3.7
+-- Date: 2026-Oct-11
 --
--- Changes in 3.4:
---   * after "Walk there with" the plugin runs `spdxy nearby <x>, <y>` (setting `nearby`, on by default)
---
--- Changes in 3.3:
---   * filename no longer uses the y_ prefix
---
--- Changes in 3.2:
---   * `cc` (give to Tadamir, then drop and sac the crystal quest item) and `cl` (look at it) aliases moved
---     here from basicAliases.lua, with the character-name read ("name" global var)
---
--- Changes in 3.1:
---   * all IMap handling removed (no imap commands are sent, "take crystal" trigger removed)
---   * everything above and including the "It looks like ..." row is trimmed from the submitted/copied block
---   * clipboard: tries native tools first (wl-copy / xclip / xsel), OSC 52 as last resort,
---     strips control characters, and `crystal copytest` helps diagnose a bad clipboard path
---   * `lines` is now an optional cap (0 = no cap); `mode count` needs lines > 0
+-- How it works:
+--   * Receiving the scroll from Tadamir arms the locator (`crystal on` arms it by hand).
+--   * Reading the map ("You focus your powers of observation on...") is captured as one multi-line block;
+--     the header line and everything above and including the "It looks like ..." row are trimmed off.
+--   * The remaining map lines are submitted to the MMAtlas crystal finder (POST; if no coordinates come
+--     back it retries once with GET and once with trailing spaces trimmed, and tells you which worked).
+--   * The submitted block is copied to the clipboard (wl-copy / xclip / xsel, OSC 52 as last resort).
+--   * When coordinates come back it echoes them, prints "Walk there with: spdxy x, y" and always runs
+--     `spdxy nearby x, y`.
+--   * Commands: `crystal help` lists everything (on/off, last, debug [on|off], copy, copytest, resend,
+--     log, set <key> <value>); `cs` = `crystal last`.
+--   * Quest item aliases: `cc` gives the crystal to Tadamir then drops and sacs the map (keyword
+--     crystalQuest), `cl` looks at it.
 
-local VERSION  = "3.4"
+local VERSION  = "3.7"
 local ENDPOINT = "https://ooc.dune.net/mm/find-crystal-guild-vi.pl"
 
 local SCROLL_PATTERN = "Tadamir the guildsman gives you a tightly-rolled scroll\\.$"
@@ -31,20 +28,19 @@ local IGNORE_PATTERN = "^It looks like"
 
 --[[ Settings (change live with: crystal set <key> <value>) ]]--
 local cfg = {
-  debug    = true,    -- verbose [crystal:debug] output
+  debug    = false,   -- verbose [crystal:debug] output (toggle: crystal debug on|off)
   method   = "post",  -- "post" or "get": how the map is submitted
   lines    = 0,       -- map lines to submit (excluding header and ignored rows); 0 = no cap
   mode     = "blank", -- "blank": capture ends at first blank line; "count": capture header + `lines` + ignored row
   trim     = false,   -- strip trailing whitespace from every map line before submitting
   fallback = true,    -- if no coords found, retry with other method / other trim setting
   copy     = true,    -- copy the submitted map block to the clipboard
-  nearby   = true,    -- after "Walk there with", run `spdxy nearby <x>, <y>`
   clip     = "auto",  -- clipboard method: auto | osc | wl-copy | xclip | xsel
   timeout  = 15,      -- HTTP timeout in seconds
 }
 
 local SETTINGS = {
-  debug = "bool", fallback = "bool", copy = "bool", trim = "bool", nearby = "bool",
+  debug = "bool", fallback = "bool", copy = "bool", trim = "bool",
   method = { "post", "get" }, mode = { "blank", "count" },
   clip = { "auto", "osc", "wl-copy", "xclip", "xsel" },
   lines = "number", timeout = "number",
@@ -229,7 +225,7 @@ end
 
 local function onNotFound()
   say(paint("red", "MMAtlas could not find that location."))
-  say("Run " .. paint("yellow", "crystal debug") .. " to inspect the submitted lines and the raw reply.")
+  say("Run " .. paint("yellow", "crystal debug") .. " to inspect the submitted lines and the raw reply (" .. paint("yellow", "crystal debug on") .. " for step-by-step messages next time).")
 end
 
 --[[ Submit a block (list of lines), trying fallbacks if enabled ]]--
@@ -385,12 +381,13 @@ local function showHelp()
   rune.echo("* " .. paint("yellow", "crystal off") .. "         - disable the locator")
   rune.echo("* " .. paint("yellow", "crystal last") .. "        - display coords of last crystal")
   rune.echo("* " .. paint("yellow", "crystal debug") .. "       - show submitted lines (with markers) and the raw reply")
+  rune.echo("* " .. paint("yellow", "crystal debug on|off") .. " - show / hide debug messages while processing (default off)")
   rune.echo("* " .. paint("yellow", "crystal copy") .. "        - copy the last submitted map block to the clipboard")
   rune.echo("* " .. paint("yellow", "crystal copytest") .. "    - copy a 3-line test text to check the clipboard path")
   rune.echo("* " .. paint("yellow", "crystal resend") .. "      - resubmit the last captured block")
   rune.echo("* " .. paint("yellow", "crystal log") .. "         - save block + reply to crystal_debug.txt")
   rune.echo("* " .. paint("yellow", "crystal set") .. "         - list settings;  crystal set <key> <value>  to change")
-  rune.echo("    keys: debug, method(post|get), lines, mode(blank|count), trim, fallback, copy, nearby, clip, timeout")
+  rune.echo("    keys: debug, method(post|get), lines, mode(blank|count), trim, fallback, copy, clip, timeout")
 end
 
 local function showSettings()
@@ -495,7 +492,14 @@ local commands = {
       say("Go buy a map first!")
     end
   end,
-  debug      = showDebug,
+  debug      = function(arg)
+    arg = (arg or ""):lower()
+    if arg == "" then showDebug(); return end
+    local b = parseBool(arg)
+    if b == nil then say("Usage: crystal debug on|off   (no argument shows the last submitted block)"); return end
+    cfg.debug = b
+    say("Debug messages " .. (b and "on" or "off"))
+  end,
   log        = writeLog,
   copy       = function()
     if state.lastBlock then
@@ -531,30 +535,16 @@ rune.alias.regex("^crystal(?:\\s+(\\S+))?(?:\\s+(.*))?$", function(m, ctx)
 
   local fn = commands[sub]
   if fn then
-    fn()
+    fn(rest)
   else
     say("Unknown command '" .. sub .. "'.")
     showHelp()
   end
 end, { name = "crystal-cmd" })
 
---[[ Crystal quest item aliases (need the character name) ]]--
-local function charName()
-  local n = rune.get_global_var and rune.get_global_var("name")
-  if n and n ~= "" then return n end
-  say(paint("red", "Character name is not set (global var 'name').") )
-  return nil
-end
-
-rune.alias.exact("cc", function()
-  local n = charName()
-  if n then rune.send("give tadamir" .. n .. " Tadamir;drop crystalquest" .. n .. ";sac crystalquest" .. n) end
-end)
-
-rune.alias.exact("cl", function()
-  local n = charName()
-  if n then rune.send("look crystalquest" .. n) end
-end)
+--[[ Crystal quest item aliases (map keyword: crystalQuest) ]]--
+rune.alias.exact("cc", "give tadamir Tadamir;drop crystalQuest;sac crystalQuest")
+rune.alias.exact("cl", "look crystalQuest")
 
 rune.alias.exact("CrystalLocator:help", showHelp)
 

@@ -1,10 +1,11 @@
 -- Filename: eljayPlugins/asciiMapPane.lua
 -- Purpose: ASCII map pane for Rune + horstgs Materia Magica.
--- Version: 2.0
--- Date: 2026-Oct-09
+-- Version: 2.1
+-- Date: 2026-Oct-11
 --
--- Commands:
---     /asciiMapPane                 redraw
+-- Commands (typing the command alone, or "help", shows this summary):
+--     /asciiMapPane                 command summary (paged to fit the pane)
+--     /asciiMapPane help [page]     same; page N of the summary
 --     /asciiMapPane on | off
 --     /asciiMapPane compact | spaced  1 char per room (default) / with link lines
 --     /asciiMapPane terrains        list terrain names in your map (for glyphs)
@@ -24,9 +25,25 @@
 --                                use /asciiMapPane size W H with what you see
 --     /asciiMapPane debug           show pane API / size / room data
 --
--- Uses mapper_store: get(uid) -> { name, area, coord={x,y,z}, exits={dir=uid} }
--- The map is laid out from exits around the current room, so a redraw
--- touches only a few hundred rooms, never the whole map.
+-- How it works:
+--   - Rune sends GMCP Room.Info on every move; the plugin keeps the latest.
+--   - It finds the horstgs mapper's room store (reading mapper/map.db itself
+--     if the live store can't be found) and looks rooms up by uid:
+--     mapper_store.get(uid) -> { name, area, coord={x,y,z}, exits={dir=uid} }
+--   - From the current room it follows compass exits outward, one grid step
+--     each, so no coordinates are needed. Strict mode drops rooms whose
+--     coordinates show they are not really adjacent (portals, long exits).
+--   - Exits to rooms the mapper doesn't have yet show as ?. Rooms are
+--     symbolled and coloured by terrain, flags and name, with the recent
+--     trail highlighted and far-away rooms faded.
+--   - Only a few hundred rooms around you are touched per redraw, never the
+--     whole map. A second redraw follows only if a neighbouring room was
+--     still being recorded; unchanged output is not rewritten.
+--   - The result is written to a Rune pane (replace + scroll to top). Rune
+--     can't report the pane size, so it uses DEFAULT_W / DEFAULT_H or the
+--     "size W H" command.
+--   - Typing the command alone shows the command summary (paged), so
+--     options never have to be remembered.
 --
 
 local PANE_ID = "asciiMapPane"
@@ -1348,6 +1365,135 @@ local function set_enabled(value)
     end
 end
 
+-----------------------------------------------------------------------
+-- Help
+-----------------------------------------------------------------------
+
+local CMD = "asciiMapPane"
+
+local HELP = {
+    { "on | off",          "show or hide the map pane" },
+    { "compact | spaced",  "1 char per room, or wider with link lines" },
+    { "color on|off",      "ANSI colours (default on)" },
+    { "flags on|off",      "tint safe and dark rooms" },
+    { "trail on|off",      "colour the rooms you just walked" },
+    { "dim on|off",        "fade far-away rooms" },
+    { "strict on|off",     "hide rooms that are not really adjacent" },
+    { "legend",            "what the symbols and colours mean" },
+    { "terrains",          "list the terrain names in your map" },
+    { "size W H",          "set pane size in characters" },
+    { "size auto",         "back to the default size" },
+    { "pad N",             "border allowance (default 2)" },
+    { "calibrate",         "ruler to measure the pane" },
+    { "refresh",           "force a redraw" },
+    { "debug",             "pane API, size, room data" },
+    { "help [page]",       "this summary" },
+}
+
+local function wrap_text(text, width)
+    local lines, line = {}, ""
+
+    for word in text:gmatch("%S+") do
+        if line == "" then
+            line = word
+        elseif #line + 1 + #word <= width then
+            line = line .. " " .. word
+        else
+            lines[#lines + 1] = line
+            line = word
+        end
+    end
+
+    if line ~= "" or #lines == 0 then
+        lines[#lines + 1] = line
+    end
+
+    return lines
+end
+
+-- Shows the command summary in the pane, split into pages that fit the
+-- pane height (it is small).  `note` is an optional message for the
+-- title line, e.g. an unknown option.
+local function show_help(page, note)
+    local width, height = detect_size()
+    width = math.max(width, 20)
+    height = math.max(height, 5)
+
+    local col = math.min(18, math.floor(width / 2))
+    local desc_width = math.max(width - col, 8)
+    local indent = string.rep(" ", col)
+
+    -- Each entry becomes 1+ lines; entries are never split across pages.
+    local entries = {}
+
+    for _, e in ipairs(HELP) do
+        local cmd, desc = e[1], wrap_text(e[2], desc_width)
+        local lines = {}
+
+        if #cmd < col then
+            lines[1] = paint_text(cmd, "36") .. string.rep(" ", col - #cmd)
+                .. desc[1]
+        else
+            lines[1] = paint_text(cmd, "36")
+            table.insert(desc, 1, "")
+            desc[1] = nil
+            table.remove(desc, 1)
+            lines[2] = indent .. desc[1]
+            table.remove(desc, 1)
+        end
+
+        for i = 2, #desc do
+            lines[#lines + 1] = indent .. desc[i]
+        end
+
+        -- (when the command name was too long, desc[1] is already used)
+        entries[#entries + 1] = lines
+    end
+
+    local body_rows = math.max(height - 2, 1)   -- title + footer lines
+    local pages, current, used = {}, {}, 0
+
+    for _, lines in ipairs(entries) do
+        if used > 0 and used + #lines > body_rows then
+            pages[#pages + 1] = current
+            current, used = {}, 0
+        end
+
+        for _, l in ipairs(lines) do
+            current[#current + 1] = l
+        end
+
+        used = used + #lines
+    end
+
+    if used > 0 then
+        pages[#pages + 1] = current
+    end
+
+    page = math.floor(tonumber(page) or 1)
+    page = math.max(1, math.min(page, #pages))
+
+    local title = note and (note .. " - ") or ""
+    title = (title .. CMD .. " help " .. page .. "/" .. #pages)
+        :sub(1, width)
+
+    local out = { paint_text(title, "1;37") }
+
+    for _, l in ipairs(pages[page]) do
+        out[#out + 1] = l
+    end
+
+    if #pages > 1 then
+        local nxt = (page % #pages) + 1
+        out[#out + 1] = paint_text(
+            ("next: " .. CMD .. " help " .. nxt):sub(1, width), "90")
+    end
+
+    show_pane()
+    last_pane_text = nil
+    write_pane(table.concat(out, "\n"))
+end
+
 local function run_command_impl(arg_text)
     local words = {}
     for word in tostring(arg_text or ""):gmatch("%S+") do
@@ -1356,7 +1502,10 @@ local function run_command_impl(arg_text)
 
     local action = words[1] or ""
 
-    if action == "off" then
+    if action == "" or action == "help" or action == "?"
+        or action == "h" or action == "-h" or action == "--help" then
+        show_help(tonumber(words[2]) or 1)
+    elseif action == "off" then
         set_enabled(false)
     elseif action == "on" then
         set_enabled(true)
@@ -1396,8 +1545,8 @@ local function run_command_impl(arg_text)
         opts[action] = (words[2] ~= "off")
         last_pane_text = nil
         draw()
-    elseif enabled then
-        draw()
+    else
+        show_help(1, "Unknown option '" .. action .. "'")
     end
 end
 
@@ -1424,10 +1573,9 @@ local function run_command(arg_text)
 end
 
 if rune.alias and rune.alias.regex then
-    -- "[-]" is a literal hyphen in both Lua patterns and regex.
-    pcall(rune.alias.regex, "^/?ascii[-]map(.*)$", function(match)
+    pcall(rune.alias.regex, "^/?asciiMapPane(.*)$", function(match)
         run_command(match[1])
-    end, { name = "y-asciiMapPane" })
+    end, { name = "asciiMapPane" })
 end
 
 if type(rune.command) == "table" then

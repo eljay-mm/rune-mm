@@ -1,17 +1,30 @@
 -- Filename: eljayPlugins/vitalsChanges.lua
 -- Purpose: Shows hp/sp/st losses and gains in the main window (GMCP-driven)
--- Inspired by the MUSHclient plugin by Ruthgul
--- Version: 2.0
--- Date: 2026-Oct-09
+-- Version: 2.4
+-- Date: 2026-Oct-11
+-- 
+-- How it works:
+--   * Inspired by the MUSHclient plugin by Ruthgul
+--   * Listens for GMCP vitals (Char.Vitals, plus a few fallback packages)
+--     and reads hp/sp/st, accepting several field-name aliases.
+--   * Compares each update with the previous values and, when anything
+--     changed, prints one line such as "hp -12 sp +3 st 0" in the main
+--     window (green for gains, red for losses, if colour is on).
+--   * The first update after connecting only sets the baseline; nothing is
+--     printed for it, and the baseline is reset on disconnect.
+--   * The on/off and colour settings are kept in rune.store (no files).
 --
--- Commands (with or without a leading slash):
+-- Commands (typing "vitals" alone shows the command summary):
 --     vitals on | off        enable / disable the change output
 --     vitals color on|off    ANSI colours in the output (default on)
---     vitals log hp|sp|st    toggle logging of that vital to vitals_changes.log
---     vitals debug           toggle debug: dumps raw GMCP vitals data
+--     vitals debug           toggle debug: dumps raw GMCP vitals data (default off)
 --     vitals check           show current values and settings
---     vitals help
---
+--     vitals help            command summary
+
+local H = require("helpstyle")
+
+local VERSION = "2.4"
+local SETTINGS_KEY = "vitals.settings"
 
 -- GMCP packages that might carry vitals.
 local PACKAGES = { "Char.Vitals", "Char.Status", "Char.Stats", "Char.Info" }
@@ -27,24 +40,16 @@ local enabled = true
 local DEBUG = false
 local use_color = true
 
-local log_flags = { hp = false, sp = false, st = false }
-
 local cur = { hp = nil, sp = nil, st = nil }
-local diff = { hp = 0, sp = 0, st = 0 }
 local seen_packages = {}
-
-local base_dir = (rune.config_dir or ".") .. "/eljayPlugins"
-local CONFIG_PATH = base_dir .. "/vitals_config.txt"
-local LOG_PATH = base_dir .. "/vitals_changes.log"
+local resolved = {}            -- cached field name per vital once found
 
 -----------------------------------------------------------------------
 -- Output
 -----------------------------------------------------------------------
 
 local function emit(text)
-    if type(rune.echo) == "function" then
-        pcall(rune.echo, text)
-    end
+    rune.echo(text)
 end
 
 local function dbg(text)
@@ -54,44 +59,19 @@ local function dbg(text)
 end
 
 -----------------------------------------------------------------------
--- Config
+-- Settings (rune.store)
 -----------------------------------------------------------------------
 
-local function load_config()
-    local f = io.open(CONFIG_PATH, "r")
-    if not f then return end
-    for line in f:lines() do
-        for _, k in ipairs({ "hp", "sp", "st" }) do
-            if line == "log_" .. k .. "=true" then log_flags[k] = true end
-        end
+local function load_settings()
+    local ok, saved = pcall(rune.store.get, SETTINGS_KEY)
+    if ok and type(saved) == "table" then
+        if type(saved.enabled) == "boolean" then enabled = saved.enabled end
+        if type(saved.color) == "boolean" then use_color = saved.color end
     end
-    f:close()
 end
 
-local function save_config()
-    local f = io.open(CONFIG_PATH, "w")
-    if not f then
-        emit("vitals: cannot write " .. CONFIG_PATH .. " (does the directory exist?)")
-        return
-    end
-    for _, k in ipairs({ "hp", "sp", "st" }) do
-        f:write("log_" .. k .. "=" .. tostring(log_flags[k]) .. "\n")
-    end
-    f:close()
-end
-
-local function log_change()
-    if not (log_flags.hp or log_flags.sp or log_flags.st) then return end
-
-    local function part(k)
-        return log_flags[k] and tostring(diff[k]) or "-"
-    end
-
-    local f = io.open(LOG_PATH, "a")
-    if f then
-        f:write(part("hp") .. ", " .. part("sp") .. ", " .. part("st") .. "\n")
-        f:close()
-    end
+local function save_settings()
+    pcall(rune.store.set, SETTINGS_KEY, { enabled = enabled, color = use_color })
 end
 
 -----------------------------------------------------------------------
@@ -110,10 +90,19 @@ end
 -- GMCP handling
 -----------------------------------------------------------------------
 
-local function pick(data, names)
-    for _, name in ipairs(names) do
-        local v = tonumber(data[name])
+-- Try the field that matched last time first; fall back to the alias list.
+local function pick(data, key)
+    local cached = resolved[key]
+    if cached then
+        local v = tonumber(data[cached])
         if v then return v end
+    end
+    for _, name in ipairs(FIELDS[key]) do
+        local v = tonumber(data[name])
+        if v then
+            resolved[key] = name
+            return v
+        end
     end
     return nil
 end
@@ -140,9 +129,9 @@ local function on_vitals(package)
             dbg(package .. ": " .. describe(data))
         end
 
-        local hp = pick(data, FIELDS.hp)
-        local sp = pick(data, FIELDS.sp)
-        local st = pick(data, FIELDS.st)
+        local hp = pick(data, "hp")
+        local sp = pick(data, "sp")
+        local st = pick(data, "st")
 
         if not (hp and sp and st) then
             return
@@ -150,15 +139,10 @@ local function on_vitals(package)
 
         seen_packages[package] = true
 
-        if cur.hp ~= nil then
+        if cur.hp ~= nil and enabled then
             local dh, ds, dt = hp - cur.hp, sp - cur.sp, st - cur.st
             if dh ~= 0 or ds ~= 0 or dt ~= 0 then
-                diff.hp, diff.sp, diff.st = dh, ds, dt
-                log_change()
-
-                if enabled then
-                    emit(fmt("hp", dh) .. " " .. fmt("sp", ds) .. " " .. fmt("st", dt))
-                end
+                emit(fmt("hp", dh) .. " " .. fmt("sp", ds) .. " " .. fmt("st", dt))
             end
         end
 
@@ -170,14 +154,22 @@ end
 -- Commands
 -----------------------------------------------------------------------
 
+local function status_line()
+    return string.format("v%s | output %s | colour %s | debug %s",
+        VERSION,
+        enabled and "on" or "off",
+        use_color and "on" or "off",
+        DEBUG and "on" or "off")
+end
+
 local function show_help()
-    emit("vitals v2.2")
-    emit("vitals on|off         enable/disable change output")
-    emit("vitals color on|off   ANSI colours (default on)")
-    emit("vitals log hp|sp|st   toggle logging")
-    emit("vitals debug          toggle raw GMCP debug output")
-    emit("vitals check          show state")
-    emit("log file: " .. LOG_PATH)
+    rune.echo(H.title("vitals changes (hp/sp/st gains and losses)"))
+    rune.echo(H.section("Commands"))
+    rune.echo(H.line("vitals on | off", "enable/disable the change output"))
+    rune.echo(H.line("vitals color on|off", "ANSI colours (default on)"))
+    rune.echo(H.line("vitals debug", "toggle raw GMCP debug output"))
+    rune.echo(H.line("vitals check", "show current values and settings"))
+    rune.echo(H.foot(status_line()))
 end
 
 local function show_check()
@@ -187,8 +179,6 @@ local function show_check()
 
     emit(string.format("vitals: hp=%s sp=%s st=%s",
         tostring(cur.hp), tostring(cur.sp), tostring(cur.st)))
-    emit(string.format("logging: hp=%s sp=%s st=%s",
-        tostring(log_flags.hp), tostring(log_flags.sp), tostring(log_flags.st)))
     emit(string.format("enabled=%s color=%s debug=%s packages seen: %s",
         tostring(enabled), tostring(use_color), tostring(DEBUG),
         #pk > 0 and table.concat(pk, ", ") or "none yet"))
@@ -204,22 +194,16 @@ local function run_command_impl(arg_text)
 
     if action == "off" then
         enabled = false
+        save_settings()
         emit("vitals: change output OFF")
     elseif action == "on" then
         enabled = true
+        save_settings()
         emit("vitals: change output ON")
     elseif action == "color" or action == "colour" then
         use_color = (words[2] ~= "off")
+        save_settings()
         emit("vitals: colour " .. (use_color and "ON" or "OFF"))
-    elseif action == "log" then
-        local k = words[2]
-        if k == "hp" or k == "sp" or k == "st" then
-            log_flags[k] = not log_flags[k]
-            save_config()
-            emit("vitals: logging " .. k .. " " .. (log_flags[k] and "ON" or "OFF"))
-        else
-            emit("vitals: usage - vitals log hp|sp|st")
-        end
     elseif action == "debug" then
         DEBUG = not DEBUG
         emit("vitals: debug " .. (DEBUG and "ON" or "OFF"))
@@ -241,34 +225,19 @@ end
 -- Setup
 -----------------------------------------------------------------------
 
-if rune.alias and rune.alias.regex then
-    pcall(rune.alias.regex, "^/?vitals(.*)$", function(match)
-        run_command(match[1])
-    end, { name = "y-vitals" })
+rune.alias.regex("^/?vitals( .*)?$", function(m)
+    run_command(m[1])
+end, { name = "vitals" })
+
+for _, package in ipairs(PACKAGES) do
+    rune.gmcp.on(package, on_vitals(package))
 end
 
-if type(rune.command) == "table" then
-    local function args_to_text(args)
-        if type(args) == "table" then return table.concat(args, " ") end
-        return tostring(args or "")
-    end
+-- Forget the baseline on disconnect so the next login does not print a
+-- bogus change.
+rune.hooks.on("disconnected", function()
+    cur.hp, cur.sp, cur.st = nil, nil, nil
+end, { name = "vitals-disconnected" })
 
-    for _, fname in ipairs({ "add", "register", "create", "define", "set", "on" }) do
-        local f = rune.command[fname]
-        if type(f) == "function" then
-            local ok = pcall(f, "vitals", function(args)
-                run_command(args_to_text(args))
-            end)
-            if ok then break end
-        end
-    end
-end
-
-if rune.gmcp and rune.gmcp.on then
-    for _, package in ipairs(PACKAGES) do
-        pcall(rune.gmcp.on, package, on_vitals(package))
-    end
-end
-
-load_config()
-emit("-- vitals_changes loaded (v2.0) -- type 'vitals help' --")
+load_settings()
+emit("-- vitals_changes loaded (v" .. VERSION .. ") -- type 'vitals' for help --")

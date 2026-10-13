@@ -1,19 +1,19 @@
 -- Filename: eljayPlugins/spellTLAs.lua
--- Purpose: General spell Three Letter Aliases, optionally targettable
--- Version: 3.5 (word of recall now cwo; header cleanup)
--- Date: 2026-Oct-12
---
+-- Purpose: General spell Three Letter Aliases, optionally targettable.
+-- Version: 3.6
+-- Date: 2026-Oct-13
 -- Changelog:
---   3.5  cwo = word of recall (replaces wor); clre removed; header and help brought in line
---   3.4  one dispatcher alias for casts and one for n-keys; target validation
---   3.3  "How it works" header; spelltla help, list and debug
---   3.2  spells added from class path spell lists
---   3.1  spells grouped and sorted; n* "aff clear" aliases
---   3.0  merged ySpells.xml + ySpells2.xml
+--   3.6  Repo-style header and command summary cleanup; behavior preserved.
+--   3.5  cwo = word of recall (replaces wor); clre removed; header and help brought in line.
+--   3.4  one dispatcher alias for casts and one for n-keys; target validation.
+--   3.3  "How it works" header; spelltla help, list and debug.
+--   3.2  spells added from class path spell lists.
+--   3.1  spells grouped and sorted; n* "aff clear" aliases.
+--   3.0  merged ySpells.xml + ySpells2.xml.
 --
 -- How it works:
---   * cast("cXX", "spell name") adds a spell to a lookup table:  cXX [target]  ->  cast 'spell name' [target]
---   * every key starting with "c" also gets an n-alias: nXX  ->  aff clear 'spell name'
+--   * cast("cXX", "spell name") adds a spell to a lookup table:  cXX [target] -> cast 'spell name' [target]
+--   * every key starting with "c" also gets an n-alias: nXX -> aff clear 'spell name'
 --       e.g. cdm = cast 'dispel magic', ndm = aff clear 'dispel magic'  (n-aliases take no target)
 --   * keys not starting with "c" (ill, bbm, ssh, ssw) only get the cast alias
 --   * after the table is built, ONE regex alias handles all cast keys and ONE handles all n-keys
@@ -24,6 +24,13 @@
 --   * spelltla is the only standalone alias (wor became cwo; clre was removed)
 --   * "spelltla" alone shows a command summary; "spelltla list [text]" lists aliases;
 --     "spelltla debug on|off" echoes every command sent (default off, resets on reload)
+--
+-- Commands:
+--   spelltla                 show this summary
+--   spelltla list [text]     list aliases, optionally filtered by key or spell
+--   spelltla debug on|off    toggle debug output
+--   cXX [target]             cast 'spell' [target]
+--   nXX                     aff clear 'spell'  (for c-keys only)
 
 local DEBUG = false
 local MAX_TARGET = 60
@@ -60,11 +67,11 @@ local function send_cast(spell, target)
 end
 
 --[[ Helper (must be defined before use)
-     cast("cXX", "spell name") records:
-       cXX [target]  ->  cast 'spell name' [target]
-       nXX           ->  aff clear 'spell name'   (only for keys starting with "c")
-     e.g. cast("cla", "portal to the laser dimension") also gives "nla".
-     Aliases are registered once, after the table below (see "Dispatcher aliases").
+      cast("cXX", "spell name") records:
+        cXX [target]  ->  cast 'spell name' [target]
+        nXX           ->  aff clear 'spell name'   (only for keys starting with "c")
+      e.g. cast("cla", "portal to the laser dimension") also gives "nla".
+      Aliases are registered once, after the table below (see "Dispatcher aliases").
 ]]--
 local function cast(key, spell)
   if casts[key] then

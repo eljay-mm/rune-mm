@@ -1,17 +1,12 @@
 -- Filename: eljayPlugins/jmcSolver.lua
--- Purpose: Joint Magical Consortium (JMC) projectile puzzle - standalone solver (no website, no network)
--- Version: 1.4
--- Date: 2026-Oct-12
---
+-- Purpose: Joint Magical Consortium (JMC) projectile puzzle - standalone solver (no website, no network).
+-- Version: 1.5
+-- Date: 2026-Oct-13
 -- Changelog:
---   1.4  Help screen now copies autopouch.lua's style (require("helpstyle"): H.title / H.section / H.line / H.foot
---        printed via rune.echo, commands typed bare, key=value status footer).
---   1.3  No minimum mirror count is enforced: solutions you can build entirely from the mirrors you carry come first
---        and are marked with `*` (even if they use more mirrors than the shortest answer); shorter answers that need
---        mirrors you lack follow. New `more` setting; `maxm` now defaults to 8.
---   1.2  Lists several solutions (up to `alts`) so you can choose with `jmc pick <n>`; the chosen (or only)
---        solution is copied to the clipboard, `jmc copy [n|all]` copies on demand; selftest also checks the
---        website's own answers are among the alternatives; header brought to current format.
+--   1.5  Repo-style header pass; command summary aligned to current formatting and still preserves the original solver logic.
+--   1.4  Help screen now copies autopouch.lua's style (require("helpstyle"): H.title / H.section / H.line / H.foot printed via rune.echo, commands typed bare, key=value status footer).
+--   1.3  No minimum mirror count is enforced: solutions you can build entirely from the mirrors you carry come first and are marked with `*` (even if they use more mirrors than the shortest answer); shorter answers that need mirrors you lack follow. New `more` setting; `maxm` now defaults to 8.
+--   1.2  Lists several solutions (up to `alts`) so you can choose with `jmc pick <n>`; the chosen (or only) solution is copied to the clipboard, `jmc copy [n|all]` copies on demand; selftest also checks the website's own answers are among the alternatives; header brought to current format.
 --   1.1  Standalone local solver replaces the ooc.dune.net web solver (no network, no clipboard, no io.popen).
 --   1.0  First version: captured the console look + mirrors and submitted them to the ooc.dune.net JMC solver.
 --
@@ -36,8 +31,21 @@
 --     the automatic copy and the method (wl-copy / xclip / xsel, OSC 52 as last resort).
 --   * `jmc selftest` solves two built-in puzzles whose website answers are known and checks them.
 --   * Typing `jmc` alone shows the command summary; `jmc debug on|off` toggles debug messages (default off).
+--
+-- Commands:
+--   jmc                 show this summary
+--   jmc solve (jms)     look at the console + inventory and solve the puzzle
+--   jmc again           solve the last captured look + mirrors again
+--   jmc last            show the last result again
+--   jmc pick <n>        show and copy solution n
+--   jmc copy [n|all]    copy the picked solution, solution n, or all solutions
+--   jmc rules           show the rules the solver assumes
+--   jmc selftest        solve two built-in puzzles with known answers
+--   jmc set             list settings
+--   jmc set <key> <value>  change one setting
+--   jmc debug on|off   toggle debug messages
 
-local VERSION = "1.4"
+local VERSION = "1.5"
 
 -- Lines (Lua patterns) that frame the captures
 local LOOK_HEADER = "^%s*You focus your powers of observation on the ignition console"
@@ -480,7 +488,7 @@ local function solvePuzzle(P)
         if #sols > 0 then
           local before = #entries
           local saved = P.maxsol
-          P.maxsol = before + saved          -- B gets its own allowance on top of A's
+          P.maxsol = before + saved
           add(sols)
           P.maxsol = saved
           foundB = true

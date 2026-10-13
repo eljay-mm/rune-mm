@@ -1,12 +1,22 @@
 -- Filename: eljayPlugins/oocWikiSearch.lua
+-- Purpose: Search and open pages on the OOC wiki (Order of Chaos).
 -- Inspired by the MUSHclient plugin by Ferdinand
--- Version 2.0
--- Date: 2026-Oct-09
+-- Version: 2.1
+-- Date: 2026-Oct-13
+-- Changelog:
+--   2.1  Repo-style header update and command summary standardized.
+--   2.0  Original release.
+--
+-- How it works:
+--   * The plugin searches the OOC wiki via the public search endpoint.
+--   * The returned hyperlinks are parsed into page titles and paths.
+--   * Selecting a result opens the canonical wiki page URL, strips the HTML and prints the cleaned text.
+--   * The last result set is cached so `ooc list` and `ooc <number>` work without re-searching.
 --
 -- Commands:
---   ooc <search term>
---   ooc <number>
---   ooc list
+--   ooc <search term>    search the OOC wiki
+--   ooc <number>         open a previous result by number
+--   ooc list             show the previous result list
 
 local BASE_URL = "https://ooc.dune.net"
 local USER_AGENT = "Rune-oocWiki/1.1"
@@ -16,10 +26,7 @@ local MAX_PAGE_CHARS = 16000
 local last_term = nil
 local last_results = {}
 
-----------------------------------------------------------------------
 -- Output
-----------------------------------------------------------------------
-
 local function say(text)
   text = tostring(text or "")
 
@@ -37,10 +44,7 @@ local function usage()
   say("  ooc list           Show the previous result list")
 end
 
-----------------------------------------------------------------------
 -- String helpers
-----------------------------------------------------------------------
-
 local function trim(value)
   value = tostring(value or "")
   value = value:gsub("^%s+", "")
@@ -118,10 +122,7 @@ local function html_to_text(value)
   return trim(value)
 end
 
-----------------------------------------------------------------------
 -- Shell and HTTP
-----------------------------------------------------------------------
-
 local function shell_quote(value)
   value = tostring(value or "")
   return "'" .. value:gsub("'", "'\\''") .. "'"
@@ -199,10 +200,7 @@ local function http_post(url, fields)
   return run_command(table.concat(command, " "))
 end
 
-----------------------------------------------------------------------
 -- Wiki URL and result parsing
-----------------------------------------------------------------------
-
 local function normalize_path(href)
   if not href then
     return nil
@@ -274,10 +272,7 @@ local function parse_results(body)
   return results
 end
 
-----------------------------------------------------------------------
 -- Display
-----------------------------------------------------------------------
-
 local function show_list()
   if #last_results == 0 then
     say("[ooc] No previous search.")
@@ -307,12 +302,7 @@ local function show_page(index, other_count)
     return
   end
 
-  -- Important:
-  -- Use the normal wiki page URL, for example:
-  --   https://ooc.dune.net/Malfat
-  --
-  -- Do not use /action=browse?id=... because the wiki returns
-  -- "Untitled Document / Invalid Page" for those result paths.
+  -- Use the normal wiki page URL; do not use browse?id results, as they may be invalid.
   local url = page_url(result.path)
 
   say("[ooc] Loading: " .. result.title)
@@ -349,10 +339,7 @@ local function show_page(index, other_count)
   end
 end
 
-----------------------------------------------------------------------
 -- Search
-----------------------------------------------------------------------
-
 local function search_wiki(term)
   term = trim(term)
 
@@ -400,10 +387,7 @@ local function search_wiki(term)
   end
 end
 
-----------------------------------------------------------------------
 -- Command handling
-----------------------------------------------------------------------
-
 local function ooc_command(matches)
   local argument = ""
 
@@ -449,16 +433,13 @@ local function ooc_command(matches)
   search_wiki(argument)
 end
 
-----------------------------------------------------------------------
 -- Rune alias
-----------------------------------------------------------------------
-
 if not rune then
-  error("y_oocWiki.lua: Rune API is unavailable")
+  error("oocWikiSearch.lua: Rune API is unavailable")
 end
 
 if not rune.alias or not rune.alias.regex then
-  error("y_oocWiki.lua: rune.alias.regex is unavailable")
+  error("oocWikiSearch.lua: rune.alias.regex is unavailable")
 end
 
 rune.alias.regex(

@@ -1,76 +1,34 @@
 -- Filename: eljayPlugins/asciiMapPane.lua
 -- Purpose: ASCII map pane for Rune + horstgs Materia Magica.
--- Version: 2.5
--- Date: 2026-Oct-11
---
--- Commands (typing the command alone, or "help", shows this summary):
---     /asciiMapPane                 command summary (main window)
---     /asciiMapPane help            same
---     /asciiMapPane on | off
---     /asciiMapPane compact | spaced  1 char per room (default) / with link lines
---     /asciiMapPane terrains        list terrain names in your map (for glyphs)
---     /asciiMapPane color on|off    ANSI colours (default on)
---     /asciiMapPane flags|trail|dim|strict on|off
---                                flags: tint safe/dark rooms; trail: colour
---                                the rooms you just walked; dim: fade far
---                                rooms; strict: drop rooms whose coordinates
---                                show they are not really adjacent
---     /asciiMapPane legend          show what the symbols and colours mean
---     /asciiMapPane refresh         force a redraw
---     /asciiMapPane size W H        set pane size in characters (W cols, H lines)
---     /asciiMapPane size auto       use the pane's reported size again
---     /asciiMapPane pad N           border allowance subtracted from a
---                                reported pane size (default 2)
---     /asciiMapPane calibrate       print a ruler to measure the pane, then
---                                use /asciiMapPane size W H with what you see
---     /asciiMapPane reset           restore default settings (and forget saved ones)
---     /asciiMapPane debug           show pane API / size / room data
---     /asciiMapPane debug on|off    log timings and events to the main window
---                                (default OFF; reset to off on every load)
---
+-- Version: 2.6
+-- Date: 2026-Oct-13
+-- Changelog:
+--   2.6  Switched help output to the repo-standard footer format and prefixed commands to bare `asciiMapPane` usage; slash compatibility retained as a fallback.
+--   2.5  Added safe fallbacks, saved settings validation, and style cleanup.
 -- How it works:
---   - Rune sends GMCP Room.Info on every move; the plugin keeps the latest.
---   - It finds the horstgs mapper's room store (reading mapper/map.db itself
---     if the live store can't be found) and looks rooms up by uid:
---     mapper_store.get(uid) -> { name, area, coord={x,y,z}, exits={dir=uid} }
---   - From the current room it follows compass exits outward, one grid step
---     each, so no coordinates are needed. Strict mode drops rooms whose
---     coordinates show they are not really adjacent (portals, long exits).
---   - Exits to rooms the mapper doesn't have yet show as ?. Rooms are
---     symbolled and coloured by terrain, flags and name, with the recent
---     trail highlighted and far-away rooms faded.
---   - Only a few hundred rooms around you are touched per redraw, never the
---     whole map. A second redraw follows only while the mapper has not yet
---     stored the current room; unchanged output is not rewritten.
---   - The result is written to a Rune pane (replace + scroll to top). Rune
---     can't report the pane size, so it uses DEFAULT_W / DEFAULT_H or the
---     "size W H" command.
---   - Debug logging ("debug on") echoes draw timings, store discovery,
---     Room.Info and commands to the main window. It is off by default and
---     costs one boolean check per event while off.
---   - Settings (on/off, compact/spaced, colour, overlays, size, pad) are saved
---     with rune.store after each command and restored on load; values are
---     type-checked and clamped. Debug logging is never saved: it always
---     starts off.
---   - Parsed room coordinates and per-room styles are cached (weak tables);
---     "refresh" clears the caches.
---   - Redraws are skipped when nothing relevant changed (same room, exits,
---     size and settings); the mapper hook and every command force one.
---   - Server text (room names, zones, flags) is stripped of control
---     characters before it is displayed, so a room can't inject terminal
---     escape codes. Pane size and padding are clamped to sane limits.
---   - Reading mapper/map.db directly is an OFF-by-default fallback
---     (USE_MAPFILE_FALLBACK); it is size-, line- and room-limited, and its
---     memory is freed as soon as the live store is found.
---   - Typing the command alone shows the command summary in the main
---     window (helpstyle format, same as autopouch), so options never have
---     to be remembered. Commands work typed bare or with a leading slash.
+--   * Rune sends GMCP Room.Info on every move; the plugin keeps the latest room and redraws the pane.
+--   * It finds the horstgs mapper store (or a limited fallback reader) and resolves nearby rooms by exit links.
+--   * The current room and nearby exits are laid out relative to the player so the map works in homes, dungeons and zone transitions.
+--   * Rooms are symbolled and coloured by terrain, flags and name; recent trail rooms are highlighted and far-away rooms are faded.
+--   * Only the relevant local area is rendered, and redraws are skipped when the layout has not changed.
+--   * Settings and size choices are saved with rune.store, while debug output stays off by default unless enabled.
+--   * Server-supplied text is stripped of control characters before display to protect the terminal from injected escapes.
+--   * Typing the command on its own shows a help summary using helpstyle, with the version at the start of the footer row.
 --
+-- Commands:
+--   asciiMapPane                     show this summary
+--   asciiMapPane on|off              show or hide the map pane
+--   asciiMapPane compact|spaced      1 char per room / wider with link lines
+--   asciiMapPane color on|off        ANSI colours on/off
+--   asciiMapPane size <W> <H>        set pane size in characters
+--   asciiMapPane pad <N>             border allowance
+--   asciiMapPane debug on|off        debug logging (default off)
+--   asciiMapPane help                show this summary
 
 local PANE_ID = "asciiMapPane"
 
--- Rune's pane API has no size query, so this is the "auto" size.  Edit
--- these two numbers (or use /asciiMapPane size W H) to match your pane.
+-- Rune's pane API has no size query, so this is the "auto" size. Edit
+-- these two numbers (or use asciiMapPane size W H) to match your pane.
 local DEFAULT_W = 42
 local DEFAULT_H = 10
 
@@ -86,11 +44,11 @@ local MAPFILE_MAX_BYTES = 64 * 1024 * 1024
 local MAPFILE_MAX_LINE  = 20000
 local MAPFILE_MAX_ROOMS = 500000
 
-local EMPTY_MARKER   = " "   -- blank: only real rooms are drawn
+local EMPTY_MARKER   = " "
 local ROOM_MARKER    = "o"
-local UP_MARKER      = "^"   -- room with an up exit
-local DOWN_MARKER    = "v"   -- room with a down exit
-local UPDOWN_MARKER  = "%"   -- room with both
+local UP_MARKER      = "^"
+local DOWN_MARKER    = "v"
+local UPDOWN_MARKER  = "%"
 local CURRENT_MARKER = "@"
 
 local enabled = true
@@ -100,34 +58,28 @@ local last_pane_text = nil
 
 local manual_w, manual_h = nil, nil
 local use_color = true
-local compact = true   -- 1 character per room (4x denser); false = spaced with links
+local compact = true
 local border_pad = 2
 
--- Redraw skipping: a redraw is skipped when its signature matches the
--- last one.  `epoch` is bumped by anything that must force a redraw.
+-- Redraw skipping
 local last_sig = nil
 local epoch = 0
 
--- Server-supplied text (room names, zones, flags ...) can carry control
--- characters / terminal escape sequences: neutralise it before display.
+-- Server-supplied text may include control characters.
 local function clean(value)
     local text = tostring(value == nil and "" or value)
     text = text:gsub("%c", "?")
-    text = text:gsub("\194[\128-\159]", "?")   -- UTF-8 encoded C1 controls
+    text = text:gsub("\194[\128-\159]", "?")
     return text
 end
 
--- Debug logging: OFF by default, toggled with `asciiMapPane debug on|off`.
--- Call sites are written `if DEBUG then dbg(...) end` so nothing is built
--- while it is off.
+-- Debug logging: OFF by default.
 local DEBUG = false
 
 local function dbg(...)
     local ok, text = pcall(string.format, ...)
-
     if type(rune.echo) == "function" then
-        rune.echo("[asciiMapPane:debug] "
-            .. clean(ok and text or tostring((...))))
+        rune.echo("[asciiMapPane:debug] " .. clean(ok and text or tostring((...))))
     end
 end
 
@@ -138,7 +90,6 @@ end
 local store = nil
 local store_source = "none"
 
--- rawget: never trigger metamethods on unknown tables while scanning.
 local function looks_like_store(t)
     return type(t) == "table"
         and type(rawget(t, "rooms")) == "table"
@@ -149,9 +100,6 @@ local function has_rooms(t)
     return looks_like_store(t) and next(rawget(t, "rooms")) ~= nil
 end
 
--- Finds the mapper's LIVE store.  If another copy of the module was
--- loaded by require() it would be empty, so every plausible holder is
--- checked and a populated one is preferred.
 local function find_store()
     local found = {}
 
@@ -202,16 +150,13 @@ local function find_store()
     return nil, "none"
 end
 
--- Fallback: read mapper/map.db ourselves (same line format the mapper
--- writes: fields split by US (0x1f), exits "dir=uid" split by RS (0x1e)).
--- Parsed incrementally so no single call runs long.
+-- Fallback map.db reader
 local US, RS = "\31", "\30"
 local own = { rooms = {} }
 function own.get(uid)
     if uid == nil then
         return nil
     end
-
     return own.rooms[tostring(uid)]
 end
 
@@ -226,29 +171,24 @@ local function parse_room(line)
 
     for i = 1, 8 do
         local at = line:find(US, start, true)
-
         if not at then
             f[i] = line:sub(start)
             break
         end
-
         f[i] = line:sub(start, at - 1)
         start = at + 1
     end
 
     local uid = f[1]
-    if not uid or #uid == 0 or #uid > 32
-        or not uid:match("^[%w_%-%.:]+$") then
+    if not uid or #uid == 0 or #uid > 32 or not uid:match("^[%w_%-%.:]+$") then
         return nil
     end
 
-    local room = { uid = uid, name = f[2], area = f[3],
-        flags = f[4], terrain = f[5], terraininfo = f[6] }
+    local room = { uid = uid, name = f[2], area = f[3], flags = f[4], terrain = f[5], terraininfo = f[6] }
 
     if f[7] and f[7] ~= "" then
         local x, y, z = f[7]:match("([^,]*),([^,]*),([^,]*)")
         x, y = tonumber(x), tonumber(y)
-
         if x and y then
             room.coord = { x = x, y = y, z = tonumber(z) or 0 }
         end
@@ -256,10 +196,8 @@ local function parse_room(line)
 
     if f[8] and f[8] ~= "" then
         room.exits = {}
-
         for pair in f[8]:gmatch("[^" .. RS .. "]+") do
             local dir, dest = pair:match("^(%a+)=(.*)$")
-
             if dir and dest and dest ~= "" then
                 room.exits[dir] = dest
             end
@@ -283,20 +221,17 @@ local function own_load_step()
 
     if not own_state.text then
         local dir = rune.config_dir
-
         if type(dir) ~= "string" or dir == "" then
             return own_fail("config_dir unknown; not reading map.db")
         end
 
         local path = dir .. "/mapper/map.db"
         local f = io.open(path, "r")
-
         if not f then
             return own_fail("cannot open " .. path)
         end
 
         local size = f:seek("end")
-
         if not size or size > MAPFILE_MAX_BYTES then
             f:close()
             return own_fail("map.db unreadable or over the size limit")
@@ -323,7 +258,6 @@ local function own_load_step()
         else
             line = line:gsub("\r$", "")
             local room = parse_room(line)
-
             if room then
                 own.rooms[room.uid] = room
                 own_state.rooms_n = own_state.rooms_n + 1
@@ -351,8 +285,7 @@ local function own_load_step()
     own_state.pos = pos
 
     if own_state.done and DEBUG then
-        dbg("map.db: %d rooms, %d lines skipped",
-            own_state.rooms_n, own_state.skipped)
+        dbg("map.db: %d rooms, %d lines skipped", own_state.rooms_n, own_state.skipped)
     end
 
     return own_state.done
@@ -366,8 +299,8 @@ local function own_count()
     return n
 end
 
-local store_loading = false   -- true while map.db is being parsed
-local next_find = 0            -- negative cache: no rescans before this time
+local store_loading = false
+local next_find = 0
 
 local function release_own()
     own.rooms = {}
@@ -377,7 +310,6 @@ local function release_own()
 end
 
 local function get_store()
-    -- A populated live store always wins.
     if store and store ~= own and has_rooms(store) then
         return store
     end
@@ -385,40 +317,31 @@ local function get_store()
     live_retry = live_retry + 1
     local now = os.time and os.time() or 0
 
-    -- Searching scans globals, so remember a miss for a few seconds; while
-    -- using our own copy only look again now and then.
-    if (store ~= own and now >= next_find)
-        or (store == own and live_retry % 20 == 0) then
+    if (store ~= own and now >= next_find) or (store == own and live_retry % 20 == 0) then
         local found, label = find_store()
-
         if found and has_rooms(found) then
             store, store_source = found, label
             store_loading = false
-            release_own()   -- the fallback copy is no longer needed
+            release_own()
             if DEBUG then dbg("store -> %s", store_source) end
             return store
         end
-
         next_find = now + 5
     end
 
     store_loading = false
 
     if not USE_MAPFILE_FALLBACK then
-        store_note = "mapper store not found (retrying). Set "
-            .. "USE_MAPFILE_FALLBACK = true to read map.db directly."
+        store_note = "mapper store not found (retrying). Set USE_MAPFILE_FALLBACK = true to read map.db directly."
         return nil
     end
 
-    -- Fall back to reading map.db directly.
     if not own_load_step() then
         store_loading = true
-        store_note = string.format("Loading map file... %d rooms",
-            own_state.rooms_n)
+        store_note = string.format("Loading map file... %d rooms", own_state.rooms_n)
         return nil
     end
 
-    -- Count once, not on every redraw.
     if own_state.total == nil then
         own_state.total = own_count()
         if DEBUG then dbg("map.db parsed: %d rooms", own_state.total) end
@@ -441,13 +364,10 @@ end
 -- Helpers
 -----------------------------------------------------------------------
 
--- Numeric grid key: no string building on the hot path.  Offsets are
--- always small (bounded by the pane size).
 local function key_of(x, y)
     return (x + 1024) * 2048 + (y + 1024)
 end
 
--- Reads {x,y,z} (z optional) or a "x,y,z" string.
 local function read_coord(c)
     if type(c) == "string" then
         local a, b, d = c:match("(%-?%d+)[, ]+(%-?%d+)[, ]*(%-?%d*)")
@@ -472,8 +392,6 @@ local function read_coord(c)
     return nil
 end
 
--- Parsed coordinates are cached per room (weak keys): the strict filter
--- would otherwise re-parse the same rooms on every redraw.
 local WEAK = { __mode = "k" }
 local coord_x = setmetatable({}, WEAK)
 local coord_y = setmetatable({}, WEAK)
@@ -483,7 +401,6 @@ local function room_xy(room)
 
     if x == nil then
         local cx, cy = read_coord(room.coord)
-
         if cx then
             coord_x[room], coord_y[room] = cx, cy
             return cx, cy
@@ -540,7 +457,6 @@ local function write_pane(text)
 
     local done = false
 
-    -- replace() swaps the whole content in one call.
     if type(rune.pane.replace) == "function" then
         done = pcall(rune.pane.replace, PANE_ID, text)
     end
@@ -555,7 +471,6 @@ local function write_pane(text)
         end
     end
 
-    -- Keep the header (first line) in view.
     if type(rune.pane.scroll_to_top) == "function" then
         pcall(rune.pane.scroll_to_top, PANE_ID)
     end
@@ -573,8 +488,6 @@ local function hide_pane()
     end
 end
 
--- Returns w, h, source.  Tries the pane API (names are guesses, all
--- wrapped in pcall), then manual size, then defaults.
 local function detect_size_raw()
     if manual_w and manual_h then
         return manual_w, manual_h, "manual"
@@ -589,10 +502,8 @@ local function detect_size_raw()
         }) do
             if type(p[name]) == "function" then
                 local ok, a, b = pcall(p[name], PANE_ID)
-
                 if ok then
                     local w, h
-
                     if type(a) == "table" then
                         w = a.width or a.w or a.cols or a.columns
                         h = a.height or a.h or a.rows or a.lines
@@ -601,10 +512,8 @@ local function detect_size_raw()
                     end
 
                     w, h = tonumber(w), tonumber(h)
-
                     if w and h and w > 0 and h > 0 then
-                        return w - border_pad, h - border_pad,
-                            "pane." .. name
+                        return w - border_pad, h - border_pad, "pane." .. name
                     end
                 end
             end
@@ -614,7 +523,6 @@ local function detect_size_raw()
             local ok1, w = pcall(p.width, PANE_ID)
             local ok2, h = pcall(p.height, PANE_ID)
             w, h = tonumber(w), tonumber(h)
-
             if ok1 and ok2 and w and h and w > 0 and h > 0 then
                 return w - border_pad, h - border_pad, "pane.width/height"
             end
@@ -628,10 +536,8 @@ local function clamp(v, lo, hi)
     return math.max(lo, math.min(hi, v))
 end
 
--- Whatever the source (default, manual, pane API), stay within limits.
 local function detect_size()
     local w, h, src = detect_size_raw()
-
     return clamp(math.floor(w), MIN_W, MAX_W),
         clamp(math.floor(h), MIN_H, MAX_H), src
 end
@@ -668,7 +574,6 @@ local function exits_line(stored, info, width)
         if type(exits) ~= "table" then
             return
         end
-
         for dir in pairs(exits) do
             present[tostring(dir):lower()] = true
         end
@@ -688,18 +593,13 @@ local function exits_line(stored, info, width)
     end
 
     local text = "Exits: " .. (#list > 0 and table.concat(list, " ") or "-")
-
     return text:sub(1, width)
 end
 
 -----------------------------------------------------------------------
--- Styling tables (edit freely)
+-- Styling tables
 -----------------------------------------------------------------------
 
--- Each entry: { glyph, { words }, colour }.  Words are matched
--- (case-insensitive substring) against the room's terrain / terraininfo
--- / flags; first match wins.  Run `asciiMapPane terrains` to see the names
--- your map uses.  Colours are ANSI SGR codes.
 local GLYPHS = {
     { "~", { "water", "swim", "ocean", "river", "lake", "sea" }, "34" },
     { "#", { "road", "street", "path", "trail", "lane", "city", "town",
@@ -713,46 +613,35 @@ local GLYPHS = {
 
 local DEFAULT_ROOM_COLOR = "37"
 
--- Fallback for rooms whose terrain is empty: whole words in the NAME.
 local NAME_GLYPHS = {
     { "#", { "road", "street", "trail", "path", "lane", "avenue", "alley",
              "highway", "boulevard", "crossroads", "bridge" }, "33" },
     { "$", { "shop", "store", "market", "bazaar" }, "32" },
 }
 
--- Flag styling (substring match on the room's flags).
-local FLAG_FG  = { { "safe", "92" } }   -- first match recolours the room
-local FLAG_MOD = { { "dark", "2" } }    -- modifier (2 = faint)
+local FLAG_FG  = { { "safe", "92" } }
+local FLAG_MOD = { { "dark", "2" } }
 
 local UNEXPLORED_MARKER = "?"
 
 local TRAIL_LENGTH = 6
--- Newest -> oldest visited room.
 local TRAIL_COLORS = { "1;95", "95", "35", "35", "2;35", "2;35" }
-
--- Rooms further out than this fraction of the view are drawn faint.
 local DIM_START = 0.7
 
--- Fixed colours (also the fallback per symbol).
 local ESC = string.char(27)
 
 local COLORS = {
-    ["@"] = "1;97;45",   -- you: bold white on magenta
-    ["?"] = "1;91",      -- unexplored exit
+    ["@"] = "1;97;45",
+    ["?"] = "1;91",
     ["#"] = "33", ["$"] = "32", ["o"] = "37", ["~"] = "34",
-    ["^"] = "1;92", ["v"] = "1;92", ["%"] = "1;92",   -- stairs
+    ["^"] = "1;92", ["v"] = "1;92", ["%"] = "1;92",
     ["-"] = "90", ["|"] = "90", ["/"] = "90", ["\\"] = "90",
     ["X"] = "90",
 }
 
--- Toggles: `asciiMapPane <name> on|off`.
 local opts = { flags = true, trail = true, dim = true, strict = true }
 
-local history = {}   -- uids, newest (current room) first
-
------------------------------------------------------------------------
--- Per-room style (cached: terrain/flags don't change)
------------------------------------------------------------------------
+local history = {}
 
 local function first_match(entries, text, plain_words)
     for _, entry in ipairs(entries) do
@@ -778,7 +667,6 @@ local function compute_style(room)
     local up = has_exit(room, "u")
     local down = has_exit(room, "d")
 
-    -- Stairs/ladders matter most.
     if up and down then
         glyph = UPDOWN_MARKER
     elseif up then
@@ -798,8 +686,6 @@ local function compute_style(room)
             glyph, color = first_match(GLYPHS, text, false)
         end
 
-        -- Plain/unknown rooms (empty terrain, or just "indoors" etc.) can
-        -- still be recognised by whole words in their name.
         if not glyph or glyph == ROOM_MARKER then
             local name = tostring(room.name or ""):lower():gsub("[^%a]", " ")
             local g, c = first_match(NAME_GLYPHS, " " .. name .. " ", true)
@@ -839,16 +725,13 @@ local style_cache = setmetatable({}, { __mode = "k" })
 
 local function room_style(room)
     local st = style_cache[room]
-
     if st == nil then
         st = compute_style(room)
         style_cache[room] = st
     end
-
     return st
 end
 
--- Final colour for one room cell.
 local function cell_color(st, rank, dist)
     local code = st.color
 
@@ -882,7 +765,6 @@ local DIR_OFFSET = {
     ne = { 1, 1 }, nw = { -1, 1 }, se = { 1, -1 }, sw = { -1, -1 },
 }
 
--- Fixed order => deterministic layouts.
 local LAYOUT_DIRS = { "n", "e", "s", "w", "ne", "se", "sw", "nw" }
 
 local DIR_DX, DIR_DY = {}, {}
@@ -898,7 +780,7 @@ local LONG_DIRS = {
 }
 
 local view_stats = "layout: none"
-local needs_followup = false   -- an exit led to a room not stored yet
+local needs_followup = false
 
 local function exit_uid(e)
     if type(e) == "string" or type(e) == "number" then
@@ -913,7 +795,6 @@ local function exit_uid(e)
     return nil
 end
 
--- A room-like table built from Room.Info, for rooms not stored yet.
 local function pseudo_room(info)
     local room = { uid = info_uid(info), name = info.name,
         area = info.area or info.zone, terrain = info.terrain,
@@ -935,16 +816,6 @@ local function pseudo_room(info)
     return room
 end
 
--- Lays rooms out by dead reckoning from the exits: each compass exit is
--- one step in that direction (east = +x, north = +y, relative to the
--- start room).  No coordinates are needed, so it works in player homes,
--- dungeons and across zone borders.
---
--- Strict mode additionally drops a room whose stored coordinates show
--- it is NOT one step away in that direction (long exits, portals, stale
--- links), unless both rooms share the same coordinate (homes/instances).
---
--- Exits to rooms the mapper doesn't have yet are recorded as unexplored.
 local function layout_from_exits(s, start, start_uid, hx, hy)
     local k0 = key_of(0, 0)
     local grid = { [k0] = start }
@@ -960,7 +831,6 @@ local function layout_from_exits(s, start, start_uid, hx, hy)
         head = head + 1
 
         local exits = room.exits
-
         if type(exits) == "table" then
             local px, py = posx[room], posy[room]
             local rx, ry
@@ -971,11 +841,10 @@ local function layout_from_exits(s, start, start_uid, hx, hy)
 
             for i = 1, #LAYOUT_DIRS do
                 local e = exits[LAYOUT_DIRS[i]]
-
                 if e then
                     local ox, oy = DIR_DX[i], DIR_DY[i]
                     local nx, ny = px + ox, py + oy
-                    local k = (nx + 1024) * 2048 + (ny + 1024)   -- key_of
+                    local k = key_of(nx, ny)
 
                     if grid[k] == nil and not unexplored[k]
                         and nx <= hx and nx >= -hx
@@ -991,10 +860,8 @@ local function layout_from_exits(s, start, start_uid, hx, hy)
 
                             if rx then
                                 local dx, dy = room_xy(dest)
-
                                 if dx then
                                     local ddx, ddy = dx - rx, dy - ry
-
                                     if not (ddx == ox and ddy == oy)
                                         and not (ddx == 0 and ddy == 0) then
                                         ok = false
@@ -1028,12 +895,9 @@ local function paint_text(text, code)
     if not use_color then
         return text
     end
-
     return ESC .. "[" .. code .. "m" .. text .. ESC .. "[0m"
 end
 
--- Joins one map row.  codes[i] (if set) overrides the symbol's default
--- colour; runs of the same colour share one escape sequence.
 local function paint_row(chars, codes)
     if not use_color then
         return table.concat(chars)
@@ -1077,14 +941,13 @@ end
 -- Drawing
 -----------------------------------------------------------------------
 
--- Forget cached styles and coordinates (used by `refresh` and `reset`).
 local function reset_caches()
     style_cache = setmetatable({}, { __mode = "k" })
     coord_x = setmetatable({}, WEAK)
     coord_y = setmetatable({}, WEAK)
 end
 
-local draw   -- forward declaration (assigned below)
+local draw
 
 local function draw_impl()
     redraw_pending = false
@@ -1099,15 +962,12 @@ local function draw_impl()
     end
 
     local s = get_store()
-
     if not s then
         write_pane(store_note or "mapper_store not found.")
-
         if store_loading and rune.timer and rune.timer.after then
             redraw_pending = true
             rune.timer.after(0.05, draw)
         end
-
         return
     end
 
@@ -1118,10 +978,7 @@ local function draw_impl()
     local uid = info_uid(current_info)
     local stored = uid and s.get(uid) or nil
 
-    -- Room.Info is the freshest view of where we are; the stored room
-    -- supplies exits when Room.Info has none.
     local start = pseudo_room(current_info)
-
     if next(start.exits) == nil and stored then
         start = stored
     end
@@ -1130,9 +987,7 @@ local function draw_impl()
         start.coord = stored.coord
     end
 
-    -- Skip the redraw if nothing that affects the picture has changed.
     local es = {}
-
     for i = 1, #LAYOUT_DIRS do
         local e = start.exits and start.exits[LAYOUT_DIRS[i]]
         es[i] = e and tostring(exit_uid(e)) or ""
@@ -1152,16 +1007,15 @@ local function draw_impl()
     end
 
     local header = header_line(current_info, stored, width)
-    local rows = math.max(height - 2, 1)    -- header + exits lines
-    local sx0 = math.floor((width + 1) / 2) -- centre column
-    local sy0 = math.floor((rows + 1) / 2)  -- centre row
+    local rows = math.max(height - 2, 1)
+    local sx0 = math.floor((width + 1) / 2)
+    local sy0 = math.floor((rows + 1) / 2)
 
     local lines = {
         paint_text(header, "1;37"),
         paint_text(exits_line(start, current_info, width), "36"),
     }
 
-    -- Spaced mode shows half as many rooms per axis.
     local span = compact and 2 or 4
     local half_w = math.max(width / span, 1)
     local half_h = math.max(rows / span, 1)
@@ -1170,8 +1024,6 @@ local function draw_impl()
         layout_from_exits(s, start, uid, math.ceil(half_w) + 1,
             math.ceil(half_h) + 1)
 
-    -- Unexplored neighbours are normal.  A follow-up redraw is only useful
-    -- while the mapper has not stored the room we are standing in yet.
     needs_followup = (stored == nil)
 
     local n_unexplored = 0
@@ -1182,9 +1034,7 @@ local function draw_impl()
     view_stats = string.format("layout: %d rooms, %d skipped, %d unexplored",
         placed, skipped, n_unexplored)
 
-    -- Recently visited rooms (index 1 is where we are now).
     local trail_rank = {}
-
     if opts.trail then
         for i = 2, #history do
             trail_rank[history[i]] = i - 1
@@ -1193,7 +1043,6 @@ local function draw_impl()
 
     local abs = math.abs
 
-    -- Symbol and colour for the room (or unexplored exit) at an offset.
     local function room_cell(ox, oy)
         local k = key_of(ox, oy)
         local room = grid[k]
@@ -1201,7 +1050,6 @@ local function draw_impl()
         if room then
             local st = room_style(room)
             local dist = math.max(abs(ox) / half_w, abs(oy) / half_h)
-
             return st.glyph, cell_color(st, trail_rank[uids[k]], dist)
         end
 
@@ -1225,22 +1073,18 @@ local function draw_impl()
             local ch, code = " ", nil
 
             if compact then
-                -- one character per room
                 if dx == 0 and dy == 0 then
                     ch = CURRENT_MARKER
                 else
                     local g, c = room_cell(dx, -dy)
-
                     if g then
                         ch, code = g, c
                     end
                 end
             else
-                -- rooms on even offsets, link characters between them
                 local row_is_room = (dy % 2 == 0)
                 local col_is_room = (dx % 2 == 0)
 
-                -- room offsets: east = +x, north = +y
                 local top = row_is_room and (-dy / 2) or (-(dy - 1) / 2)
                 local left = col_is_room and (dx / 2) or ((dx - 1) / 2)
 
@@ -1249,7 +1093,6 @@ local function draw_impl()
                         ch = CURRENT_MARKER
                     else
                         local g, c = room_cell(left, top)
-
                         if g then
                             ch, code = g, c
                         end
@@ -1301,8 +1144,6 @@ local function draw_impl()
     last_sig = sig
 end
 
--- Any runtime error is shown in the pane instead of silently leaving
--- it blank.
 draw = function()
     local clock = DEBUG and os.clock or nil
     local t0 = clock and clock() or 0
@@ -1314,7 +1155,6 @@ draw = function()
         last_pane_text = nil
         last_sig = nil
         write_pane("asciiMapPane error:\n" .. clean(err))
-
         if DEBUG then
             dbg("draw error: %s", tostring(err))
         end
@@ -1333,7 +1173,6 @@ local function legend()
 
     local function add(glyph, code, label)
         local key = glyph .. "|" .. code
-
         if not seen[key] then
             seen[key] = true
             items[#items + 1] = {
@@ -1396,25 +1235,19 @@ local function later(delay)
     end
 end
 
--- Room.Info: draw immediately.  Only if a neighbouring room was not in
--- the store yet (the mapper is still recording it) redraw once shortly
--- after, instead of always drawing twice.
 local function request_draw()
     if not enabled then
         return
     end
 
     draw()
-
     if needs_followup then
         later(0.25)
     end
 end
 
--- The mapper changed something: one coalesced redraw, no immediate one.
 local function request_later_draw()
-    epoch = epoch + 1   -- the mapper changed something: redraw for real
-
+    epoch = epoch + 1
     if enabled then
         later(0.1)
     end
@@ -1425,8 +1258,6 @@ end
 -----------------------------------------------------------------------
 
 local function debug_dump()
-    -- The pane may show only its LAST few lines, so the details come
-    -- first and the important summary goes at the very bottom.
     local detail, summary = {}, {}
 
     if type(current_info) == "table" then
@@ -1445,8 +1276,7 @@ local function debug_dump()
     local names = {}
     if type(rune.pane) == "table" then
         for k, v in pairs(rune.pane) do
-            names[#names + 1] = tostring(k)
-                .. (type(v) == "function" and "()" or "")
+            names[#names + 1] = tostring(k) .. (type(v) == "function" and "()" or "")
         end
         table.sort(names)
     end
@@ -1464,8 +1294,7 @@ local function debug_dump()
     local s = get_store()
     local w, h, src = detect_size()
 
-    summary[#summary + 1] = string.format("pane size %sx%s (%s)",
-        tostring(w), tostring(h), src)
+    summary[#summary + 1] = string.format("pane size %sx%s (%s)", tostring(w), tostring(h), src)
 
     if s then
         local total = 0
@@ -1476,26 +1305,19 @@ local function debug_dump()
         local stored = info_uid(current_info) and s.get(info_uid(current_info))
         local sx, sy, sz = read_coord(stored and stored.coord)
 
-        summary[#summary + 1] = string.format(
-            "store: %s | rooms %d", store_source, total)
-        summary[#summary + 1] = string.format("here: %s,%s,%s | %s",
-            tostring(sx), tostring(sy), tostring(sz), view_stats)
+        summary[#summary + 1] = string.format("store: %s | rooms %d", store_source, total)
+        summary[#summary + 1] = string.format("here: %s,%s,%s | %s", tostring(sx), tostring(sy), tostring(sz), view_stats)
         summary[#summary + 1] = string.format("terrain=[%s] info=[%s] glyph=%s",
             clean(stored and stored.terrain or ""),
             clean(stored and stored.terraininfo or ""),
             stored and room_style(stored).glyph or "-")
     else
-        summary[#summary + 1] = "store: NOT FOUND - "
-            .. tostring(store_note)
+        summary[#summary + 1] = "store: NOT FOUND - " .. tostring(store_note)
     end
 
     local out = {}
-    for _, line in ipairs(detail) do
-        out[#out + 1] = line
-    end
-    for _, line in ipairs(summary) do
-        out[#out + 1] = line
-    end
+    for _, line in ipairs(detail) do out[#out + 1] = line end
+    for _, line in ipairs(summary) do out[#out + 1] = line end
 
     last_pane_text = nil
     write_pane(table.concat(out, "\n"))
@@ -1534,15 +1356,11 @@ end
 -----------------------------------------------------------------------
 
 local function calibrate()
-    -- Column ruler: the label k*10 ends exactly at column k*10.
     local ruler = ""
     for k = 1, 12 do
         ruler = ruler .. string.format("%10d", k * 10)
     end
 
-    -- Numbered so that the BOTTOM line is 01 and numbers rise upward:
-    -- the highest number you can see is the pane's height, whether the
-    -- pane shows its top or its bottom.
     local lines = {}
     for n = 60, 1, -1 do
         lines[#lines + 1] = string.format("%02d", n) .. ruler:sub(3)
@@ -1565,7 +1383,6 @@ end
 
 local function set_enabled(value)
     enabled = value
-
     if enabled then
         show_pane()
         draw()
@@ -1575,13 +1392,11 @@ local function set_enabled(value)
 end
 
 -----------------------------------------------------------------------
--- Help (same format as autopouch: helpstyle + rune.echo)
+-- Help
 -----------------------------------------------------------------------
 
 local ok_helpstyle, H = pcall(require, "helpstyle")
-
 if not ok_helpstyle or type(H) ~= "table" then
-    -- Plain fallback if helpstyle is not available.
     H = {
         title   = function(t) return t end,
         section = function(t) return t end,
@@ -1590,76 +1405,60 @@ if not ok_helpstyle or type(H) ~= "table" then
     }
 end
 
-local function onoff(v)
-    return v and "on" or "off"
-end
+local function onoff(v) return v and "on" or "off" end
 
 local function help_status()
     local w, h, src = detect_size()
-
     return string.format(
-        "map=%s  mode=%s  color=%s  size=%sx%s (%s)  flags=%s trail=%s "
-        .. "dim=%s strict=%s debug=%s",
+        "v2.6  enabled=%s compact=%s color=%s size=%sx%s (%s) flags=%s trail=%s dim=%s strict=%s debug=%s",
         onoff(enabled), compact and "compact" or "spaced", onoff(use_color),
         tostring(w), tostring(h), src, onoff(opts.flags), onoff(opts.trail),
         onoff(opts.dim), onoff(opts.strict), onoff(DEBUG))
 end
 
--- `note` is an optional message shown first (e.g. an unknown option).
 local function show_help(note)
     local out = {}
+    local function emit(text) out[#out + 1] = text end
 
-    local function emit(text)
-        out[#out + 1] = text
-    end
-
-    if note then
-        emit("[asciiMapPane] " .. note)
-    end
+    if note then emit("[asciiMapPane] " .. note) end
 
     emit(H.title("asciiMapPane - ASCII map of the rooms around you"))
     emit(H.section("Display:"))
-    emit(H.line("asciiMapPane on | off", "show or hide the map pane"))
-    emit(H.line("asciiMapPane compact | spaced",
-        "1 char per room / wider with link lines"))
+    emit(H.line("asciiMapPane", "show this summary"))
+    emit(H.line("asciiMapPane on|off", "show or hide the map pane"))
+    emit(H.line("asciiMapPane compact|spaced", "1 char per room / wider with link lines"))
     emit(H.line("asciiMapPane color on|off", "ANSI colours"))
     emit(H.line("asciiMapPane refresh", "force a redraw (clears caches)"))
-    emit(H.line("asciiMapPane reset", "restore defaults (settings are saved between sessions)"))
+    emit(H.line("asciiMapPane reset", "restore defaults"))
     emit(H.line("asciiMapPane legend", "what the symbols and colours mean"))
     emit(H.section("Overlays:"))
     emit(H.line("asciiMapPane flags on|off", "tint safe and dark rooms"))
     emit(H.line("asciiMapPane trail on|off", "colour the rooms you just walked"))
     emit(H.line("asciiMapPane dim on|off", "fade far-away rooms"))
-    emit(H.line("asciiMapPane strict on|off",
-        "hide rooms whose coordinates say they are not adjacent"))
+    emit(H.line("asciiMapPane strict on|off", "hide rooms whose coordinates say they are not adjacent"))
     emit(H.section("Size:"))
-    emit(H.line("asciiMapPane size <W> <H>",
-        "set pane size in characters (10-200 x 3-100)"))
+    emit(H.line("asciiMapPane size <W> <H>", "set pane size in characters"))
     emit(H.line("asciiMapPane size auto", "back to the default size"))
     emit(H.line("asciiMapPane pad <N>", "border allowance (default 2)"))
     emit(H.line("asciiMapPane calibrate", "ruler to measure the pane"))
     emit(H.section("Info:"))
-    emit(H.line("asciiMapPane terrains", "list the terrain names in your map"))
+    emit(H.line("asciiMapPane terrains", "list terrain names in your map"))
     emit(H.line("asciiMapPane debug", "pane API, size and room data"))
-    emit(H.line("asciiMapPane debug on|off",
-        "log timings and events to the main window (default off)"))
+    emit(H.line("asciiMapPane debug on|off", "debug logging (default off)"))
     emit(H.line("asciiMapPane help", "this summary"))
     emit("")
     emit(H.foot(help_status()))
 
     if type(rune.echo) == "function" then
-        for _, line in ipairs(out) do
-            rune.echo(line)
-        end
+        for _, line in ipairs(out) do rune.echo(line) end
     else
-        -- No main-window echo: show it in the pane instead.
         show_pane()
         last_pane_text = nil
         write_pane(table.concat(out, "\n"))
     end
 end
 
--- Saved settings (rune.store).  Debug is deliberately not saved.
+-- Saved settings (rune.store). Debug is deliberately not saved.
 local SETTINGS_KEY = "asciiMapPane.settings"
 local saved_sig = nil
 
@@ -1673,7 +1472,6 @@ end
 
 local function settings_signature()
     local t = settings_table()
-
     return table.concat({
         tostring(t.enabled), tostring(t.compact), tostring(t.color),
         tostring(t.flags), tostring(t.trail), tostring(t.dim),
@@ -1682,12 +1480,8 @@ local function settings_signature()
 end
 
 local function save_settings()
-    if not (rune.store and type(rune.store.set) == "function") then
-        return
-    end
-
+    if not (rune.store and type(rune.store.set) == "function") then return end
     local sig = settings_signature()
-
     if sig ~= saved_sig then
         if pcall(rune.store.set, SETTINGS_KEY, settings_table()) then
             saved_sig = sig
@@ -1695,70 +1489,47 @@ local function save_settings()
     end
 end
 
--- Values come back from disk: type-check and clamp everything.
 local function load_settings()
-    if not (rune.store and type(rune.store.get) == "function") then
-        return
-    end
-
+    if not (rune.store and type(rune.store.get) == "function") then return end
     local ok, saved = pcall(rune.store.get, SETTINGS_KEY)
-
-    if not ok or type(saved) ~= "table" then
-        return
-    end
+    if not ok or type(saved) ~= "table" then return end
 
     if type(saved.enabled) == "boolean" then enabled = saved.enabled end
     if type(saved.compact) == "boolean" then compact = saved.compact end
     if type(saved.color) == "boolean" then use_color = saved.color end
 
     for _, name in ipairs({ "flags", "trail", "dim", "strict" }) do
-        if type(saved[name]) == "boolean" then
-            opts[name] = saved[name]
-        end
+        if type(saved[name]) == "boolean" then opts[name] = saved[name] end
     end
 
     local w, h = tonumber(saved.w), tonumber(saved.h)
-
     if w and h then
         manual_w = clamp(math.floor(w), MIN_W, MAX_W)
         manual_h = clamp(math.floor(h), MIN_H, MAX_H)
     end
 
     local pad = tonumber(saved.pad)
-
-    if pad then
-        border_pad = clamp(math.floor(pad), 0, MAX_PAD)
-    end
+    if pad then border_pad = clamp(math.floor(pad), 0, MAX_PAD) end
 
     saved_sig = settings_signature()
 end
 
 load_settings()
 
-if not enabled then
-    hide_pane()
-end
+if not enabled then hide_pane() end
 
 local function say(msg)
-    if type(rune.echo) == "function" then
-        rune.echo(msg)
-    else
-        last_pane_text = nil
-        write_pane(msg)
-    end
+    if type(rune.echo) == "function" then rune.echo(msg) else last_pane_text = nil; write_pane(msg) end
 end
 
 local function run_command_impl(arg_text)
-    epoch = epoch + 1   -- any command forces the next redraw
-    local words = {}
-    for word in tostring(arg_text or ""):gmatch("%S+") do
-        words[#words + 1] = word:lower()
-    end
+    epoch = epoch + 1
 
+    local words = {}
+    for word in tostring(arg_text or ""):gmatch("%S+") do words[#words + 1] = word:lower() end
     local action = words[1] or ""
 
-    if action == "" or action == "help" or action == "?"
-        or action == "h" or action == "-h" or action == "--help" then
+    if action == "" or action == "help" or action == "?" or action == "h" or action == "-h" or action == "--help" then
         show_help()
     elseif action == "off" then
         set_enabled(false)
@@ -1767,15 +1538,7 @@ local function run_command_impl(arg_text)
     elseif action == "debug" then
         if words[2] == "on" or words[2] == "off" then
             DEBUG = (words[2] == "on")
-
-            local msg = "[asciiMapPane] debug logging " .. (DEBUG and "on" or "off")
-
-            if type(rune.echo) == "function" then
-                rune.echo(msg)
-            else
-                last_pane_text = nil
-                write_pane(msg)
-            end
+            say("[asciiMapPane] debug logging " .. (DEBUG and "on" or "off"))
         else
             debug_dump()
         end
@@ -1811,13 +1574,9 @@ local function run_command_impl(arg_text)
         if w and h then
             local cw = clamp(math.floor(w), MIN_W, MAX_W)
             local ch = clamp(math.floor(h), MIN_H, MAX_H)
-
             manual_w, manual_h = cw, ch
-
             if cw ~= w or ch ~= h then
-                say(string.format(
-                    "[asciiMapPane] size limited to %dx%d (allowed %d-%d x %d-%d)",
-                    cw, ch, MIN_W, MAX_W, MIN_H, MAX_H))
+                say(string.format("[asciiMapPane] size limited to %dx%d (allowed %d-%d x %d-%d)", cw, ch, MIN_W, MAX_W, MIN_H, MAX_H))
             end
         else
             manual_w, manual_h = nil, nil
@@ -1826,10 +1585,7 @@ local function run_command_impl(arg_text)
         draw()
     elseif action == "pad" then
         local n = tonumber(words[2])
-
-        if n then
-            border_pad = clamp(math.floor(n), 0, MAX_PAD)
-        end
+        if n then border_pad = clamp(math.floor(n), 0, MAX_PAD) end
         last_pane_text = nil
         draw()
     elseif opts[action] ~= nil then
@@ -1843,82 +1599,48 @@ local function run_command_impl(arg_text)
     save_settings()
 end
 
--- Command registration.  Rune treats "/word" as a client command, which
--- aliases do not catch, so register both ways:
---   * an alias, so plain `asciiMapPane ...` (no slash) works
---   * a client command, so `/asciiMapPane ...` works (several API names
---     are tried; the first that succeeds wins)
 local function args_to_text(args)
-    if type(args) == "table" then
-        return table.concat(args, " ")
-    end
-
+    if type(args) == "table" then return table.concat(args, " ") end
     return tostring(args or "")
 end
 
 local function run_command(arg_text)
     if DEBUG then dbg("command: '%s'", tostring(arg_text)) end
-
     local ok, err = pcall(run_command_impl, arg_text)
-
-    if not ok then
-        last_pane_text = nil
-        write_pane("asciiMapPane error:\n" .. tostring(err))
-    end
+    if not ok then last_pane_text = nil; write_pane("asciiMapPane error:\n" .. tostring(err)) end
 end
 
+-- Bare command preferred; slash form is retained for compatibility.
 if rune.alias and rune.alias.regex then
-    pcall(rune.alias.regex, "^/?asciiMapPane(.*)$", function(match)
-        run_command(match[1])
-    end, { name = "asciiMapPane" })
+    pcall(rune.alias.regex, "^/?asciiMapPane(.*)$", function(match) run_command(match[1]) end, { name = "asciiMapPane" })
 end
 
 if type(rune.command) == "table" then
-    for _, fname in ipairs({
-        "add", "register", "create", "define", "set", "on",
-    }) do
+    for _, fname in ipairs({ "add", "register", "create", "define", "set", "on", }) do
         local f = rune.command[fname]
-
         if type(f) == "function" then
-            local ok = pcall(f, "asciiMapPane", function(args)
-                run_command(args_to_text(args))
-            end)
-
-            if ok then
-                break
-            end
+            local ok = pcall(f, "asciiMapPane", function(args) run_command(args_to_text(args)) end)
+            if ok then break end
         end
     end
 end
 
 if rune.gmcp and rune.gmcp.on then
     rune.gmcp.on("Room.Info", function(data)
-        if type(data) ~= "table" then
-            return
-        end
-
+        if type(data) ~= "table" then return end
         current_info = data
-
-        if DEBUG then
-            dbg("Room.Info uid=%s", tostring(info_uid(data)))
-        end
-
+        if DEBUG then dbg("Room.Info uid=%s", tostring(info_uid(data))) end
         local uid = info_uid(data)
-
         if uid and uid ~= history[1] then
             table.insert(history, 1, uid)
             history[TRAIL_LENGTH + 2] = nil
         end
-
         request_draw()
     end)
 end
 
 if rune.hooks and rune.hooks.on then
-    rune.hooks.on("mapper_room_changed", function()
-        request_later_draw()
-    end)
+    rune.hooks.on("mapper_room_changed", function() request_later_draw() end)
 end
 
--- Cheap marker so a blank pane can be told apart from "not loaded".
 write_pane("asciiMapPane loaded; waiting for Room.Info...")

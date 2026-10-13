@@ -1,18 +1,49 @@
 -- Filename: eljayPlugins/druidSpellTLAs.lua
--- Purpose: Druid Spells with Three Letter Acronyms
--- Version: 2.4
--- Date: 2026-Oct-09
---
+-- Purpose: Druid spells with three-letter acronyms (TLAs).
+-- Version: 2.5
+-- Date: 2026-Oct-13
+-- Changelog:
+--   2.5  Added enabled/debug toggles and persisted settings; aliases respect the enabled state.
+--   2.4  Previous release.
 -- How it works:
---  * Each row in the table below defines one alias: { alias, verb, element }
---  * "<alias> <target>" sends "<verb> <element> <target>", e.g. "dfi orc" -> "evoke fire orc"
---  * "<alias>" with no target sends just "<verb> <element>"
---  * The trailing comment on each row is the analogue spell from "help druid analogues"
---  * Newer TLAs are built from the analogue name (dsh = shield, des = enhanced strength,
---    dre = refresh, dha = haste, dia = imprint aura)
---  * Direct aliases are d + i/e (invoke/evoke) + element initial, e.g. dii = druid invoke ice;
---    where the initial is already taken, a 4th letter (2nd letter of the element) differentiates,
---    e.g. diai = invoke air, dias = invoke ash, desa = evoke salt
+--   * Each row maps a shorthand alias to a verb + element (e.g. "dfi orc" -> "evoke fire orc").
+--   * Aliases accept an optional target: bare alias sends just "<verb> <element>".
+--   * The plugin registers exact/regex aliases; when disabled they do nothing.
+--
+-- Commands:
+--   druidSpellTLAs                show this summary
+--   druidSpellTLAs on|off         enable or disable all druid TLAs
+--   druidSpellTLAs debug on|off   toggle debug output
+
+local VERSION = "2.5"
+local SETTINGS_KEY = "druidSpellTLAs.settings"
+
+local enabled = true
+local debug_enabled = false
+
+local okH, H = pcall(require, "helpstyle")
+if not okH or type(H) ~= "table" then H = nil end
+
+local function dbg(fmt, ...)
+  if debug_enabled then
+    local ok, s = pcall(string.format, fmt, ...)
+    rune.echo("[druidSpellTLAs:debug] " .. (ok and s or tostring(fmt)))
+  end
+end
+
+local function load_settings()
+  if not (rune and rune.store and type(rune.store.get) == "function") then return end
+  local ok, t = pcall(rune.store.get, SETTINGS_KEY)
+  if ok and type(t) == "table" then
+    if type(t.enabled) == "boolean" then enabled = t.enabled end
+    if type(t.debug) == "boolean" then debug_enabled = t.debug end
+  end
+end
+
+local function save_settings()
+  if not (rune and rune.store and type(rune.store.set) == "function") then return end
+  pcall(rune.store.set, SETTINGS_KEY, { enabled = enabled, debug = debug_enabled })
+end
 
 local spells = {
   -- Magma
@@ -22,7 +53,7 @@ local spells = {
   -- Minerals / Ice / Salt
   { "dcs",    "evoke",  "minerals" },        -- cure serious
   { "des",    "invoke", "minerals" },        -- enhanced strength
-  { "dho",    "evoke",  "ice" },             -- (no analogue; heals someone else; 'heal other')
+  { "dho",    "evoke",  "ice" },             -- (no analogue; heals someone else)
   { "dsh",    "invoke", "ice" },             -- shield
   { "dcp",    "evoke",  "salt" },            -- cure poison
   { "dcd",    "invoke", "salt" },            -- cure disease
@@ -66,7 +97,7 @@ local spells = {
   { "dha",    "invoke", "lightning" },       -- haste
   { "dli",    "evoke",  "lightning" },       -- lightning bolt
 
-  -- Direct aliases: evoke (de + initial)
+  -- Direct evoke aliases
   { "deas",   "evoke",  "ash" },             -- 4th letter: air owns dea
   { "ded",    "evoke",  "dust" },            -- imprint aura
   { "deea",   "evoke",  "earth" },           -- 4th letter: ether owns dee; web
@@ -81,7 +112,7 @@ local spells = {
   { "desm",   "evoke",  "smoke" },           -- 4th letter: des is enhanced strength; blindness
   { "dest",   "evoke",  "steam" },           -- 4th letter: des is enhanced strength
 
-  -- Direct aliases: invoke (di + initial)
+  -- Direct invoke aliases
   { "diai",   "invoke", "air" },             -- 4th letter: dia is imprint aura; levitation
   { "dias",   "invoke", "ash" },             -- 4th letter: air owns dia
   { "did",    "invoke", "dust" },            -- combat blink
@@ -99,14 +130,70 @@ local spells = {
   { "div",    "invoke", "vacuum" },          -- blink
 }
 
-for _, s in ipairs(spells) do
-  local name, verb, element = s[1], s[2], s[3]
+local function make_alias(name, verb, element)
+  -- register the same optional-target pattern used previously
   rune.alias.regex("^" .. name .. "(?:[ ]+(.+))?$", function(m)
+    if not enabled then
+      dbg("ignored alias " .. name .. " (disabled)")
+      return
+    end
     local cmd = verb .. " " .. element
-    local target = m[1]
+    local target = m and m[1]
     if target and target ~= "" then
       cmd = cmd .. " " .. target
     end
+    dbg("sending: " .. cmd)
     rune.send(cmd)
   end)
 end
+
+for _, s in ipairs(spells) do
+  make_alias(s[1], s[2], s[3])
+end
+
+local function help_summary()
+  local status = "v" .. VERSION .. "  enabled=" .. tostring(enabled) .. " debug=" .. tostring(debug_enabled)
+  if H and H.title and H.section and H.line and H.foot then
+    rune.echo(H.title("Druid spell TLAs"))
+    rune.echo(H.section("Commands"))
+    rune.echo(H.line("druidSpellTLAs", "show this summary"))
+    rune.echo(H.line("druidSpellTLAs on|off", "enable or disable all aliases"))
+    rune.echo(H.line("druidSpellTLAs debug on|off", "toggle debug output"))
+    rune.echo(H.foot(status))
+    return
+  end
+  rune.echo("Druid spell TLAs")
+  rune.echo("  druidSpellTLAs              show this summary")
+  rune.echo("  druidSpellTLAs on|off       enable or disable all aliases")
+  rune.echo("  druidSpellTLAs debug on|off toggle debug output")
+  rune.echo(status)
+end
+
+rune.alias.exact("druidSpellTLAs", function(args)
+  local text = tostring(args or ""):lower()
+  local cmd = text:match("^(%S*)") or ""
+  local rest = text:match("^%S+%s*(.*)$") or ""
+
+  if cmd == "" or cmd == "help" then
+    help_summary()
+    return
+  end
+
+  if cmd == "on" then
+    enabled = true; save_settings(); rune.echo("[druidSpellTLAs] enabled"); return
+  end
+  if cmd == "off" then
+    enabled = false; save_settings(); rune.echo("[druidSpellTLAs] disabled"); return
+  end
+  if cmd == "debug" then
+    if rest == "on" then debug_enabled = true
+    elseif rest == "off" then debug_enabled = false
+    else help_summary(); return end
+    save_settings(); rune.echo("[druidSpellTLAs] debug is " .. tostring(debug_enabled)); return
+  end
+
+  help_summary()
+end)
+
+load_settings()
+save_settings()

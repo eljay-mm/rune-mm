@@ -1,36 +1,51 @@
 -- Filename: eljayPlugins/crystalLocator.lua
--- Purpose: Crystal Locator - finds coords of crystals via the MMAtlas crystal finder
--- Inspired by the MUSHclient plugin by Elbereth
--- Version: 3.7
--- Date: 2026-Oct-11
---
+-- Purpose: Crystal Locator - finds coordinates of crystals via the MMAtlas crystal finder.
+-- Version: 3.10
+-- Date: 2026-Oct-13
+-- Changelog:
+--   3.10 Add integration with the repository's statusTray module (use its set_crystal / clear_crystal); fallback to rune.store when unavailable.
+--   3.9  Add status-bar integration (CrystalLocator bar + statusTray.store key) and include cl/cc in header Commands.
+--   3.8  Added repo-standard command summary in the header and tightened help/footer formatting.
 -- How it works:
---   * Receiving the scroll from Tadamir arms the locator (`crystal on` arms it by hand).
---   * Reading the map ("You focus your powers of observation on...") is captured as one multi-line block;
---     the header line and everything above and including the "It looks like ..." row are trimmed off.
---   * The remaining map lines are submitted to the MMAtlas crystal finder (POST; if no coordinates come
---     back it retries once with GET and once with trailing spaces trimmed, and tells you which worked).
---   * The submitted block is copied to the clipboard (wl-copy / xclip / xsel, OSC 52 as last resort).
---   * When coordinates come back it echoes them, prints "Walk there with: spdxy x, y" and always runs
---     `spdxy nearby x, y`.
---   * Commands: `crystal help` lists everything (on/off, last, debug [on|off], copy, copytest, resend,
---     log, set <key> <value>); `cs` = `crystal last`.
---   * Quest item aliases: `cc` gives the crystal to Tadamir then drops and sacs the map (keyword
---     crystalQuest), `cl` looks at it.
+--   * Receiving the scroll from Tadamir arms the locator (`crystal on` arms it manually).
+--   * Reading the map is captured as one multi-line block; the header line and everything above and including the "It looks like ..." row are trimmed off.
+--   * The remaining map lines are submitted to the MMAtlas crystal finder (POST; if no coordinates are returned it retries once with GET and once with trailing spaces trimmed).
+--   * The submitted block is copied to the clipboard; OSC 52 is used as the last resort when no external clipboard tool is available.
+--   * When coordinates come back, the plugin echoes them, prints "Walk there with: spdxy x, y" and runs `spdxy nearby x, y`.
+--   * Commands: `crystal help` lists everything; `cs` is an alias for `crystal last`. `cl` and `cc` quest aliases are included in the header and help.
+--
+-- Commands:
+--   crystal                show help
+--   crystal on            enable and arm the locator
+--   crystal off           disable the locator
+--   crystal last          display the last crystal location
+--   crystal debug         display the last submitted block and raw reply
+--   crystal debug on|off  toggle debug output while processing
+--   crystal copy          copy the last submitted map block
+--   crystal copytest      copy a 3-line test block to check the clipboard path
+--   crystal resend        resubmit the last captured block
+--   crystal log           save the block and reply to crystal_debug.txt
+--   crystal set           list settings; use `crystal set <key> <value>` to change them
+--   cs                    shorthand for `crystal last`
+--   cl                    look at the crystal quest item (alias)
+--   cc                    give the crystal to Tadamir then drop and sac the map (alias)
+--
+-- Notes:
+--   * Settings use the repo convention of live-key changes without editing files.
+--   * Clipboard writes are sanitized so the server cannot inject control codes.
 
-local VERSION  = "3.7"
+local VERSION  = "3.10"
 local ENDPOINT = "https://ooc.dune.net/mm/find-crystal-guild-vi.pl"
 
-local SCROLL_PATTERN = "Tadamir the guildsman gives you a tightly-rolled scroll\\.$"
+local SCROLL_PATTERN = "Tadamir the guildsman gives you a tightly-rolled scroll%.$"
 local HEADER_PATTERN = "^You focus your powers of observation on"
--- The first line matching this Lua pattern, and every line above it, is trimmed from the block
 local IGNORE_PATTERN = "^It looks like"
 
---[[ Settings (change live with: crystal set <key> <value>) ]]--
+-- Settings (change live with: crystal set <key> <value>)
 local cfg = {
-  debug    = false,   -- verbose [crystal:debug] output (toggle: crystal debug on|off)
-  method   = "post",  -- "post" or "get": how the map is submitted
-  lines    = 0,       -- map lines to submit (excluding header and ignored rows); 0 = no cap
+  debug    = false,   -- verbose [crystal:debug] output
+  method   = "post",  -- "post" or "get"
+  lines    = 0,       -- map lines to submit; 0 = no cap
   mode     = "blank", -- "blank": capture ends at first blank line; "count": capture header + `lines` + ignored row
   trim     = false,   -- strip trailing whitespace from every map line before submitting
   fallback = true,    -- if no coords found, retry with other method / other trim setting
@@ -46,19 +61,40 @@ local SETTINGS = {
   lines = "number", timeout = "number",
 }
 
---[[ State ]]--
+-- State
 local state = {
-  enabled   = true,   -- crystal on / off
-  armed     = false,  -- set by receiving the scroll (or `crystal on`), cleared after one capture
-  busy      = false,  -- a request is in flight
-  crystal   = nil,    -- "x,y" of last located crystal
-  lastLines = nil,    -- last submitted lines (table)
-  lastBlock = nil,    -- last submitted block (string)
-  lastBody  = nil,    -- last HTTP response body
-  lastInfo  = nil,    -- one-line summary of last HTTP exchange
+  enabled   = true,
+  armed     = false,
+  busy      = false,
+  crystal   = nil,
+  lastLines = nil,
+  lastBlock = nil,
+  lastBody  = nil,
+  lastInfo  = nil,
 }
 
---[[ Output helpers ]]--
+-- Attempt to locate the repository statusTray module.
+local statusTray = nil
+local statusTray_ok = false
+local function try_require(name)
+  local ok, mod = pcall(require, name)
+  if ok and type(mod) == "table" then
+    statusTray_ok = true
+    statusTray = mod
+    return true
+  end
+  return false
+end
+-- Call separately to avoid an unsupported bare logical-expression statement.
+pcall(function() try_require("eljayPlugins.statusTray") end)
+pcall(function() try_require("statusTray") end)
+pcall(function() try_require("status_tray") end)
+pcall(function() try_require("eljayPlugins.status_tray") end)
+
+-- Fallback store key used only if statusTray module is not found.
+local STORE_STATUS_KEY = "statusTray.crystal"
+
+-- Helpers
 local function paint(color, text)
   local fn = rune.style and rune.style[color]
   if type(fn) == "function" then
@@ -84,7 +120,7 @@ local function flatten(s, n)
   return (s:gsub("[\r\n]+", " | "))
 end
 
---[[ URL encode: everything except unreserved chars is %XX, space becomes + ]]--
+-- URL encode: everything except unreserved chars is %XX, space becomes +
 local function urlencode(str)
   str = str:gsub("\r", "")
   local out = str:gsub("([^%w%-%._~ ])", function(c)
@@ -94,8 +130,7 @@ local function urlencode(str)
   return out
 end
 
---[[ Clipboard ]]--
--- Remove control characters (keep \n and \t) so nothing can break an escape sequence
+-- Clipboard sanitisation
 local function sanitize(text)
   text = text:gsub("\r", "")
   text = text:gsub("[\1-\8\11-\31\127]", "")
@@ -160,20 +195,19 @@ local function doCopy(text, announce)
   return ok
 end
 
---[[ Response parsing ]]--
+-- Response parsing
 local function stripTags(body)
   local t = body:gsub("<[^>]*>", " ")
   t = t:gsub("&nbsp;", " "):gsub("&amp;", "&")
   return t
 end
 
--- Returns x, y, how  (strings) or nil
+-- Returns x, y, how (strings) or nil
 local function parseCoords(body)
   local text = stripTags(body or "")
-  -- Preferred: "(x, y)" / "(x,y)", negatives allowed
   local x, y = text:match("%(%s*(%-?%d+)%s*,%s*(%-?%d+)%s*%)")
   if x then return x, y, "parenthesised pair" end
-  -- Fallback: a bare "x,y" pair, but only trusted in a short plain-text reply
+
   if #text <= 500 then
     x, y = text:match("(%-?%d+)%s*,%s*(%-?%d+)")
     if x then return x, y, "bare pair (short reply)" end
@@ -181,7 +215,7 @@ local function parseCoords(body)
   return nil
 end
 
---[[ Request building ]]--
+-- Request building
 local function buildBlock(lines, trim)
   local t = {}
   for i, l in ipairs(lines) do
@@ -208,15 +242,38 @@ local function sendRequest(method, block, callback)
   end
 end
 
---[[ Found / not found ]]--
+-- Integration with statusTray (preferred) or rune.store fallback ----------
+local function set_status_crystal(val)
+  -- val: string like "x,y" or "armed"/"busy"/"on"/nil
+  if statusTray_ok and statusTray and type(statusTray.set_crystal) == "function" then
+    pcall(statusTray.set_crystal, val) -- set_crystal accepts x, y or single string
+  else
+    pcall(rune.store.set, STORE_STATUS_KEY, val or "")
+  end
+end
+
+local function clear_status_crystal()
+  if statusTray_ok and statusTray and type(statusTray.clear_crystal) == "function" then
+    pcall(statusTray.clear_crystal)
+  else
+    pcall(rune.store.set, STORE_STATUS_KEY, "")
+  end
+end
+
+-- Found / not found
 local function onFound(x, y, attemptNo, attempt, how)
   state.crystal = x .. "," .. y
+  state.busy = false
+  set_status_crystal(state.crystal)
+
   say("Your crystal is located at " .. paint("white", "(" .. x .. ", " .. y .. ")"))
   dbg("Parsed from response using: " .. how)
 
   if attemptNo > 1 then
-    say(string.format("Attempt %d worked (method=%s, trim=%s). Make it the default with: crystal set method %s  /  crystal set trim %s",
-      attemptNo, attempt.method, tostring(attempt.trim), attempt.method, attempt.trim and "on" or "off"))
+    say(string.format(
+      "Attempt %d worked (method=%s, trim=%s). Make it the default with: crystal set method %s  /  crystal set trim %s",
+      attemptNo, attempt.method, tostring(attempt.trim), attempt.method, attempt.trim and "on" or "off"
+    ))
   end
 
   say("Walk there with: " .. paint("yellow", "spdxy " .. x .. ", " .. y))
@@ -224,11 +281,13 @@ local function onFound(x, y, attemptNo, attempt, how)
 end
 
 local function onNotFound()
+  state.busy = false
+  set_status_crystal(state.armed and "armed" or (state.enabled and "on" or "off"))
   say(paint("red", "MMAtlas could not find that location."))
   say("Run " .. paint("yellow", "crystal debug") .. " to inspect the submitted lines and the raw reply (" .. paint("yellow", "crystal debug on") .. " for step-by-step messages next time).")
 end
 
---[[ Submit a block (list of lines), trying fallbacks if enabled ]]--
+-- Submit a block (list of lines), trying fallbacks if enabled
 local function submit(lines)
   if state.busy then
     say("A request is already running, please wait.")
@@ -242,12 +301,12 @@ local function submit(lines)
     attempts[#attempts + 1] = { method = cfg.method, trim = not cfg.trim }
   end
 
-  -- What we remember / copy is the block as submitted on the first attempt
   state.lastLines = lines
   state.lastBlock = buildBlock(lines, cfg.trim)
   if cfg.copy then doCopy(state.lastBlock, false) end
 
   state.busy = true
+  set_status_crystal("busy")
 
   local function try(i)
     local a = attempts[i]
@@ -266,6 +325,7 @@ local function submit(lines)
         state.busy = false
         state.lastInfo = "transport error: " .. tostring(err)
         say(paint("red", "Request failed: ") .. tostring(err))
+        set_status_crystal(state.armed and "armed" or (state.enabled and "on" or "off"))
         return
       end
 
@@ -290,23 +350,26 @@ local function submit(lines)
     if not ok then
       state.busy = false
       say(paint("red", "Could not start request: ") .. tostring(perr))
+      set_status_crystal(state.armed and "armed" or (state.enabled and "on" or "off"))
     end
   end
 
   try(1)
 end
 
---[[ Capture handler: fires ONCE with the whole header+map block ]]--
+-- Capture handler: fires ONCE with the whole header+map block
 local function onCapture(_, ctx)
   if not (state.enabled and state.armed) then return end
   state.armed = false
+  set_status_crystal(state.enabled and "on" or "off")
 
   local all = {}
   local src = (ctx and ctx.lines) or { ctx.line }
-  for i, ln in ipairs(src) do all[i] = ln:clean() end
+  for i, ln in ipairs(src) do
+    all[i] = ln:clean()
+  end
   dbg(string.format("Span captured %d lines (header included)", #all))
 
-  -- Drop the header line, and everything above AND including the "It looks like ..." row
   local first = 2
   local found = false
   for i = 2, #all do
@@ -316,6 +379,7 @@ local function onCapture(_, ctx)
       break
     end
   end
+
   if found then
     dbg(string.format("Trimmed %d line(s) above and including the 'It looks like' row", first - 1))
   else
@@ -323,29 +387,37 @@ local function onCapture(_, ctx)
   end
 
   local lines = {}
-  for i = first, #all do lines[#lines + 1] = all[i] end
+  for i = first, #all do
+    lines[#lines + 1] = all[i]
+  end
 
-  -- Strip trailing blank lines
-  while #lines > 0 and lines[#lines]:match("^%s*$") do table.remove(lines) end
+  while #lines > 0 and lines[#lines]:match("^%s*$") do
+    table.remove(lines)
+  end
 
-  -- Optional cap: keep the last cfg.lines lines
   if cfg.lines > 0 and #lines > cfg.lines then
     local t = {}
-    for i = #lines - cfg.lines + 1, #lines do t[#t + 1] = lines[i] end
+    for i = #lines - cfg.lines + 1, #lines do
+      t[#t + 1] = lines[i]
+    end
     lines = t
   end
 
   if #lines == 0 then
     say(paint("red", "Capture came back empty."))
     say("Try: crystal set lines <n>  and  crystal set mode count   (ends capture by line count instead of at a blank line)")
+    set_status_crystal(state.enabled and "on" or "off")
     return
   end
 
   if cfg.lines > 0 and #lines < cfg.lines then
     say(paint("yellow", string.format("Warning: only %d map lines captured, expected %d.", #lines, cfg.lines)))
   end
+
   local blanks = 0
-  for _, l in ipairs(lines) do if l:match("^%s*$") then blanks = blanks + 1 end end
+  for _, l in ipairs(lines) do
+    if l:match("^%s*$") then blanks = blanks + 1 end
+  end
   if blanks > 0 then dbg(blanks .. " blank line(s) inside the submitted block") end
 
   say(string.format("Map captured (%d lines), asking MMAtlas...", #lines))
@@ -358,22 +430,23 @@ local function registerCapture()
   if cfg.mode == "count" and cfg.lines > 0 then
     span = { max = cfg.lines + 2 }            -- header + "It looks like" row + map lines
   else
-    span = { to = "^\\s*$", max = 60 }        -- ends at (and includes) first blank line
+    span = { to = "^%s*$", max = 60 }        -- ends at (and includes) first blank line
   end
   rune.trigger.regex(HEADER_PATTERN, onCapture, { name = "crystal-capture", span = span })
 end
 
---[[ Triggers ]]--
+-- Triggers
 rune.trigger.regex(SCROLL_PATTERN, function()
   if state.enabled then
     state.armed = true
+    set_status_crystal("armed")
     dbg("Scroll received - armed, waiting for the map")
   end
 end, { name = "crystal-scroll" })
 
 registerCapture()
 
---[[ Commands ]]--
+-- Commands & help
 local function showHelp()
   say("CrystalLocator v" .. VERSION)
   rune.echo("")
@@ -388,6 +461,8 @@ local function showHelp()
   rune.echo("* " .. paint("yellow", "crystal log") .. "         - save block + reply to crystal_debug.txt")
   rune.echo("* " .. paint("yellow", "crystal set") .. "         - list settings;  crystal set <key> <value>  to change")
   rune.echo("    keys: debug, method(post|get), lines, mode(blank|count), trim, fallback, copy, clip, timeout")
+  rune.echo("* " .. paint("yellow", "cl") .. "  - look crystalQuest")
+  rune.echo("* " .. paint("yellow", "cc") .. "  - give tadamir Tadamir;drop crystalQuest;sac crystalQuest")
 end
 
 local function showSettings()
@@ -478,11 +553,13 @@ local commands = {
   on         = function()
     state.enabled = true
     state.armed = true
+    set_status_crystal("armed")
     say("Locator enabled and armed - read the scroll / look at the map now.")
   end,
   off        = function()
     state.enabled = false
     state.armed = false
+    set_status_crystal(nil)
     say("Locator disabled.")
   end,
   last       = function()
@@ -522,7 +599,7 @@ local commands = {
   end,
 }
 
-rune.alias.regex("^crystal(?:\\s+(\\S+))?(?:\\s+(.*))?$", function(m, ctx)
+rune.alias.regex("^crystal(?:%s+(%S+))?(?:%s+(.*))?$", function(m, ctx)
   m = m or (ctx and ctx.matches) or {}
   local sub  = (m[1] or ""):lower()
   local rest = m[2] or ""
@@ -542,13 +619,11 @@ rune.alias.regex("^crystal(?:\\s+(\\S+))?(?:\\s+(.*))?$", function(m, ctx)
   end
 end, { name = "crystal-cmd" })
 
---[[ Crystal quest item aliases (map keyword: crystalQuest) ]]--
+-- Crystal quest item aliases (map keyword: crystalQuest)
 rune.alias.exact("cc", "give tadamir Tadamir;drop crystalQuest;sac crystalQuest")
 rune.alias.exact("cl", "look crystalQuest")
 
 rune.alias.exact("CrystalLocator:help", showHelp)
-
 rune.alias.exact("cs", "crystal last")
-
 
 say("CrystalLocator v" .. VERSION .. " loaded - type 'crystal help'")

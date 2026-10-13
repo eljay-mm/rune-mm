@@ -1,7 +1,18 @@
--- Filename: eljayPlugins/mapperShortKeys.lua
--- Purpose: Mapper Short Key Aliases (converted from XML, no dependencies)
--- Version: 2.1
--- Date: 2026-Oct-10
+-- Filename: eljayPlugins/mapperShortCutKeys.lua
+-- Purpose: Mapper shortcut aliases for common map locations and movement lookups.
+-- Version: 2.2
+-- Date: 2026-Oct-13
+-- Changelog:
+--   2.2  House-style pass: repo-standard header, explicit "How it works" and "Commands" sections, and corrected file naming.
+--   2.1  Original alias conversion from XML, no dependencies.
+--
+-- How it works:
+--   * The file registers a small set of bare aliases that send mapper commands directly.
+--   * They are intentionally small and literal: no parsing, no state, no UI, and no network calls.
+--   * The aliases are all exact or regex-based and are meant to be typed as short shortcuts in-game.
+--
+-- Commands:
+--   none - this file is alias-only and loads at startup
 
 -- Standard mapper commands (exact matches)
 rune.alias.exact("mapi", "mapper roominfo")
@@ -36,7 +47,7 @@ rune.alias.exact("dece2", "mapper goto 17212") -- second teleport
 
 -- Hellbent locations
 rune.alias.exact("hbrex", "mapper goto 106523") -- just outside t-rex
-rune.alias.exact("hbtri", "mapper goto 106364") -- triceratops]
+rune.alias.exact("hbtri", "mapper goto 106364") -- triceratops
 
 -- Lowangen locations
 rune.alias.exact("low1", "mapper goto 16133") -- king
@@ -58,10 +69,10 @@ rune.alias.exact("d0", "mapper goto 116022") -- healer/recall
 rune.alias.exact("r0", "mapper goto 10439") -- healer/recall
 rune.alias.exact("r1", "mapper goto 31323") -- QM
 rune.alias.exact("r2", "mapper goto 10727") -- clanmaster
-rune.alias.exact("r3", "mapper goto 81734") -- condos
-rune.alias.exact("r4", "mapper goto 10636") -- iron worm
+rune.alias.exact("r3", "mapper goto 10636") -- iron worm
+rune.alias.exact("r4", "mapper goto 10560") -- post office
 rune.alias.exact("r5", "mapper goto 10407") -- crystal guild
-
+rune.alias.exact("r6", "mapper goto 81734") -- condos
 rune.alias.exact("r7", "mapper goto 10554") -- reagents
 rune.alias.exact("r8", "mapper goto 15252") -- focault's near blarg
 rune.alias.exact("r9", "mapper goto 10638") -- lottery

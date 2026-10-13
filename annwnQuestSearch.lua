@@ -15,6 +15,11 @@
 --   * The trigger and alias are registered under fixed names so /reload replaces them instead of stacking duplicates.
 --   * Safety: control characters are stripped before echo and the quest name is capped before URL generation.
 --   * Settings are saved with rune.store, and the trigger can be disabled without editing files.
+--
+-- Commands:
+--   annwn                  show this summary
+--   annwn on|off           enable or disable the trigger
+--   annwn debug on|off     toggle debug messages (default off)
 
 local SEARCH_URL      = "https://annwn.info/quest/search/?search=quest&keyword="
 local MAX_NAME_LENGTH = 200
@@ -98,7 +103,7 @@ local function show_help()
     emit(H.line("annwn on|off", "enable or disable the trigger"))
     emit(H.line("annwn debug on|off", "toggle debug messages (default off)"))
     emit(H.section("Usage"))
-    emit(H.line("quest status", "copies the search URL and shows an Annwn link"))
+    emit(H.line("quest line", "copies the search URL and shows an Annwn link"))
     emit(H.line("Ctrl+Shift+click", "open the link or URL in the browser (Ghostty)"))
     emit(H.foot(status))
   end)

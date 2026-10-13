@@ -31,10 +31,10 @@ Every plugin must begin with the same header pattern:
 -- Changelog:
 --   x.y  ...
 --
---[[ How it works
+-- How it works
 --   * ...
 --   * ...
--- ]]--
+--
 ```
 
 Rules:

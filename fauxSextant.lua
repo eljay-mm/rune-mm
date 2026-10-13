@@ -1,142 +1,179 @@
 -- Filename: eljayPlugins/fauxSextant.lua
--- Purpose: Sextant display based on GMCP coordinates
--- Inspired by the MUSHclient plugin by Ruthgul
--- Version 2.0
--- Date: 2026-Oct-09
+-- Purpose: Update the statusTray SEXTANT field from GMCP coordinates
+-- Version: 2.1
+-- Date: 2026-Oct-13
+-- Changelog:
+--   2.1  Align commands, help, toggles, and settings with plugin conventions.
 --
--- Faux sextant for Materia Magica: shows your map coordinates from GMCP
--- (Room.Info -> coord) in a one-line bar at the very bottom of the screen,
--- below the input line and the existing status bar.
+-- How it works
+--   * Reads coordinates from GMCP Room.Info and updates the statusTray SEXTANT field.
+--   * Provides fauxSextant and fs commands to control updates and display coordinates.
+--   * Saves the enabled and debug settings with rune.store.
 --
--- The bar is empty (takes no space) when the sextant is off or the current
--- room has no coordinates (indoors, etc.).
---
--- How the bar gets into the layout: horstgs's init.lua builds the whole screen
--- with rune.ui.layout(). This plugin wraps rune.ui.layout so that any layout
--- built (now or later, e.g. when quests/comms re-declare it) gets a "sextant"
--- bar appended as the last row, then re-applies the layout once at load.
---
--- Commands:
---   /sextant          toggle on/off
---   /sextant on       turn on
---   /sextant off      turn off
---   /sextant show     print the current coordinates in the main window
---   /sextant status   show whether it is on or off
 
-local ENABLED  = true      -- default state at load; flip here to start off
-local TAG      = "[sextant]"
-local BAR_NAME = "sextant"
+local PLUGIN_NAME = "fauxSextant"
+local TAG = "[" .. PLUGIN_NAME .. "]"
+local TRAY_STORE_KEY = "statustray.settings"
+local STORE_KEY = "fauxSextant.settings"
 
-local current  = nil       -- formatted bar text for the current room, or nil
-local last_coord = nil     -- most recent coord table seen
-
--- Subscribe at load time; Rune's handshake sends it on connect.
-rune.gmcp.subscribe("Room")
-
-local function say(msg)
-    rune.echo(rune.style.cyan(TAG) .. " " .. msg)
+local function load_settings()
+    local ok, settings = pcall(rune.store.get, STORE_KEY)
+    if ok and type(settings) == "table" then
+        return settings
+    end
+    return {}
 end
 
--- Build a printable string from a Room.Info coord table.
--- MM sends coord = { id = <area/map id>, name = <map name>, x = .., y = .. }
--- (plus possibly extra numeric fields, which are shown if present).
--- Returns nil when the room has no usable x/y (indoors etc.).
-local function describe(c)
-    if type(c) ~= "table" then return nil end
+local stored = load_settings()
+local enabled = stored.enabled ~= false
+local debug = stored.debug == true
+local last_coord
 
-    local x, y = tonumber(c.x), tonumber(c.y)
-    if not x or not y then return nil end
+rune.gmcp.subscribe("Room")
 
-    local z = tonumber(c.z)
-    local where = ""
-    if c.name and c.name ~= "" then
-        where = rune.style.yellow(tostring(c.name)) .. "  "
+local function say(message)
+    rune.echo(rune.style.cyan(TAG) .. " " .. message)
+end
+
+local function debug_log(message)
+    if debug then
+        say(rune.style.gray(message))
+    end
+end
+
+local function save_settings()
+    local ok, err = pcall(rune.store.set, STORE_KEY, {
+        enabled = enabled,
+        debug = debug,
+    })
+
+    if not ok then
+        say("could not save settings: " .. tostring(err))
+        return false
     end
 
-    local text = where
-        .. "x " .. rune.style.bold(tostring(x))
-        .. "  y " .. rune.style.bold(tostring(y))
+    return true
+end
+
+local function describe(coord)
+    if type(coord) ~= "table" then
+        return nil
+    end
+
+    local x, y = tonumber(coord.x), tonumber(coord.y)
+    if not x or not y then
+        return nil
+    end
+
+    local z = tonumber(coord.z)
+    local name = type(coord.name) == "string" and coord.name ~= ""
+        and (coord.name .. "  ") or ""
+
+    local text = name .. "x " .. tostring(x) .. "  y " .. tostring(y)
     if z then
-        text = text .. "  z " .. rune.style.bold(tostring(z))
+        text = text .. "  z " .. tostring(z)
     end
 
     return text
 end
 
-rune.gmcp.on("Room.Info", function(data)
-    local c = data and data.coord
-    local text = describe(c)
-    if text then last_coord = c end
-    current = text
+local function update_status_tray(coord)
+    local x = type(coord) == "table" and tonumber(coord.x) or nil
+    local y = type(coord) == "table" and tonumber(coord.y) or nil
+
+    local ok, settings = pcall(rune.store.get, TRAY_STORE_KEY)
+    if not ok or type(settings) ~= "table" then
+        settings = {}
+    end
+
+    local value
+    if enabled and x and y then
+        value = tostring(x) .. " " .. tostring(y)
+    end
+
+    -- Avoid writing and refreshing the bar when its value has not changed.
+    if settings.sextant == value then
+        return
+    end
+
+    settings.sextant = value
+    local saved, err = pcall(rune.store.set, TRAY_STORE_KEY, settings)
+    if not saved then
+        debug_log("could not update statusTray: " .. tostring(err))
+        return
+    end
+
     rune.ui.refresh_bars()
-end, { name = "fauxSextant" })
-
--- The bar. Returning nil gives no content, so the row disappears entirely.
-rune.ui.bar(BAR_NAME, function()
-    if not ENABLED or not current then return nil end
-    return rune.style.cyan("Sextant") .. "  " .. current
-end)
-
--- Layout hook ------------------------------------------------------------
--- Append the sextant bar as the last child of the root column of any layout.
-if not rune.ui._fauxSextant_orig then
-    local orig = rune.ui.layout
-    rune.ui._fauxSextant_orig = orig
-
-    rune.ui.layout = function(cfg)
-        if type(cfg) == "table" and cfg.type == "column"
-            and type(cfg.children) == "table" then
-            local found = false
-            for _, child in ipairs(cfg.children) do
-                if type(child) == "table" and child.type == "bar"
-                    and child.name == BAR_NAME then
-                    found = true
-                    break
-                end
-            end
-            if not found then
-                table.insert(cfg.children, { type = "bar", name = BAR_NAME })
-            end
-        end
-        return orig(cfg)
-    end
-end
-
--- If init.lua has already built the layout, rebuild it once so the bar
--- appears now. (If init.lua loads after this plugin, its own build call goes
--- through the wrapper above and nothing more is needed.)
-if type(rune_build_layout) == "function" then
-    local ok, err = pcall(rune_build_layout, rune.store.get("quest_title"))
-    if not ok then
-        say(rune.style.red("could not rebuild layout: ") .. tostring(err))
-    end
 end
 
 local function set_enabled(on)
-    ENABLED = on
-    rune.ui.refresh_bars()
+    if enabled == on then
+        say(on and rune.style.green("already on") or rune.style.red("already off"))
+        return
+    end
+
+    enabled = on
+    save_settings()
+    update_status_tray(last_coord)
     say(on and rune.style.green("on") or rune.style.red("off"))
 end
 
-rune.command.add("sextant", function(args)
-    local arg = (args or ""):lower():match("^%s*(%S*)") or ""
+local function help()
+    require("helpstyle")
+    local H = helpstyle or {}
 
-    if arg == "" or arg == "toggle" then
-        set_enabled(not ENABLED)
-    elseif arg == "on" then
-        set_enabled(true)
-    elseif arg == "off" then
-        set_enabled(false)
-    elseif arg == "status" then
-        say(ENABLED and rune.style.green("on") or rune.style.red("off"))
-    elseif arg == "show" or arg == "now" then
-        local text = describe(last_coord)
-        if text and current then
-            say(text)
-        else
-            say(rune.style.gray("no coordinates for this room"))
-        end
-    else
-        say("usage: /sextant [on|off|show|status]")
+    rune.echo(H.title("Faux Sextant"))
+    rune.echo(H.section("Commands"))
+    rune.echo(H.line("fauxSextant or fs"))
+    rune.echo(H.line("fauxSextant on|off  (also: fs on|off)"))
+    rune.echo(H.line("fauxSextant show|status  (also: fs show|status)"))
+    rune.echo(H.line("fauxSextant debug on|off  (also: fs debug on|off)"))
+    rune.echo(H.foot("v2.1  enabled=" .. tostring(enabled)
+        .. " debug=" .. tostring(debug)))
+end
+
+local function handle_command(args)
+    local words = {}
+    for word in tostring(args or ""):lower():gmatch("%S+") do
+        words[#words + 1] = word
     end
-end, "Toggle the faux sextant (GMCP coordinates): on|off|show|status")
+
+    local action, value = words[1] or "", words[2] or ""
+
+    if action == "" or action == "help" then
+        help()
+    elseif action == "toggle" then
+        set_enabled(not enabled)
+    elseif action == "on" then
+        set_enabled(true)
+    elseif action == "off" then
+        set_enabled(false)
+    elseif action == "show" or action == "now" then
+        local text = describe(last_coord)
+        say(text or rune.style.gray("no coordinates for this room"))
+    elseif action == "status" then
+        say(enabled and rune.style.green("on") or rune.style.red("off"))
+    elseif action == "debug" and (value == "on" or value == "off") then
+        debug = value == "on"
+        save_settings()
+        say("debug " .. (debug and rune.style.green("on") or rune.style.red("off")))
+    else
+        say("usage: fauxSextant [on|off|toggle|show|status|debug on|off]")
+    end
+end
+
+rune.gmcp.on("Room.Info", function(data)
+    local coord = type(data) == "table" and data.coord or nil
+    if describe(coord) then
+        last_coord = coord
+    else
+        last_coord = nil
+    end
+
+    update_status_tray(last_coord)
+end, { name = PLUGIN_NAME })
+
+rune.command.add("fauxSextant", handle_command,
+    "Update the statusTray SEXTANT field from GMCP coordinates")
+rune.command.add("fs", handle_command,
+    "Short command for fauxSextant")

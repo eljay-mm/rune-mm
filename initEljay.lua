@@ -1,39 +1,35 @@
 -- Filename: eljayPlugins/initEljay.lua
--- Purpose: Load every eljayPlugins plugin in order, skipping any that fail
--- Version: 2.3
+-- Purpose: Load every eljayPlugins plugin in order, skipping any that fail.
+-- Version: 2.4
 -- Date: 2026-Oct-13
 -- Changelog:
---  2.3  Header brought to current format; single-row load summary with coloured
---       [initEljay] prefix; cross-platform progress file (TMPDIR/TEMP/tmp);
---       failures collected and reported once; plugin list sorted/validated.
---  2.2  DEBUG progress file to find a plugin hanging in an endless loop.
+--   2.4  Compatibility fix for rune.style usage and kept the single-row status summary.
+--   2.3  Header brought to current format; single-row load summary with coloured [initEljay] prefix;
+--        cross-platform progress file (TMPDIR/TEMP/tmp); failures collected and reported once.
 --
--- Install: append to ~/.config/rune/init.lua (Windows: the same Rune config
--- directory) the line:
+-- Install: append to ~/.config/rune/init.lua (Windows: the same Rune config directory) the line:
 --   require("eljayPlugins/initEljay")
 --
 -- How it works:
---  * Sets mouse support, then loads every plugin in the PLUGINS list, in order.
---  * Each require runs under pcall, so a plugin that throws an error is
---    reported and skipped; the remaining plugins still load.
---  * On load it prints a single row: "[initEljay] v2.3  loaded N/M plugins".
---    Only failures add extra rows (one per failed plugin, with the error).
---  * A plugin stuck in an endless loop cannot be caught by pcall (Rune's 5s
---    init watchdog kills the script). To find it, set DEBUG = true below:
---      - before each require, "loading <name>" is appended to PROGRESS_FILE
---        (and closed immediately, so it survives the watchdog kill)
---      - after it returns, "ok <name> (<ms>)" or "FAILED <name>: <err>"
---    After a timeout, the last "loading" line with no "ok" after it is the
---    plugin that hangs.
---  * DEBUG defaults to false: no file is written, only failures are echoed.
---  * To disable a plugin, comment out or delete its line in PLUGINS.
---  * Plugin order is alphabetical; move a plugin lower only if it depends on
---    another one having loaded first.
---  * This loader has no commands or triggers, so it has no on/off toggle and
---    no help output; DEBUG is a file-level switch because it only matters
---    during startup.
+--   * Sets mouse support, then loads every plugin in the PLUGINS list, in order.
+--   * Each require runs under pcall, so a plugin that throws an error is reported and skipped;
+--     the remaining plugins still load.
+--   * On load it prints a single row: "[initEljay] v2.4  loaded N/M plugins".
+--     Only failures add extra rows (one per failed plugin, with the error).
+--   * A plugin stuck in an endless loop cannot be caught by pcall (Rune's startup watchdog kills the
+--     script). To find it, set DEBUG = true below:
+--       - before each require, "loading <name>" is appended to PROGRESS_FILE
+--         (and closed immediately, so it survives the watchdog kill)
+--       - after it returns, "ok <name> (<ms>)" or "FAILED <name>: <err>"
+--     After a timeout, the last "loading" line with no "ok" after it is the plugin that hangs.
+--   * DEBUG defaults to false: no file is written, only failures are echoed.
+--   * To disable a plugin, comment out or delete its line in PLUGINS.
+--   * Plugin order is alphabetical; move a plugin lower only if it depends on another one having loaded first.
+--
+-- Commands:
+--   none - this file is a loader and runs at startup only
 
-local VERSION = "2.3"
+local VERSION = "2.4"
 local DEBUG = false -- set true to find a hanging plugin
 
 -- Cross-platform temp location (Linux/macOS: TMPDIR or /tmp, Windows: TEMP/TMP).
@@ -63,6 +59,7 @@ local PLUGINS = {
   "shopListPicker",
   "spdxyCoordinates",
   "spellTLAs",
+  "statusTray",
   "vitalsChanges",
 }
 
@@ -77,23 +74,40 @@ local function progress(line)
   end)
 end
 
--- Echo a row with a cyan "[initEljay] " prefix; falls back to plain text if
--- rune.style is unavailable or its signature differs.
+-- Echo a row with a cyan "[initEljay] " prefix; fall back safely if style usage differs.
 local function say(msg)
-  local ok = pcall(function()
-    rune.echo(rune.style("cyan", "[initEljay] ") .. msg)
-  end)
-  if not ok then
-    if not pcall(rune.echo, "[initEljay] " .. msg) then
-      print("[initEljay] " .. msg)
+  msg = tostring(msg or "")
+  local ok, styled
+  if rune and rune.style then
+    if type(rune.style.cyan) == "function" then
+      ok, styled = pcall(rune.style.cyan, "[initEljay] ")
+      if ok and styled then
+        local ok2, out = pcall(rune.echo, styled .. msg)
+        if ok2 then return end
+      end
     end
+
+    if type(rune.style) == "function" then
+      ok, styled = pcall(rune.style, "cyan", "[initEljay] ")
+      if ok and styled then
+        local ok2, out = pcall(rune.echo, styled .. msg)
+        if ok2 then return end
+      end
+    end
+  end
+
+  if not pcall(rune.echo, "[initEljay] " .. msg) then
+    print("[initEljay] " .. msg)
   end
 end
 
 if DEBUG then
   pcall(function()
     local f = io.open(PROGRESS_FILE, "w") -- start a fresh log each run
-    if f then f:write("-- initEljay run --\n"); f:close() end
+    if f then
+      f:write("-- initEljay run --\n")
+      f:close()
+    end
   end)
 end
 
@@ -116,6 +130,7 @@ end
 -- Single summary row on load; failures only add rows when something broke.
 say(string.format("v%s  loaded %d/%d plugins%s", VERSION, loaded, #PLUGINS,
   DEBUG and ("  debug=on log=" .. PROGRESS_FILE) or ""))
+
 for _, f in ipairs(failures) do
   say("failed to load " .. f.name .. ": " .. f.err)
 end

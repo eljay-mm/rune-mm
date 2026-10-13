@@ -121,6 +121,7 @@ To enable it again, remove the `--`. Things to know:
 | `shopListPicker.lua` | Picker over shop lists (not thesis shops) that buys your selection. |
 | `spdxyCoordinates.lua` | Walks to sextant coordinates and towns using the mapper. |
 | `spellTLAs.lua` | General spell three-letter aliases, optionally targetable. |
+| `statusTray.lua` | Compact bottom-row status bar showing crystal, quest, sextant and tell state. |
 | `vitalsChanges.lua` | Shows HP, SP and ST changes in the main window. |
 
 Each plugin's header comment has its full "How it works" description, its commands and
@@ -136,11 +137,22 @@ Every plugin follows the same house style:
   last row shows the plugin's version and current settings.
 - **Toggles:** a debug toggle (off by default) and an on/off toggle for the plugin's
   triggers.
+- **Load output:** one row on load, with a cyan `[pluginName] ` prefix; more rows only
+  when something needs attention.
+- **Cross-platform:** written to work on Linux, macOS and Windows where possible.
 - **Settings:** saved with `rune.store`, not in separate config files.
 - **Commands:** defined without a `/` prefix, so you type `clip`, not `/clip`.
 - **Naming:** `eljayPlugins/<camelName>.lua`, no prefix.
 
-Older plugins are being brought up to this standard as they are revised.
+Older plugins are being brought up to this standard as they are revised. The full rules
+and the pre-flight checklist are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Contributing
+
+To add or change a plugin, follow [CONTRIBUTING.md](CONTRIBUTING.md). In short: name the
+file `eljayPlugins/<camelName>.lua`, use the standard header, add it to the `PLUGINS` list
+in `initEljay.lua`, add its row to the table above, and keep its `Purpose` and the
+README row in step.
 
 ## Windows notes
 

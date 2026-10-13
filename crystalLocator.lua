@@ -1,49 +1,70 @@
 -- Filename: eljayPlugins/crystalLocator.lua
 -- Purpose: Crystal Locator - finds coordinates of crystals via the MMAtlas crystal finder.
--- Version: 3.10
+-- Version: 3.14
 -- Date: 2026-Oct-13
 -- Changelog:
+--   3.14 The `cc` alias now also clears the statusTray CRYSTAL slot (back to "--").
+--   3.13 Main command is now `crystalLocator`, with `crystal` kept as a short alias;
+--        added the `tc` alias (take crystal); message prefix is now [crystalLocator].
+--   3.12 FIX: crystal on / every `crystal <sub>` command, the scroll trigger and the
+--        blank-line span end used Lua-pattern escapes (%s, %S, %.) inside Go (RE2)
+--        regexes, where they are literal text; now \\s, \\S, \\. . Brought to house
+--        style: settings saved with rune.store (debug never saved), helpstyle help
+--        with version footer, single-row load message, Windows-safe clipboard
+--        choice, debug log in the temp folder, control characters stripped from
+--        echoed server text, reply size capped.
+--   3.11 statusTray CRYSTAL slot now shows only found coordinates, as "x y" (separate
+--        values, not "x,y"); no more armed/busy/on/off words in it. The slot is cleared
+--        when a map is submitted and on `crystal off`. statusTray is found by its
+--        require name (eljayPlugins/statusTray) and used only if already loaded;
+--        otherwise the value goes to its rune.store entry.
 --   3.10 Add integration with the repository's statusTray module (use its set_crystal / clear_crystal); fallback to rune.store when unavailable.
 --   3.9  Add status-bar integration (CrystalLocator bar + statusTray.store key) and include cl/cc in header Commands.
 --   3.8  Added repo-standard command summary in the header and tightened help/footer formatting.
 -- How it works:
---   * Receiving the scroll from Tadamir arms the locator (`crystal on` arms it manually).
+--   * Receiving the scroll from Tadamir arms the locator (`crystalLocator on` arms it manually).
 --   * Reading the map is captured as one multi-line block; the header line and everything above and including the "It looks like ..." row are trimmed off.
 --   * The remaining map lines are submitted to the MMAtlas crystal finder (POST; if no coordinates are returned it retries once with GET and once with trailing spaces trimmed).
 --   * The submitted block is copied to the clipboard; OSC 52 is used as the last resort when no external clipboard tool is available.
 --   * When coordinates come back, the plugin echoes them, prints "Walk there with: spdxy x, y" and runs `spdxy nearby x, y`.
---   * Commands: `crystal help` lists everything; `cs` is an alias for `crystal last`. `cl` and `cc` quest aliases are included in the header and help.
+--   * Settings (and the enabled flag) are saved with rune.store; debug is never saved and is always off at load.
+--   * The found coordinates are also placed in the CRYSTAL slot of the statusTray bar ("x y"); the slot is cleared when a new map is submitted, on `crystalLocator off` and when you run `cc`.
+--   * Commands: `crystalLocator help` lists everything; `crystal` is a short alias for `crystalLocator` and `cs` is an alias for `crystalLocator last`. `cl`, `cc` and `tc` quest aliases are included in the header and help.
 --
--- Commands:
---   crystal                show help
---   crystal on            enable and arm the locator
---   crystal off           disable the locator
---   crystal last          display the last crystal location
---   crystal debug         display the last submitted block and raw reply
---   crystal debug on|off  toggle debug output while processing
---   crystal copy          copy the last submitted map block
---   crystal copytest      copy a 3-line test block to check the clipboard path
---   crystal resend        resubmit the last captured block
---   crystal log           save the block and reply to crystal_debug.txt
---   crystal set           list settings; use `crystal set <key> <value>` to change them
---   cs                    shorthand for `crystal last`
+-- Commands (`crystal` is a short alias for `crystalLocator`):
+--   crystalLocator                show help
+--   crystalLocator on            enable and arm the locator
+--   crystalLocator off           disable the locator
+--   crystalLocator last          display the last crystal location
+--   crystalLocator debug         display the last submitted block and raw reply
+--   crystalLocator debug on|off  toggle debug output while processing
+--   crystalLocator copy          copy the last submitted map block
+--   crystalLocator copytest      copy a 3-line test block to check the clipboard path
+--   crystalLocator resend        resubmit the last captured block
+--   crystalLocator log           save the block and reply to crystal_debug.txt in the temp folder
+--   crystalLocator set           list settings; use `crystalLocator set <key> <value>` to change them
+--   cs                    shorthand for `crystalLocator last`
 --   cl                    look at the crystal quest item (alias)
---   cc                    give the crystal to Tadamir then drop and sac the map (alias)
+--   cc                    give the crystal to Tadamir then drop and sac the map (alias); also clears the statusTray CRYSTAL slot
+--   tc                    take the crystal (alias)
 --
 -- Notes:
---   * Settings use the repo convention of live-key changes without editing files.
+--   * Settings change live with `crystalLocator set <key> <value>` and are saved with rune.store.
 --   * Clipboard writes are sanitized so the server cannot inject control codes.
 
-local VERSION  = "3.10"
+local VERSION  = "3.14"
 local ENDPOINT = "https://ooc.dune.net/mm/find-crystal-guild-vi.pl"
+local STORE_KEY = "crystallocator.settings"
+local MAX_BODY  = 200000   -- bytes of a reply that are ever parsed
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
 
-local SCROLL_PATTERN = "Tadamir the guildsman gives you a tightly-rolled scroll%.$"
-local HEADER_PATTERN = "^You focus your powers of observation on"
-local IGNORE_PATTERN = "^It looks like"
+local SCROLL_PATTERN = "Tadamir the guildsman gives you a tightly-rolled scroll\\.$"   -- Go regexp (RE2)
+local HEADER_PATTERN = "^You focus your powers of observation on"        -- Go regexp (RE2)
+local IGNORE_PATTERN = "^It looks like"                                  -- Lua pattern (string.match)
 
--- Settings (change live with: crystal set <key> <value>)
+-- Settings (change live with: crystalLocator set <key> <value>)
 local cfg = {
-  debug    = false,   -- verbose [crystal:debug] output
+  debug    = false,   -- verbose [crystalLocator:debug] output
   method   = "post",  -- "post" or "get"
   lines    = 0,       -- map lines to submit; 0 = no cap
   mode     = "blank", -- "blank": capture ends at first blank line; "count": capture header + `lines` + ignored row
@@ -73,26 +94,62 @@ local state = {
   lastInfo  = nil,
 }
 
--- Attempt to locate the repository statusTray module.
-local statusTray = nil
-local statusTray_ok = false
-local function try_require(name)
-  local ok, mod = pcall(require, name)
-  if ok and type(mod) == "table" then
-    statusTray_ok = true
-    statusTray = mod
-    return true
-  end
-  return false
-end
--- Call separately to avoid an unsupported bare logical-expression statement.
-pcall(function() try_require("eljayPlugins.statusTray") end)
-pcall(function() try_require("statusTray") end)
-pcall(function() try_require("status_tray") end)
-pcall(function() try_require("eljayPlugins.status_tray") end)
+-- Persistence (rune.store). Debug is never saved: it is always off at load.
+local function load_settings()
+  local ok, saved = pcall(rune.store.get, STORE_KEY)
+  if not ok or type(saved) ~= "table" then return end
 
--- Fallback store key used only if statusTray module is not found.
-local STORE_STATUS_KEY = "statusTray.crystal"
+  if type(saved.enabled) == "boolean" then state.enabled = saved.enabled end
+
+  for key, spec in pairs(SETTINGS) do
+    local v = saved[key]
+    if key ~= "debug" and v ~= nil then
+      if spec == "bool" then
+        if type(v) == "boolean" then cfg[key] = v end
+      elseif spec == "number" then
+        if type(v) == "number" and v >= ((key == "lines") and 0 or 1) then cfg[key] = v end
+      else
+        for _, allowed in ipairs(spec) do
+          if allowed == v then cfg[key] = v end
+        end
+      end
+    end
+  end
+end
+
+local function save_settings()
+  local t = { enabled = state.enabled }
+  for key in pairs(SETTINGS) do
+    if key ~= "debug" then t[key] = cfg[key] end
+  end
+  pcall(rune.store.set, STORE_KEY, t)
+end
+
+load_settings()
+
+-- statusTray integration ---------------------------------------------------
+-- The CRYSTAL slot of the statusTray bar shows only found coordinates ("x y").
+-- statusTray is used only if it is already loaded (so removing it from the
+-- PLUGINS list in initEljay.lua really disables it); otherwise the value is
+-- written to its rune.store entry so it is picked up when statusTray loads.
+local TRAY_MODULES   = { "eljayPlugins/statusTray", "eljayPlugins.statusTray" }
+local TRAY_STORE_KEY = "statustray.settings"
+
+local function tray()
+  for _, name in ipairs(TRAY_MODULES) do
+    local m = package.loaded[name]
+    if type(m) == "table" and type(m.set_crystal) == "function" then return m end
+  end
+  return nil
+end
+
+-- Update only the crystal field; keep anything else stored in that table.
+local function store_crystal(value)
+  local ok, saved = pcall(rune.store.get, TRAY_STORE_KEY)
+  local t = (ok and type(saved) == "table") and saved or {}
+  t.crystal = value
+  pcall(rune.store.set, TRAY_STORE_KEY, t)
+end
 
 -- Helpers
 local function paint(color, text)
@@ -105,19 +162,22 @@ local function paint(color, text)
 end
 
 local function say(msg)
-  rune.echo(paint("cyan", "[crystal] ") .. msg)
+  rune.echo(paint("cyan", "[crystalLocator] ") .. msg)
 end
 
 local function dbg(msg)
   if cfg.debug then
-    rune.echo(paint("blue", "[crystal:debug] ") .. msg)
+    rune.echo(paint("blue", "[crystalLocator:debug] ") .. msg)
   end
 end
 
+-- Used for echoing server text: control characters (including ESC) are removed
+-- so a reply cannot inject terminal escape sequences.
 local function flatten(s, n)
   s = tostring(s or "")
   if n and #s > n then s = s:sub(1, n) .. "..." end
-  return (s:gsub("[\r\n]+", " | "))
+  s = s:gsub("[\r\n]+", " | ")
+  return (s:gsub("[%c\127]", " "))
 end
 
 -- URL encode: everything except unreserved chars is %XX, space becomes +
@@ -152,6 +212,7 @@ local EXTERNAL = {
 }
 
 local function pickClipMethod()
+  if IS_WINDOWS then return "osc" end   -- the external tools below are Unix-only
   if cfg.clip ~= "auto" then return cfg.clip end
   if os.getenv("WAYLAND_DISPLAY") and hasTool("wl-copy") then return "wl-copy" end
   if os.getenv("DISPLAY") and hasTool("xclip") then return "xclip" end
@@ -176,7 +237,7 @@ local function copyToClipboard(text)
   local cmd = EXTERNAL[method]
   local okp, p = pcall(io.popen, cmd .. " 2>/dev/null", "w")
   if not okp or not p then
-    return false, method, "io.popen is not available (try: crystal set clip osc)"
+    return false, method, "io.popen is not available (try: crystalLocator set clip osc)"
   end
   p:write(text)
   p:close()
@@ -242,21 +303,22 @@ local function sendRequest(method, block, callback)
   end
 end
 
--- Integration with statusTray (preferred) or rune.store fallback ----------
-local function set_status_crystal(val)
-  -- val: string like "x,y" or "armed"/"busy"/"on"/nil
-  if statusTray_ok and statusTray and type(statusTray.set_crystal) == "function" then
-    pcall(statusTray.set_crystal, val) -- set_crystal accepts x, y or single string
+-- Place found coordinates in / clear the statusTray CRYSTAL slot
+local function set_status_crystal(x, y)
+  local m = tray()
+  if m then
+    pcall(m.set_crystal, tostring(x), tostring(y))
   else
-    pcall(rune.store.set, STORE_STATUS_KEY, val or "")
+    store_crystal(tostring(x) .. " " .. tostring(y))
   end
 end
 
 local function clear_status_crystal()
-  if statusTray_ok and statusTray and type(statusTray.clear_crystal) == "function" then
-    pcall(statusTray.clear_crystal)
+  local m = tray()
+  if m and type(m.clear_crystal) == "function" then
+    pcall(m.clear_crystal)
   else
-    pcall(rune.store.set, STORE_STATUS_KEY, "")
+    store_crystal(nil)
   end
 end
 
@@ -264,14 +326,14 @@ end
 local function onFound(x, y, attemptNo, attempt, how)
   state.crystal = x .. "," .. y
   state.busy = false
-  set_status_crystal(state.crystal)
+  set_status_crystal(x, y)
 
   say("Your crystal is located at " .. paint("white", "(" .. x .. ", " .. y .. ")"))
   dbg("Parsed from response using: " .. how)
 
   if attemptNo > 1 then
     say(string.format(
-      "Attempt %d worked (method=%s, trim=%s). Make it the default with: crystal set method %s  /  crystal set trim %s",
+      "Attempt %d worked (method=%s, trim=%s). Make it the default with: crystalLocator set method %s  /  crystalLocator set trim %s",
       attemptNo, attempt.method, tostring(attempt.trim), attempt.method, attempt.trim and "on" or "off"
     ))
   end
@@ -282,9 +344,8 @@ end
 
 local function onNotFound()
   state.busy = false
-  set_status_crystal(state.armed and "armed" or (state.enabled and "on" or "off"))
   say(paint("red", "MMAtlas could not find that location."))
-  say("Run " .. paint("yellow", "crystal debug") .. " to inspect the submitted lines and the raw reply (" .. paint("yellow", "crystal debug on") .. " for step-by-step messages next time).")
+  say("Run " .. paint("yellow", "crystalLocator debug") .. " to inspect the submitted lines and the raw reply (" .. paint("yellow", "crystalLocator debug on") .. " for step-by-step messages next time).")
 end
 
 -- Submit a block (list of lines), trying fallbacks if enabled
@@ -306,7 +367,7 @@ local function submit(lines)
   if cfg.copy then doCopy(state.lastBlock, false) end
 
   state.busy = true
-  set_status_crystal("busy")
+  clear_status_crystal()
 
   local function try(i)
     local a = attempts[i]
@@ -325,11 +386,10 @@ local function submit(lines)
         state.busy = false
         state.lastInfo = "transport error: " .. tostring(err)
         say(paint("red", "Request failed: ") .. tostring(err))
-        set_status_crystal(state.armed and "armed" or (state.enabled and "on" or "off"))
         return
       end
 
-      local body = resp.body or ""
+      local body = tostring(resp.body or ""):sub(1, MAX_BODY)
       state.lastBody = body
       local ctype = resp.headers and (resp.headers["Content-Type"] or resp.headers["content-type"]) or "?"
       state.lastInfo = string.format("attempt %d: %s trim=%s -> HTTP %s, %d bytes, %s",
@@ -350,7 +410,6 @@ local function submit(lines)
     if not ok then
       state.busy = false
       say(paint("red", "Could not start request: ") .. tostring(perr))
-      set_status_crystal(state.armed and "armed" or (state.enabled and "on" or "off"))
     end
   end
 
@@ -361,7 +420,6 @@ end
 local function onCapture(_, ctx)
   if not (state.enabled and state.armed) then return end
   state.armed = false
-  set_status_crystal(state.enabled and "on" or "off")
 
   local all = {}
   local src = (ctx and ctx.lines) or { ctx.line }
@@ -405,8 +463,7 @@ local function onCapture(_, ctx)
 
   if #lines == 0 then
     say(paint("red", "Capture came back empty."))
-    say("Try: crystal set lines <n>  and  crystal set mode count   (ends capture by line count instead of at a blank line)")
-    set_status_crystal(state.enabled and "on" or "off")
+    say("Try: crystalLocator set lines <n>  and  crystalLocator set mode count   (ends capture by line count instead of at a blank line)")
     return
   end
 
@@ -430,7 +487,7 @@ local function registerCapture()
   if cfg.mode == "count" and cfg.lines > 0 then
     span = { max = cfg.lines + 2 }            -- header + "It looks like" row + map lines
   else
-    span = { to = "^%s*$", max = 60 }        -- ends at (and includes) first blank line
+    span = { to = "^\\s*$", max = 60 }        -- ends at (and includes) first blank line (Go regexp)
   end
   rune.trigger.regex(HEADER_PATTERN, onCapture, { name = "crystal-capture", span = span })
 end
@@ -439,7 +496,6 @@ end
 rune.trigger.regex(SCROLL_PATTERN, function()
   if state.enabled then
     state.armed = true
-    set_status_crystal("armed")
     dbg("Scroll received - armed, waiting for the map")
   end
 end, { name = "crystal-scroll" })
@@ -447,22 +503,55 @@ end, { name = "crystal-scroll" })
 registerCapture()
 
 -- Commands & help
+local okH, H = pcall(require, "helpstyle")
+if not okH or type(H) ~= "table" then H = nil end
+
+local function onoff(flag) return flag and "on" or "off" end
+
+-- Version first, no plugin name, one footer row.
+local function status_line()
+  return string.format("v%s  enabled=%s armed=%s debug=%s",
+    VERSION, onoff(state.enabled), onoff(state.armed), onoff(cfg.debug))
+end
+
+local HELP = {
+  { "crystalLocator on",           "enable and arm the locator" },
+  { "crystalLocator off",          "disable the locator and clear the statusTray CRYSTAL slot" },
+  { "crystalLocator last",         "display coords of last crystal (shorthand: cs)" },
+  { "crystalLocator debug",        "show submitted lines (with markers) and the raw reply" },
+  { "crystalLocator debug on|off", "show / hide debug messages while processing (default off)" },
+  { "crystalLocator copy",         "copy the last submitted map block to the clipboard" },
+  { "crystalLocator copytest",     "copy a 3-line test text to check the clipboard path" },
+  { "crystalLocator resend",       "resubmit the last captured block" },
+  { "crystalLocator log",          "save block + reply to crystal_debug.txt in the temp folder" },
+  { "crystalLocator set",          "list settings;  crystalLocator set <key> <value>  to change" },
+  { "crystal",                     "short alias: crystal <command> works like crystalLocator <command>" },
+  { "cl",                          "look crystalQuest" },
+  { "cc",                          "give tadamir Tadamir;drop crystalQuest;sac crystalQuest; clears the statusTray CRYSTAL slot" },
+  { "tc",                          "take crystal" },
+}
+local KEYS_LINE = "settings keys: debug, method(post|get), lines, mode(blank|count), trim, fallback, copy, clip, timeout"
+
 local function showHelp()
+  if H then
+    local ok = pcall(function()
+      rune.echo(H.title("Crystal Locator"))
+      rune.echo(H.section("Commands"))
+      for _, row in ipairs(HELP) do
+        rune.echo(H.line(row[1] .. "  -  " .. row[2]))
+      end
+      rune.echo(H.line(KEYS_LINE))
+      rune.echo(H.foot(status_line()))
+    end)
+    if ok then return end
+  end
+
   say("CrystalLocator v" .. VERSION)
-  rune.echo("")
-  rune.echo("* " .. paint("yellow", "crystal on") .. "          - enable and arm the locator")
-  rune.echo("* " .. paint("yellow", "crystal off") .. "         - disable the locator")
-  rune.echo("* " .. paint("yellow", "crystal last") .. "        - display coords of last crystal")
-  rune.echo("* " .. paint("yellow", "crystal debug") .. "       - show submitted lines (with markers) and the raw reply")
-  rune.echo("* " .. paint("yellow", "crystal debug on|off") .. " - show / hide debug messages while processing (default off)")
-  rune.echo("* " .. paint("yellow", "crystal copy") .. "        - copy the last submitted map block to the clipboard")
-  rune.echo("* " .. paint("yellow", "crystal copytest") .. "    - copy a 3-line test text to check the clipboard path")
-  rune.echo("* " .. paint("yellow", "crystal resend") .. "      - resubmit the last captured block")
-  rune.echo("* " .. paint("yellow", "crystal log") .. "         - save block + reply to crystal_debug.txt")
-  rune.echo("* " .. paint("yellow", "crystal set") .. "         - list settings;  crystal set <key> <value>  to change")
-  rune.echo("    keys: debug, method(post|get), lines, mode(blank|count), trim, fallback, copy, clip, timeout")
-  rune.echo("* " .. paint("yellow", "cl") .. "  - look crystalQuest")
-  rune.echo("* " .. paint("yellow", "cc") .. "  - give tadamir Tadamir;drop crystalQuest;sac crystalQuest")
+  for _, row in ipairs(HELP) do
+    rune.echo("* " .. paint("yellow", row[1]) .. "  - " .. row[2])
+  end
+  rune.echo("    " .. KEYS_LINE)
+  rune.echo(status_line())
 end
 
 local function showSettings()
@@ -488,7 +577,7 @@ end
 local function setSetting(key, val)
   local spec = SETTINGS[key]
   if not spec then
-    say("Unknown setting '" .. key .. "'. Type 'crystal set' to list them.")
+    say("Unknown setting '" .. key .. "'. Type 'crystalLocator set' to list them.")
     return
   end
   if spec == "bool" then
@@ -508,6 +597,7 @@ local function setSetting(key, val)
     if not okv then say(key .. " must be one of: " .. table.concat(spec, ", ")); return end
     cfg[key] = val
   end
+  save_settings()
   if key == "lines" or key == "mode" then registerCapture() end
   say(key .. " = " .. tostring(cfg[key]))
 end
@@ -520,7 +610,7 @@ local function showDebug()
   say(string.format("Last submitted block (%d lines). Format: nn [length] |text|  - '|' at the end reveals trailing spaces", #state.lastLines))
   rune.echo("--------------------------------")
   for i, l in ipairs(state.lastLines) do
-    rune.echo(string.format("%02d [%3d] |%s|", i, #l, l))
+    rune.echo(string.format("%02d [%3d] |%s|", i, #l, (l:gsub("[%c\127]", "?"))))
   end
   rune.echo("--------------------------------")
   rune.echo(string.format("Block: %d chars, %d chars URL-encoded", #state.lastBlock, #urlencode(state.lastBlock)))
@@ -533,8 +623,9 @@ local function writeLog()
     say("No crystal block captured yet.")
     return
   end
-  local home = os.getenv("HOME") or os.getenv("USERPROFILE") or ""
-  local path = home .. "/.config/rune/eljayPlugins/crystal_debug.txt"
+  -- Temp folder (not the plugin folder), so the log is never committed to git
+  local tmp = os.getenv("TMPDIR") or os.getenv("TEMP") or os.getenv("TMP") or "/tmp"
+  local path = tmp .. "/crystal_debug.txt"
   local ok, f, err = pcall(io.open, path, "w")
   if ok and f then
     f:write("== Submitted block ==\n" .. state.lastBlock .. "\n\n")
@@ -553,13 +644,14 @@ local commands = {
   on         = function()
     state.enabled = true
     state.armed = true
-    set_status_crystal("armed")
+    save_settings()
     say("Locator enabled and armed - read the scroll / look at the map now.")
   end,
   off        = function()
     state.enabled = false
     state.armed = false
-    set_status_crystal(nil)
+    save_settings()
+    clear_status_crystal()
     say("Locator disabled.")
   end,
   last       = function()
@@ -573,7 +665,7 @@ local commands = {
     arg = (arg or ""):lower()
     if arg == "" then showDebug(); return end
     local b = parseBool(arg)
-    if b == nil then say("Usage: crystal debug on|off   (no argument shows the last submitted block)"); return end
+    if b == nil then say("Usage: crystalLocator debug on|off   (no argument shows the last submitted block)"); return end
     cfg.debug = b
     say("Debug messages " .. (b and "on" or "off"))
   end,
@@ -599,7 +691,7 @@ local commands = {
   end,
 }
 
-rune.alias.regex("^crystal(?:%s+(%S+))?(?:%s+(.*))?$", function(m, ctx)
+rune.alias.regex("^(?:crystalLocator|crystal)(?:\\s+(\\S+))?(?:\\s+(.*))?$", function(m, ctx)
   m = m or (ctx and ctx.matches) or {}
   local sub  = (m[1] or ""):lower()
   local rest = m[2] or ""
@@ -620,10 +712,16 @@ rune.alias.regex("^crystal(?:%s+(%S+))?(?:%s+(.*))?$", function(m, ctx)
 end, { name = "crystal-cmd" })
 
 -- Crystal quest item aliases (map keyword: crystalQuest)
-rune.alias.exact("cc", "give tadamir Tadamir;drop crystalQuest;sac crystalQuest")
+-- cc: hand in the crystal, then clear the statusTray CRYSTAL slot. The commands are
+-- returned as a string, so they are processed exactly as the plain alias string was.
+rune.alias.exact("cc", function()
+  clear_status_crystal()
+  return "give tadamir Tadamir;drop crystalQuest;sac crystalQuest"
+end)
 rune.alias.exact("cl", "look crystalQuest")
+rune.alias.exact("tc", "take crystal")
 
 rune.alias.exact("CrystalLocator:help", showHelp)
-rune.alias.exact("cs", "crystal last")
+rune.alias.exact("cs", "crystalLocator last")
 
-say("CrystalLocator v" .. VERSION .. " loaded - type 'crystal help'")
+say(status_line() .. "  loaded - type 'crystalLocator help'")

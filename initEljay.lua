@@ -44,6 +44,7 @@ local PLUGINS = {
   "numPadBindings",
   "oocWikiSearch",
   "researchNotesPicker",
+  "shopListPicker",
   "spdxyCoordinates",
   "spellTLAs",
   "vitalsChanges",

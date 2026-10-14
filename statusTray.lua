@@ -1,8 +1,17 @@
 -- Filename: eljayPlugins/statusTray.lua
 -- Purpose: Compact bottom-row status bar: CRYSTAL x y | QUEST | SEXTANT x y | TELL
--- Version: 1.2
--- Date: 2026-Oct-13
+-- Version: 1.5
+-- Date: 2026-Oct-14
 -- Changelog:
+--   1.5  TELL is also cleared by typing "reply" or "comms clear"; tells from
+--        "the imp" no longer turn TELL on.
+--   1.4  Performance: the bar text is cached and rebuilt only when a value
+--        changes, the SEXTANT store read is throttled to once per second
+--        (was four times per second), colour calls happen on rebuild only,
+--        and the tell trigger/input hook skip all work when the flag is
+--        already in the target state.
+--   1.3  TELL turns ON (red) on an incoming "<name> tells you" line and back
+--        OFF (default colour) when "comms tell" is typed.
 --   1.2  Brought to current house style: "How it works" header, single-row
 --        coloured load message, debug never persisted (always off at load),
 --        shared-store saves keep fields written by other plugins, input
@@ -21,8 +30,14 @@
 --   * Other plugins can require("eljayPlugins/statusTray") and call the
 --     setters set_crystal/clear_crystal, set_sextant/clear_sextant,
 --     set_quest, set_tell/clear_tell, set_enabled and get_state.
---   * SEXTANT is re-read from rune.store ("statustray.settings") on every
---     render, so fauxSextant can update it without calling this module.
+--   * TELL is driven by two registrations: a trigger on incoming
+--     "<name> tells you" lines turns it ON (shown in red; "the imp tells
+--     you" is ignored), and an input hook turns it OFF (default colour) when
+--     "comms tell", "comms clear" or "reply" is typed. Both are skipped while
+--     the bar is disabled and neither changes the game text.
+--   * The bar text is cached and rebuilt only when a value changes. SEXTANT
+--     is re-read from rune.store ("statustray.settings") at most once per
+--     second, so fauxSextant can update it without calling this module.
 --   * Values are sanitised (control characters removed) and length-limited
 --     before they reach the bar.
 --   * The enabled flag and the values are saved with rune.store; debug is not
@@ -32,7 +47,7 @@
 --     (default off); "statustray set|clear <crystal|sextant|quest|tell>" edits
 --     values; "statustray show" echoes the bar text.
 
-local VERSION = "1.2"
+local VERSION = "1.5"
 local SETTINGS_KEY = "statustray.settings"
 local BAR_NAME = "status_tray"
 local MAX_COORD = 16 -- longest stored coordinate part (bytes)
@@ -60,6 +75,16 @@ local function paint(text)
         local ok, out = pcall(function() return st.cyan(text) end)
         if ok and type(out) == "string" then return out end
         ok, out = pcall(st, "cyan", text)
+        if ok and type(out) == "string" then return out end
+    end
+    return text
+end
+
+-- Red text for the bar; plain text if rune.style.red is unavailable.
+local function red(text)
+    local st = rune.style
+    if st ~= nil then
+        local ok, out = pcall(function() return st.red(text) end)
         if ok and type(out) == "string" then return out end
     end
     return text
@@ -95,10 +120,24 @@ local function pair(x, y)
     return a
 end
 
+-- Quest/tell text: sanitised once, "OFF" when empty or nil.
+local function norm_text(v)
+    if v == nil then return "OFF" end
+    local s = clean(v, MAX_TEXT)
+    if s == "" then return "OFF" end
+    return s
+end
+
 local function onoff(flag) return flag and "on" or "off" end
 
+-- Bar text cache: rebuilt only when a value changed (dirty) or when the
+-- throttled SEXTANT sync finds a new value.
+local SYNC_SECONDS = 1
+local cache = { text = nil, dirty = true, synced = 0 }
+
 local function refresh()
-    pcall(function() rune.ui.refresh_bars() end)
+    cache.dirty = true
+    pcall(rune.ui.refresh_bars)
 end
 
 -- Load/save --------------------------------------------------------------
@@ -137,24 +176,46 @@ end
 -- remains loaded. Sync the local copy before rendering the bar.
 local function sync_sextant_from_store()
     local ok, saved = pcall(rune.store.get, SETTINGS_KEY)
-    if ok and type(saved) == "table" then
-        if type(saved.sextant) == "string" then
-            state.sextant = pair(saved.sextant)
-        elseif saved.sextant == nil then
-            state.sextant = nil
-        end
+    if not (ok and type(saved) == "table") then return end
+
+    local new = nil
+    if type(saved.sextant) == "string" then
+        new = pair(saved.sextant)
+    elseif saved.sextant ~= nil then
+        return -- unexpected type: leave the current value alone
+    end
+
+    if state.sextant ~= new then
+        state.sextant = new
+        cache.dirty = true
     end
 end
 
-local function render_one()
-    sync_sextant_from_store()
+local function build_text()
+    local tell_value = tostring(state.tell or "OFF")
+    local tell = "TELL " .. tell_value
+    if tell_value ~= "OFF" then tell = red(tell) end
 
-    local crystal = "CRYSTAL " .. fmt_coord(state.crystal)
-    local quest = "QUEST " .. tostring(state.quest or "OFF")
-    local sextant = "SEXTANT " .. fmt_coord(state.sextant)
-    local tell = "TELL " .. tostring(state.tell or "OFF")
+    return "CRYSTAL " .. fmt_coord(state.crystal)
+        .. " | QUEST " .. tostring(state.quest or "OFF")
+        .. " | SEXTANT " .. fmt_coord(state.sextant)
+        .. " | " .. tell
+end
 
-    return crystal .. " | " .. quest .. " | " .. sextant .. " | " .. tell
+-- Called by the bar about four times a second, so it only does real work
+-- when something changed. force = true re-reads the store immediately.
+local function render_one(force)
+    local now = os.time()
+    if force or now ~= cache.synced then
+        cache.synced = now
+        sync_sextant_from_store()
+    end
+
+    if cache.dirty or not cache.text then
+        cache.text = build_text()
+        cache.dirty = false
+    end
+    return cache.text
 end
 
 -- Settings are loaded before the bar is registered so the first render is right.
@@ -248,7 +309,7 @@ function M.clear_crystal()
 end
 
 function M.set_quest(v)
-    v = (v ~= nil and clean(v, MAX_TEXT) ~= "") and clean(v, MAX_TEXT) or "OFF"
+    v = norm_text(v)
     if state.quest ~= v then
         state.quest = v
         save_settings()
@@ -276,7 +337,7 @@ function M.clear_sextant()
 end
 
 function M.set_tell(v)
-    v = (v ~= nil and clean(v, MAX_TEXT) ~= "") and clean(v, MAX_TEXT) or "OFF"
+    v = norm_text(v)
     if state.tell ~= v then
         state.tell = v
         save_settings()
@@ -302,6 +363,61 @@ function M.get_state()
     }
 end
 
+-- Tell tracking ----------------------------------------------------------
+-- Names make /reload replace these registrations instead of stacking them.
+local TELL_TRIGGER = "statustray-tell-on"
+local TELL_HOOK = "statustray-tell-off"
+
+-- Speakers whose "tells you" lines must not turn TELL on (lower case).
+local IGNORED_SPEAKERS = { "the imp" }
+
+local function ignored_speaker(clean_line)
+    local l = clean_line:lower()
+    for i = 1, #IGNORED_SPEAKERS do
+        local prefix = IGNORED_SPEAKERS[i] .. " tells you"
+        if l:sub(1, #prefix) == prefix then return true end
+    end
+    return false
+end
+
+-- Typed commands that clear TELL (input is lower-cased before matching).
+local function is_clear_command(lower)
+    return lower:find("^%s*comms%s+tell%f[%W]") ~= nil
+        or lower:find("^%s*comms%s+clear%f[%W]") ~= nil
+        or lower:find("^%s*reply%f[%W]") ~= nil
+end
+
+local function install_tell_tracking()
+    -- Incoming "<name> tells you ..." turns the flag ON (red). Matching is
+    -- anchored and nothing from the line is stored or echoed.
+    rune.trigger.regex("^.+ tells you\\b", function(_, ctx)
+        if state.tell ~= "ON" and state.enabled then
+            local line = ctx and ctx.line and ctx.line:clean() or ""
+            if ignored_speaker(line) then
+                dbg("tell ignored: " .. line:sub(1, 40))
+            else
+                dbg("incoming tell")
+                M.set_tell("ON")
+            end
+        end
+        return nil -- the line passes through unchanged
+    end, { name = TELL_TRIGGER })
+
+    -- Typing a clear command turns the flag back OFF. The input passes
+    -- through unchanged, so the game and the comms plugin still get it.
+    rune.hooks.on("input", function(text)
+        if state.tell ~= "OFF" and state.enabled and type(text) == "string"
+            and is_clear_command(text:lower()) then
+            dbg("tell cleared by typed command")
+            M.clear_tell()
+        end
+        return nil
+    end, { name = TELL_HOOK })
+end
+
+local okTell, errTell = pcall(install_tell_tracking)
+if not okTell then dbg("tell tracking not installed: " .. tostring(errTell)) end
+
 -- Command and help -------------------------------------------------------
 -- Version first, no plugin name, one footer row.
 local function status_line()
@@ -323,7 +439,7 @@ local function show_help()
             rune.echo(H.line("statustray clear sextant", "clear sextant coords"))
             rune.echo(H.line("statustray set quest <text>", "set quest status (short)"))
             rune.echo(H.line("statustray clear quest", "reset quest status to OFF"))
-            rune.echo(H.line("statustray set tell <ON|OFF|text>", "set tell indicator"))
+            rune.echo(H.line("statustray set tell <ON|OFF|text>", "set tell indicator (red unless OFF)"))
             rune.echo(H.line("statustray clear tell", "reset tell indicator to OFF"))
             rune.echo(H.line("statustray show", "echo current bar text"))
             rune.echo(H.foot(status_line()))
@@ -473,7 +589,7 @@ rune.command.add("statustray", function(args)
     end
 
     if cmd == "show" then
-        rune.echo(render_one())
+        rune.echo(render_one(true))
         return
     end
 

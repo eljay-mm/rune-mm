@@ -1,9 +1,12 @@
 -- Filename: eljayPlugins/characterLog.lua
 -- Purpose: Per-character, per-day session logging via rune.log (GMCP name)
--- Version: 2.4
--- Date: 2026-Oct-13
+-- Version: 2.5
+-- Date: 2026-Oct-14
 --
 -- Changelog:
+--   2.5  Main command renamed to `characterLog`, with `charlog` kept as the
+--        short alias (one alias row handles both). Message prefix is now
+--        "[characterLog]". Saved settings and store keys are unchanged.
 --   2.4  Output style copied from jmcSolver: the "[charlog]" plugin name is
 --        coloured (cyan; blue for debug) via rune.style. Help fixed to echo
 --        the strings returned by helpstyle (H.title / H.section / H.line /
@@ -38,17 +41,17 @@
 --   * Settings (auto, raw, time) are saved per character in rune.store.
 --     The plugin on/off state is saved globally in rune.store.
 --
--- Commands (type `charlog` alone for the summary):
---     charlog on|off          enable / disable the plugin (default on)
---     charlog start | stop    start / stop logging now
---     charlog status          show whether/where logging is active
---     charlog name            show the character name received via GMCP
---     charlog debug [on|off]  toggle debug messages (default off)
---     charlog auto on|off     start logging automatically on login (default on)
---     charlog raw on|off      keep ANSI colours in the log (default on;
---                             view with `less -R`)
---     charlog time on|off     prefix each logged server line with [HH:MM:SS]
---                             (default on; takes effect immediately)
+-- Commands (short alias: charlog; type `characterLog` alone for the summary):
+--     characterLog on|off          enable / disable the plugin (default on)
+--     characterLog start | stop    start / stop logging now
+--     characterLog status          show whether/where logging is active
+--     characterLog name            show the character name received via GMCP
+--     characterLog debug [on|off]  toggle debug messages (default off)
+--     characterLog auto on|off     start logging automatically on login (default on)
+--     characterLog raw on|off      keep ANSI colours in the log (default on;
+--                                  view with `less -R`)
+--     characterLog time on|off     prefix each logged server line with [HH:MM:SS]
+--                                  (default on; takes effect immediately)
 --
 -- Notes:
 --   * The built-in policy does not log prompts or client messages
@@ -72,6 +75,8 @@ local TICK_SECONDS = 5
 local HEARTBEAT_TICKS = 6          -- 6 x 5s = 30s
 local SESSION_MAX_AGE = 90
 
+-- Store keys keep their original "charlog" names so saved settings survive
+-- the command rename.
 local SESSION_KEY = "charlog.session"
 local ENABLED_KEY = "charlog.enabled"
 
@@ -99,7 +104,7 @@ local function paint(color, text)
 end
 
 local function say(msg)
-    rune.echo(paint("cyan", "[charlog] ") .. msg)
+    rune.echo(paint("cyan", "[characterLog] ") .. msg)
 end
 
 local function sanitize(name)
@@ -145,7 +150,7 @@ local dir_ready = {}               -- directories we already created
 local tick_count = 0
 
 local function dbg(msg)
-    if debug_on then rune.echo(paint("blue", "[charlog:debug] ") .. msg) end
+    if debug_on then rune.echo(paint("blue", "[characterLog:debug] ") .. msg) end
 end
 
 -----------------------------------------------------------------------
@@ -286,7 +291,7 @@ end
 
 local function start_log()
     if not enabled then
-        say("plugin is off; type 'charlog on' first")
+        say("plugin is off; type 'characterLog on' first")
         return
     end
     if not charname then
@@ -335,7 +340,7 @@ local function claim_or_start()
     if auto_start then
         start_log()
     else
-        say(charname .. ": auto-start off; type 'charlog start'")
+        say(charname .. ": auto-start off; type 'characterLog start'")
     end
 end
 
@@ -368,15 +373,15 @@ local function show_status()
 end
 
 local function show_help()
-    rune.echo(H.title("charlog - per-character daily session logging (name via GMCP)"))
-    rune.echo(H.section("Commands"))
-    rune.echo(H.line("charlog on|off", "enable or disable the plugin (default on)"))
-    rune.echo(H.line("charlog start | stop", "start or stop logging now"))
-    rune.echo(H.line("charlog status | name", "show log state / GMCP character name"))
-    rune.echo(H.line("charlog debug [on|off]", "toggle debug messages (default off)"))
-    rune.echo(H.line("charlog auto on|off", "start logging on login (default on)"))
-    rune.echo(H.line("charlog raw on|off", "keep ANSI colours (default on; less -R)"))
-    rune.echo(H.line("charlog time on|off", "timestamp each logged line (default on)"))
+    rune.echo(H.title("characterLog - per-character daily session logging (name via GMCP)"))
+    rune.echo(H.section("Commands (short alias: charlog)"))
+    rune.echo(H.line("characterLog on|off", "enable or disable the plugin (default on)"))
+    rune.echo(H.line("characterLog start | stop", "start or stop logging now"))
+    rune.echo(H.line("characterLog status | name", "show log state / GMCP character name"))
+    rune.echo(H.line("characterLog debug [on|off]", "toggle debug messages (default off)"))
+    rune.echo(H.line("characterLog auto on|off", "start logging on login (default on)"))
+    rune.echo(H.line("characterLog raw on|off", "keep ANSI colours (default on; less -R)"))
+    rune.echo(H.line("characterLog time on|off", "timestamp each logged line (default on)"))
     rune.echo("")
     rune.echo(H.foot(status_line()))
 end
@@ -526,7 +531,8 @@ local function on_off(word, current)
     return current
 end
 
-rune.alias.regex("^charlog(\\s.*)?$", function(m)
+-- One alias row: `characterLog` (main command) and `charlog` (short alias).
+rune.alias.regex("^(?:characterLog|charlog)(\\s.*)?$", function(m)
     local words = {}
     for word in tostring(m[1] or ""):gmatch("%S+") do
         words[#words + 1] = word:lower()
@@ -605,5 +611,5 @@ local resumed = enabled and read_fresh_marker() or nil
 if resumed then
     adopt_name(resumed)
 elseif not enabled then
-    say("plugin OFF; type 'charlog on'")
+    say("plugin OFF; type 'characterLog on'")
 end

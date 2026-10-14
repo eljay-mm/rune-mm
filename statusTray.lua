@@ -632,7 +632,7 @@ dbg("loaded settings: "
     .. tostring(state.sextant))
 
 -- Single-row load message.
-say("v" .. VERSION .. " loaded (statusTray for help)")
+say("v" .. VERSION .. " loaded (statusTray or tray for help)")
 
 -- Export module for other plugins to require and call setters.
 return M

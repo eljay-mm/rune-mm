@@ -1,58 +1,44 @@
 -- Filename: eljayPlugins/crystalLocator.lua
--- Purpose: Crystal Locator - finds coordinates of crystals via the MMAtlas crystal finder.
--- Version: 3.14
--- Date: 2026-Oct-13
+-- Purpose: Finds the coordinates of a guild crystal from the scroll map via the MMAtlas crystal finder and shows them in the status bar.
+-- Version: 3.15
+-- Date: 2026-Oct-14
 -- Changelog:
---   3.14 The `cc` alias now also clears the statusTray CRYSTAL slot (back to "--").
---   3.13 Main command is now `crystalLocator`, with `crystal` kept as a short alias;
---        added the `tc` alias (take crystal); message prefix is now [crystalLocator].
---   3.12 FIX: crystal on / every `crystal <sub>` command, the scroll trigger and the
---        blank-line span end used Lua-pattern escapes (%s, %S, %.) inside Go (RE2)
---        regexes, where they are literal text; now \\s, \\S, \\. . Brought to house
---        style: settings saved with rune.store (debug never saved), helpstyle help
---        with version footer, single-row load message, Windows-safe clipboard
---        choice, debug log in the temp folder, control characters stripped from
---        echoed server text, reply size capped.
---   3.11 statusTray CRYSTAL slot now shows only found coordinates, as "x y" (separate
---        values, not "x,y"); no more armed/busy/on/off words in it. The slot is cleared
---        when a map is submitted and on `crystal off`. statusTray is found by its
---        require name (eljayPlugins/statusTray) and used only if already loaded;
---        otherwise the value goes to its rune.store entry.
---   3.10 Add integration with the repository's statusTray module (use its set_crystal / clear_crystal); fallback to rune.store when unavailable.
---   3.9  Add status-bar integration (CrystalLocator bar + statusTray.store key) and include cl/cc in header Commands.
---   3.8  Added repo-standard command summary in the header and tightened help/footer formatting.
+--   3.15 Brought to standard: loader line, clipboard tool lookup cached (no shell spawn per copy),
+--        tolerant statusTray lookup, restored the Inspired-by line, shorter changelog.
+--   3.14 The `cc` alias also clears the statusTray CRYSTAL slot.
+--   3.13 Main command is `crystalLocator` with `crystal` as short alias; added the `tc` alias.
 -- How it works:
+--   * Inspired by the MUSHclient plugin by Elbereth.
 --   * Receiving the scroll from Tadamir arms the locator (`crystalLocator on` arms it manually).
 --   * Reading the map is captured as one multi-line block; the header line and everything above and including the "It looks like ..." row are trimmed off.
 --   * The remaining map lines are submitted to the MMAtlas crystal finder (POST; if no coordinates are returned it retries once with GET and once with trailing spaces trimmed).
---   * The submitted block is copied to the clipboard; OSC 52 is used as the last resort when no external clipboard tool is available.
+--   * The submitted block is copied to the clipboard (wl-copy / xclip / xsel, OSC 52 as the last resort and on Windows).
 --   * When coordinates come back, the plugin echoes them, prints "Walk there with: spdxy x, y" and runs `spdxy nearby x, y`.
+--   * The found coordinates are placed in the CRYSTAL slot of the statusTray bar ("x y"); the slot is cleared when a new map is submitted, on `crystalLocator off` and when you run `cc`.
 --   * Settings (and the enabled flag) are saved with rune.store; debug is never saved and is always off at load.
---   * The found coordinates are also placed in the CRYSTAL slot of the statusTray bar ("x y"); the slot is cleared when a new map is submitted, on `crystalLocator off` and when you run `cc`.
---   * Commands: `crystalLocator help` lists everything; `crystal` is a short alias for `crystalLocator` and `cs` is an alias for `crystalLocator last`. `cl`, `cc` and `tc` quest aliases are included in the header and help.
 --
 -- Commands (`crystal` is a short alias for `crystalLocator`):
 --   crystalLocator                show help
---   crystalLocator on            enable and arm the locator
---   crystalLocator off           disable the locator
---   crystalLocator last          display the last crystal location
---   crystalLocator debug         display the last submitted block and raw reply
---   crystalLocator debug on|off  toggle debug output while processing
---   crystalLocator copy          copy the last submitted map block
---   crystalLocator copytest      copy a 3-line test block to check the clipboard path
---   crystalLocator resend        resubmit the last captured block
---   crystalLocator log           save the block and reply to crystal_debug.txt in the temp folder
---   crystalLocator set           list settings; use `crystalLocator set <key> <value>` to change them
---   cs                    shorthand for `crystalLocator last`
---   cl                    look at the crystal quest item (alias)
---   cc                    give the crystal to Tadamir then drop and sac the map (alias); also clears the statusTray CRYSTAL slot
---   tc                    take the crystal (alias)
+--   crystalLocator on             enable and arm the locator
+--   crystalLocator off            disable the locator
+--   crystalLocator last           display the last crystal location
+--   crystalLocator debug          display the last submitted block and raw reply
+--   crystalLocator debug on|off   toggle debug output while processing
+--   crystalLocator copy           copy the last submitted map block
+--   crystalLocator copytest       copy a 3-line test block to check the clipboard path
+--   crystalLocator resend         resubmit the last captured block
+--   crystalLocator log            save the block and reply to crystal_debug.txt in the temp folder
+--   crystalLocator set            list settings; use `crystalLocator set <key> <value>` to change them
+--   cs                            shorthand for `crystalLocator last`
+--   cl                            look at the crystal quest item (alias)
+--   cc                            give the crystal to Tadamir then drop and sac the map; also clears the statusTray CRYSTAL slot
+--   tc                            take the crystal (alias)
 --
 -- Notes:
---   * Settings change live with `crystalLocator set <key> <value>` and are saved with rune.store.
 --   * Clipboard writes are sanitized so the server cannot inject control codes.
+--   * Server text echoed to the screen has control characters removed.
 
-local VERSION  = "3.14"
+local VERSION  = "3.15"
 local ENDPOINT = "https://ooc.dune.net/mm/find-crystal-guild-vi.pl"
 local STORE_KEY = "crystallocator.settings"
 local MAX_BODY  = 200000   -- bytes of a reply that are ever parsed
@@ -140,6 +126,13 @@ local function tray()
     local m = package.loaded[name]
     if type(m) == "table" and type(m.set_crystal) == "function" then return m end
   end
+  -- Fallback: any already-loaded module whose name ends in "statusTray"
+  for name, m in pairs(package.loaded) do
+    if type(name) == "string" and name:match("statusTray$")
+       and type(m) == "table" and type(m.set_crystal) == "function" then
+      return m
+    end
+  end
   return nil
 end
 
@@ -211,13 +204,19 @@ local EXTERNAL = {
   ["xsel"]    = "xsel --clipboard --input",
 }
 
+-- The auto-detected tool is cached: looking it up spawns a shell, so it is done once
+-- (cleared by `crystalLocator copytest` and when the clip setting changes).
+local clipChoice = nil
+
 local function pickClipMethod()
   if IS_WINDOWS then return "osc" end   -- the external tools below are Unix-only
   if cfg.clip ~= "auto" then return cfg.clip end
-  if os.getenv("WAYLAND_DISPLAY") and hasTool("wl-copy") then return "wl-copy" end
-  if os.getenv("DISPLAY") and hasTool("xclip") then return "xclip" end
-  if os.getenv("DISPLAY") and hasTool("xsel") then return "xsel" end
-  return "osc"
+  if clipChoice then return clipChoice end
+  if os.getenv("WAYLAND_DISPLAY") and hasTool("wl-copy") then clipChoice = "wl-copy"
+  elseif os.getenv("DISPLAY") and hasTool("xclip") then clipChoice = "xclip"
+  elseif os.getenv("DISPLAY") and hasTool("xsel") then clipChoice = "xsel"
+  else clipChoice = "osc" end
+  return clipChoice
 end
 
 -- Returns ok(boolean), method(string), err(string|nil)
@@ -598,6 +597,7 @@ local function setSetting(key, val)
     cfg[key] = val
   end
   save_settings()
+  if key == "clip" then clipChoice = nil end
   if key == "lines" or key == "mode" then registerCapture() end
   say(key .. " = " .. tostring(cfg[key]))
 end
@@ -678,6 +678,7 @@ local commands = {
     end
   end,
   copytest   = function()
+    clipChoice = nil   -- re-detect, e.g. after installing wl-clipboard / xclip
     say("Copying a 3-line test via '" .. pickClipMethod() .. "' - paste somewhere; you should see 3 lines: alpha / beta / gamma")
     doCopy("alpha\nbeta\ngamma", true)
   end,
@@ -724,4 +725,4 @@ rune.alias.exact("tc", "take crystal")
 rune.alias.exact("CrystalLocator:help", showHelp)
 rune.alias.exact("cs", "crystalLocator last")
 
-say(status_line() .. "  loaded - type 'crystalLocator help'")
+say("v" .. VERSION .. " loaded (crystalLocator or crystal for help)")

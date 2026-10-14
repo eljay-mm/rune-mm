@@ -1,8 +1,21 @@
 -- Filename: eljayPlugins/statusTray.lua
 -- Purpose: Compact bottom-row status bar: CRYSTAL x y | QUEST | SEXTANT x y | TELL
--- Version: 1.5
+-- Version: 1.8
 -- Date: 2026-Oct-14
 -- Changelog:
+--   1.8  Fix: "statusTray" and "tray" did nothing when typed bare, because
+--        rune.command.add only creates slash commands (/statusTray); they are
+--        now aliases, so the bare commands work. The incoming-tell trigger
+--        accepts one-word or multi-word speakers, and speakers listed in
+--        IGNORED_SPEAKERS (starting with "The imp") are skipped.
+--   1.7  Brought to current standard: command renamed to statusTray with
+--        tray as the short alias, loader line "[statusTray] v1.7 loaded
+--        (statusTray for help)". TELL shows "TELL (none)" when off. The
+--        incoming-tell trigger now uses the pattern from comms.lua (one-word
+--        speaker, quoted message), which also leaves out "the imp tells
+--        you", so the separate ignore list was removed.
+--   1.6  TELL display: plain "TELL" (default colour) when off, red
+--        "TELL Received" when on.
 --   1.5  TELL is also cleared by typing "reply" or "comms clear"; tells from
 --        "the imp" no longer turn TELL on.
 --   1.4  Performance: the bar text is cached and rebuilt only when a value
@@ -10,8 +23,8 @@
 --        (was four times per second), colour calls happen on rebuild only,
 --        and the tell trigger/input hook skip all work when the flag is
 --        already in the target state.
---   1.3  TELL turns ON (red) on an incoming "<name> tells you" line and back
---        OFF (default colour) when "comms tell" is typed.
+--   1.3  TELL turns ON (red) on an incoming tell and back OFF (default
+--        colour) when "comms tell" is typed.
 --   1.2  Brought to current house style: "How it works" header, single-row
 --        coloured load message, debug never persisted (always off at load),
 --        shared-store saves keep fields written by other plugins, input
@@ -25,16 +38,18 @@
 --   * Registers one bar, "status_tray", and hooks rune.ui.layout (once) so the
 --     bar is appended to column layouts; an existing layout is rebuilt on load
 --     so the bar appears immediately.
---   * The bar shows: CRYSTAL x y | QUEST <text> | SEXTANT x y | TELL <text>.
---     Missing coordinates show "--"; quest and tell default to OFF.
+--   * The bar shows: CRYSTAL x y | QUEST <text> | SEXTANT x y | TELL.
+--     Missing coordinates show "--"; quest defaults to OFF. TELL reads
+--     "TELL (none)" in the default colour and "TELL Received" in red.
 --   * Other plugins can require("eljayPlugins/statusTray") and call the
 --     setters set_crystal/clear_crystal, set_sextant/clear_sextant,
 --     set_quest, set_tell/clear_tell, set_enabled and get_state.
---   * TELL is driven by two registrations: a trigger on incoming
---     "<name> tells you" lines turns it ON (shown in red; "the imp tells
---     you" is ignored), and an input hook turns it OFF (default colour) when
---     "comms tell", "comms clear" or "reply" is typed. Both are skipped while
---     the bar is disabled and neither changes the game text.
+--   * TELL is driven by two registrations. A trigger on incoming
+--     "<speaker> tells you '<message>'" lines (one-word or multi-word
+--     speaker) turns it on, unless the speaker is listed in IGNORED_SPEAKERS
+--     near the top of this file ("The imp" to start with). An input hook
+--     turns it off when "comms tell", "comms clear" or "reply" is typed. Both
+--     are skipped while the bar is disabled and neither changes the game text.
 --   * The bar text is cached and rebuilt only when a value changes. SEXTANT
 --     is re-read from rune.store ("statustray.settings") at most once per
 --     second, so fauxSextant can update it without calling this module.
@@ -42,16 +57,22 @@
 --     before they reach the bar.
 --   * The enabled flag and the values are saved with rune.store; debug is not
 --     saved and is always off when the plugin loads.
---   * Commands: type "statustray" alone for help; "statustray on|off"
---     enables/disables the bar; "statustray debug on|off" toggles debug output
---     (default off); "statustray set|clear <crystal|sextant|quest|tell>" edits
---     values; "statustray show" echoes the bar text.
+--   * Commands are aliases, typed bare (no slash): "statusTray" (short alias
+--     "tray") alone shows help;
+--     "statusTray on|off" enables/disables the bar; "statusTray debug
+--     on|off" toggles debug output (default off); "statusTray set|clear
+--     <crystal|sextant|quest|tell>" edits values; "statusTray show" echoes
+--     the bar text.
 
-local VERSION = "1.5"
+local VERSION = "1.8"
 local SETTINGS_KEY = "statustray.settings"
 local BAR_NAME = "status_tray"
 local MAX_COORD = 16 -- longest stored coordinate part (bytes)
 local MAX_TEXT = 24  -- longest stored quest/tell text (bytes)
+
+-- Speakers whose tells must NOT turn TELL on. Edit this list: names are
+-- compared case-insensitively against the whole speaker, one- or multi-word.
+local IGNORED_SPEAKERS = { "The imp" }
 
 local okH, H = pcall(require, "helpstyle")
 if not okH or type(H) ~= "table" then H = nil end
@@ -193,8 +214,12 @@ end
 
 local function build_text()
     local tell_value = tostring(state.tell or "OFF")
-    local tell = "TELL " .. tell_value
-    if tell_value ~= "OFF" then tell = red(tell) end
+    local tell = "TELL (none)"
+    if tell_value == "ON" then
+        tell = red("TELL Received")
+    elseif tell_value ~= "OFF" then
+        tell = red("TELL " .. tell_value) -- custom text from "set tell <text>"
+    end
 
     return "CRYSTAL " .. fmt_coord(state.crystal)
         .. " | QUEST " .. tostring(state.quest or "OFF")
@@ -368,16 +393,10 @@ end
 local TELL_TRIGGER = "statustray-tell-on"
 local TELL_HOOK = "statustray-tell-off"
 
--- Speakers whose "tells you" lines must not turn TELL on (lower case).
-local IGNORED_SPEAKERS = { "the imp" }
-
-local function ignored_speaker(clean_line)
-    local l = clean_line:lower()
-    for i = 1, #IGNORED_SPEAKERS do
-        local prefix = IGNORED_SPEAKERS[i] .. " tells you"
-        if l:sub(1, #prefix) == prefix then return true end
-    end
-    return false
+-- Lower-cased lookup built once from IGNORED_SPEAKERS.
+local ignored = {}
+for _, who in ipairs(IGNORED_SPEAKERS) do
+    ignored[tostring(who):lower()] = true
 end
 
 -- Typed commands that clear TELL (input is lower-cased before matching).
@@ -388,19 +407,21 @@ local function is_clear_command(lower)
 end
 
 local function install_tell_tracking()
-    -- Incoming "<name> tells you ..." turns the flag ON (red). Matching is
-    -- anchored and nothing from the line is stored or echoed.
-    rune.trigger.regex("^.+ tells you\\b", function(_, ctx)
+    -- Incoming tell: "<speaker> tells you '<message>'", where the speaker may
+    -- be one or several words. Skipped for speakers in IGNORED_SPEAKERS.
+    -- Nothing from the line is stored or echoed; it passes through unchanged.
+    rune.trigger.regex("^(.+) tells you '(.+)'$", function(_, ctx)
         if state.tell ~= "ON" and state.enabled then
             local line = ctx and ctx.line and ctx.line:clean() or ""
-            if ignored_speaker(line) then
-                dbg("tell ignored: " .. line:sub(1, 40))
+            local speaker = line:match("^(.-) tells you '")
+            if speaker and ignored[speaker:lower()] then
+                dbg("tell ignored from: " .. speaker:sub(1, 40))
             else
                 dbg("incoming tell")
                 M.set_tell("ON")
             end
         end
-        return nil -- the line passes through unchanged
+        return nil
     end, { name = TELL_TRIGGER })
 
     -- Typing a clear command turns the flag back OFF. The input passes
@@ -430,36 +451,36 @@ local function show_help()
         local ok = pcall(function()
             rune.echo(H.title("Bottom status (CRYSTAL | QUEST | SEXTANT | TELL)"))
             rune.echo(H.section("Commands"))
-            rune.echo(H.line("statustray", "show this summary"))
-            rune.echo(H.line("statustray on|off", "enable / disable the bar"))
-            rune.echo(H.line("statustray debug on|off", "toggle debug messages (default off)"))
-            rune.echo(H.line("statustray set crystal <x> <y>", "set crystal coords"))
-            rune.echo(H.line("statustray clear crystal", "clear crystal coords"))
-            rune.echo(H.line("statustray set sextant <x> <y>", "set sextant coords"))
-            rune.echo(H.line("statustray clear sextant", "clear sextant coords"))
-            rune.echo(H.line("statustray set quest <text>", "set quest status (short)"))
-            rune.echo(H.line("statustray clear quest", "reset quest status to OFF"))
-            rune.echo(H.line("statustray set tell <ON|OFF|text>", "set tell indicator (red unless OFF)"))
-            rune.echo(H.line("statustray clear tell", "reset tell indicator to OFF"))
-            rune.echo(H.line("statustray show", "echo current bar text"))
+            rune.echo(H.line("statusTray | tray", "show this summary (tray is the short alias)"))
+            rune.echo(H.line("statusTray on|off", "enable / disable the bar"))
+            rune.echo(H.line("statusTray debug on|off", "toggle debug messages (default off)"))
+            rune.echo(H.line("statusTray set crystal <x> <y>", "set crystal coords"))
+            rune.echo(H.line("statusTray clear crystal", "clear crystal coords"))
+            rune.echo(H.line("statusTray set sextant <x> <y>", "set sextant coords"))
+            rune.echo(H.line("statusTray clear sextant", "clear sextant coords"))
+            rune.echo(H.line("statusTray set quest <text>", "set quest status (short)"))
+            rune.echo(H.line("statusTray clear quest", "reset quest status to OFF"))
+            rune.echo(H.line("statusTray set tell <ON|OFF|text>", "set tell indicator (OFF = plain TELL, ON = red TELL Received)"))
+            rune.echo(H.line("statusTray clear tell", "reset tell indicator to OFF"))
+            rune.echo(H.line("statusTray show", "echo current bar text"))
             rune.echo(H.foot(status_line()))
         end)
         if ok then return end
     end
 
     rune.echo("Bottom status - CRYSTAL | QUEST | SEXTANT | TELL")
-    rune.echo("  statustray                show this summary")
-    rune.echo("  statustray on|off         enable / disable the bar")
-    rune.echo("  statustray debug on|off   toggle debug messages (default off)")
-    rune.echo("  statustray set crystal <x> <y>")
-    rune.echo("  statustray clear crystal")
-    rune.echo("  statustray set sextant <x> <y>")
-    rune.echo("  statustray clear sextant")
-    rune.echo("  statustray set quest <text>")
-    rune.echo("  statustray clear quest")
-    rune.echo("  statustray set tell <ON|OFF|text>")
-    rune.echo("  statustray clear tell")
-    rune.echo("  statustray show")
+    rune.echo("  statusTray | tray         show this summary")
+    rune.echo("  statusTray on|off         enable / disable the bar")
+    rune.echo("  statusTray debug on|off   toggle debug messages (default off)")
+    rune.echo("  statusTray set crystal <x> <y>")
+    rune.echo("  statusTray clear crystal")
+    rune.echo("  statusTray set sextant <x> <y>")
+    rune.echo("  statusTray clear sextant")
+    rune.echo("  statusTray set quest <text>")
+    rune.echo("  statusTray clear quest")
+    rune.echo("  statusTray set tell <ON|OFF|text>")
+    rune.echo("  statusTray clear tell")
+    rune.echo("  statusTray show")
     rune.echo(status_line())
 end
 
@@ -472,7 +493,7 @@ local function words_of(s)
     return t
 end
 
-rune.command.add("statustray", function(args)
+local function on_command(args)
     local a = tostring(args or ""):match("^%s*(.-)%s*$")
     if a == "" then
         show_help()
@@ -495,7 +516,7 @@ rune.command.add("statustray", function(args)
         elseif setting == "off" then
             M.set_debug(false)
         else
-            say("usage: statustray debug on|off")
+            say("usage: statusTray debug on|off")
             return
         end
 
@@ -508,7 +529,7 @@ rune.command.add("statustray", function(args)
 
         if what == "crystal" then
             if not w[3] then
-                say("usage: statustray set crystal <x> <y>")
+                say("usage: statusTray set crystal <x> <y>")
                 return
             end
 
@@ -517,7 +538,7 @@ rune.command.add("statustray", function(args)
             return
         elseif what == "sextant" then
             if not w[3] then
-                say("usage: statustray set sextant <x> <y>")
+                say("usage: statusTray set sextant <x> <y>")
                 return
             end
 
@@ -527,7 +548,7 @@ rune.command.add("statustray", function(args)
         elseif what == "quest" then
             local rest = a:match("^%S+%s+%S+%s+(.*)$")
             if not rest or rest == "" then
-                say("usage: statustray set quest <text>")
+                say("usage: statusTray set quest <text>")
                 return
             end
 
@@ -537,7 +558,7 @@ rune.command.add("statustray", function(args)
         elseif what == "tell" then
             local rest = w[3] or ""
             if rest == "" then
-                say("usage: statustray set tell <ON|OFF|text>")
+                say("usage: statusTray set tell <ON|OFF|text>")
                 return
             end
 
@@ -572,7 +593,7 @@ rune.command.add("statustray", function(args)
             return
         end
 
-        say("usage: statustray clear crystal|sextant|quest|tell")
+        say("usage: statusTray clear crystal|sextant|quest|tell")
         return
     end
 
@@ -584,7 +605,7 @@ rune.command.add("statustray", function(args)
             return
         end
 
-        say("usage: statustray toggle enabled")
+        say("usage: statusTray toggle enabled")
         return
     end
 
@@ -594,7 +615,15 @@ rune.command.add("statustray", function(args)
     end
 
     show_help()
-end, "Bottom status bar: manage bottom row status")
+end
+
+-- rune.command.add would only create slash commands (/statusTray), so the
+-- bare commands are aliases: "statusTray" and the short form "tray".
+for _, name in ipairs({ "statusTray", "tray" }) do
+    rune.alias.regex("^" .. name .. "(\\s+.*)?$", function(m)
+        on_command(m and m[1] or "")
+    end, { name = "statustray-cmd-" .. name:lower() })
+end
 
 -- Init -------------------------------------------------------------------
 dbg("loaded settings: "
@@ -603,7 +632,7 @@ dbg("loaded settings: "
     .. tostring(state.sextant))
 
 -- Single-row load message.
-say(status_line())
+say("v" .. VERSION .. " loaded (statusTray for help)")
 
 -- Export module for other plugins to require and call setters.
 return M

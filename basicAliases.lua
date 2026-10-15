@@ -1,63 +1,83 @@
 -- Filename: eljayPlugins/basicAliases.lua
 -- Purpose: Basic Aliases Generalized for all Characters
--- Version: 2.8
--- Date: 2026-Oct-10
+-- Version: 2.10
+-- Date: 2026-Oct-15
+--
+-- Changes in 2.10:
+--   * argument aliases are plain rune.alias.exact rows (Rune appends typed arguments natively),
+--     so the regex helper is gone; no block-comment markers are used in comments
+--
+-- Changes in 2.9:
+--   * brought to standard: basicAliases command (short alias basic) with help, trigger on/off,
+--     debug toggle and loader line; triggers now live in one group so on/off covers them all
 
---[[ How it works
-  * Triggers: auto-responses to game text, plus gag triggers (gag = true) for noisy lines.
-    Yes/no questions arrive as prompts (no line ending), so those use prompt_trigger().
-  * Aliases: one row each. Fixed text uses rune.alias.exact; helpers cast()/play()/plan()
-    wrap spell, song and skill aliases; arg_alias() handles an optional argument
-    ("qs" -> "quest status", "qs 3" -> "quest status 3").
-  * Commands are chained with ";" inside a single rune.send string.
-]]--
+-- How it works
+--  * Triggers: auto-responses to game text, plus gag triggers (gag = true) for noisy lines.
+--    Yes/no questions arrive as prompts (no line ending), so those use prompt_trigger().
+--    All triggers belong to the "basicAliases" group; `basicAliases on|off` switches the group.
+--  * Aliases: one row each with rune.alias.exact; Rune appends anything typed after the alias
+--    ("qs" -> "quest status", "qs 3" -> "quest status 3"). Helper plan() wraps skill aliases.
+--    Aliases are always active; only the triggers are toggled.
+--  * Commands are chained with ";" inside a single rune.send string.
+--  * Commands: `basicAliases` (short alias `basic`) shows help; `on|off` toggles the triggers;
+--    `debug on|off` toggles debug messages (default off).
 
---[[ Helpers ]]--
+local NAME, VERSION, GROUP = "basicAliases", "2.10", "basicAliases"
+local debugOn = false
 
--- alias "<key>" or "<key> <args>" -> "<cmd>" or "<cmd> <args>"
-local function arg_alias(key, cmd)
-  rune.alias.regex("^" .. key .. "(?: +(.+))?$", function(m)
-    local a = m[1]
-    rune.send((a and a ~= "") and (cmd .. " " .. a) or cmd)
-  end)
+-- Output helpers
+
+local function paint(color, text)
+  local ok, r = pcall(function() return rune.style[color](text) end)
+  return (ok and type(r) == "string") and r or text
 end
 
--- trigger for text that may arrive as a prompt (partial line, no newline) or as a full line
-local function prompt_trigger(pattern, cmd)
-  rune.trigger.regex(pattern, function() rune.send(cmd) end, { on = "prompt" })
-  rune.trigger.regex(pattern, function() rune.send(cmd) end)
+local function say(msg) rune.echo(paint("cyan", "[" .. NAME .. "] ") .. msg) end
+local function dbg(msg) if debugOn then say(paint("yellow", "debug: ") .. msg) end end
+
+-- Helpers
+
+-- auto-response: when the pattern matches, send cmd (on = "prompt" for partial lines)
+local function auto(pattern, cmd, on)
+  rune.trigger.regex(pattern, function() dbg("trigger -> " .. cmd); rune.send(cmd) end, { group = GROUP, on = on })
 end
+
+-- text that may arrive as a prompt (partial line, no newline) or as a full line
+local function prompt_trigger(pattern, cmd) auto(pattern, cmd, "prompt"); auto(pattern, cmd) end
+
+-- hide matching lines
+local function gag(pattern) rune.trigger.regex(pattern, function() dbg("gagged a line") end, { group = GROUP, gag = true }) end
 
 local function plan(key, skill) rune.alias.exact(key, "plan '" .. skill .. "'") end
 local function ganuk(m) rune.send("shop buy " .. m[1] .. ";down;give " .. m[1] .. " ganuk") end
 
---[[ Triggers ]]--
+-- Triggers
 
 -- Auto-responses
-rune.trigger.regex("^A sudden, strong gust of wind knocks you to the ground!$", function() rune.send("stand") end)
-rune.trigger.regex("^A tangle vine twists around your feet, preventing you from leaving!$", function() rune.send("attack tangle") end)
-rune.trigger.regex("^\\s*An open coffin is covered in dust here\\.$", function() rune.send("enter coffin") end)
-rune.trigger.regex("^Divusmors vanishes with a clap of thunder!$", function() rune.send("get all.loot;get all lootable") end)
+auto("^A sudden, strong gust of wind knocks you to the ground!$", "stand")
+auto("^A tangle vine twists around your feet, preventing you from leaving!$", "attack tangle")
+auto("^\\s*An open coffin is covered in dust here\\.$", "enter coffin")
+auto("^Divusmors vanishes with a clap of thunder!$", "get all.loot;get all lootable")
 
 -- Yes/no questions (prompts)
 prompt_trigger("Do you wish to join this formation\\s*\\(y/N\\)\\?", "y")
 prompt_trigger("(?i)do you allow this follower.*\\(y/n\\)", "y")
 
 -- Gag triggers (suppress output)
-rune.trigger.regex("^\\s+a (?:magical belt pouch|woven gold bag|yellow silk bag|red silk bag|blue silk bag|black silk bag) \\(new\\)$", nil, { gag = true })
-rune.trigger.regex("^An armor-plated harmonica holder squonks discordantly, displeased by your ", nil, { gag = true })
+gag("^\\s+a (?:magical belt pouch|woven gold bag|yellow silk bag|red silk bag|blue silk bag|black silk bag) \\(new\\)$")
+gag("^An armor-plated harmonica holder squonks discordantly, displeased by your ")
 
---[[ Movement / recall ]]--
+-- Movement / recall
 
 rune.alias.exact("mp", "mount pegasus")
 rune.alias.exact("dism", "dismount pegasus;hitch pegasus post")
 rune.alias.exact("lip", "look in portal")
 rune.alias.exact("ep", "enter portal")
-rune.alias.exact("wor", "cast 'word of recall'")
+rune.alias.exact("cwo", "cast 'word of recall'")
 rune.alias.exact("ahall", "alliance gohall")
 rune.alias.exact("hall", "clan gohall")
 
---[[ Containers / looking ]]--
+-- Containers / looking
 
 rune.alias.exact("l1", "look in 1.trunk")
 rune.alias.exact("l2", "look in 2.trunk")
@@ -86,7 +106,7 @@ rune.alias.exact("fha", "take bernadette miner;eat bernadette")
 rune.alias.exact("ir", "inventory reorder")
 rune.alias.regex("^forge +(.+)$", function(m) rune.send("put " .. m[1] .. " forge;close forge") end)
 
---[[ Basics / utility ]]--
+-- Basics / utility
 
 rune.alias.exact("ce", "chat enter")
 rune.alias.exact("cx", "chat exit")
@@ -109,8 +129,8 @@ rune.alias.exact("lo", "lay out")
 rune.alias.exact("rb", "raise bar")
 rune.alias.exact("fb", "fistbump")
 rune.alias.exact("rf", "relay #first")
-arg_alias("go", "where is")
-arg_alias("nf", "news _search")
+rune.alias.exact("go", "where is")
+rune.alias.exact("nf", "news _search")
 
 -- Info / where
 rune.alias.exact("bi", "boss info")
@@ -125,8 +145,8 @@ rune.alias.exact("rrl", "read research list")
 rune.alias.regex("^rrr +(.+)$", function(m) rune.send("rem notes;read research buy " .. m[1] .. ";bind thesis notes;hold notes") end)
 
 -- Locker
-arg_alias("lor", "locker remove")
-arg_alias("los", "locker store")
+rune.alias.exact("lor", "locker remove")
+rune.alias.exact("los", "locker store")
 rune.alias.exact("ll", "locker list")
 rune.alias.exact("ls", "locker survey")
 
@@ -134,12 +154,10 @@ rune.alias.exact("ls", "locker survey")
 rune.alias.exact("dep", "bank deposit all")
 rune.alias.exact("wd50", "bank withdraw 50000")
 rune.alias.exact("wd60", "bank withdraw 60000")
-arg_alias("vf", "vendor search")
-arg_alias("vr", "vendor reprice")
-arg_alias("vs", "vendor search")
-arg_alias("vw", "vendor where")
-rune.alias.regex("^wo +(.+)$", ganuk)
-rune.alias.regex("^r4 +(.+)$", ganuk)
+rune.alias.exact("vf", "vendor search")
+rune.alias.exact("vr", "vendor reprice")
+rune.alias.exact("vs", "vendor search")
+rune.alias.exact("vw", "vendor where")
 
 -- Say / NPC responses
 rune.alias.exact("bjh", "say hit")
@@ -160,7 +178,7 @@ rune.alias.exact("cw", "clan where")
 rune.alias.exact("nt", "clan talk novice")
 rune.alias.exact("ps", "pursuer")
 rune.alias.regex("^setslave +(.+)$", function(m) rune.send("clan security set " .. m[1] .. " alliancetalk chatlog gohall log where") end)
-arg_alias("ff", "form follow")
+rune.alias.exact("ff", "form follow")
 rune.alias.exact("fss", "form structure shield")
 rune.alias.exact("fr", "form rep")
 rune.alias.exact("fw", "form where")
@@ -183,9 +201,9 @@ rune.alias.exact("rac", "breathe acid")
 rune.alias.exact("rfr", "breathe frost")
 rune.alias.exact("rli", "breathe lightning")
 
---[[ Combat / skills ]]--
-arg_alias("b", "bash")
-arg_alias("h", "hold")
+-- Combat / skills
+rune.alias.exact("b", "bash")
+rune.alias.exact("h", "hold")
 rune.alias.exact("sd", "strike down")
 rune.alias.exact("sb", "strike blow")
 rune.alias.exact("rh", "raise hackles")
@@ -200,17 +218,56 @@ plan("hb", "headbutt")
 plan("pfr", "frothing rage")
 plan("bm", "blood in your mouth")
 
---[[ Quests / recall / auction / alliance / inventory ]]--
+-- Quests / recall / auction / alliance / inventory
 rune.alias.exact("ql", "quest list")
 rune.alias.exact("qr", "quest request")
 rune.alias.exact("qrr", "quest request rewarding")
 rune.alias.exact("qrm", "quest request metaphase")
-arg_alias("qc", "quest complete")
-arg_alias("qi", "quest identify")
-arg_alias("qs", "quest status")
-arg_alias("rl", "recall list")
-arg_alias("if", "inventory search")
+rune.alias.exact("qc", "quest complete")
+rune.alias.exact("qi", "quest identify")
+rune.alias.exact("qs", "quest status")
+rune.alias.exact("rl", "recall list")
+rune.alias.exact("if", "inventory search")
 rune.alias.exact("al", "auction list")
-arg_alias("ab", "auction bid")
-arg_alias("ai", "auction identify")
-arg_alias("aw", "alliance where")
+rune.alias.exact("ab", "auction bid")
+rune.alias.exact("ai", "auction identify")
+rune.alias.exact("aw", "alliance where")
+
+
+-- Command: basicAliases (short alias: basic)
+
+local function help()
+  local ok, H = pcall(require, "helpstyle")
+  local shown = ok and type(H) == "table" and pcall(function()
+    H.title(NAME)
+    H.section("Commands")
+    H.line("basicAliases", "show this help")
+    H.line("basicAliases on|off", "turn the auto-response and gag triggers on or off")
+    H.line("basicAliases debug on|off", "show or hide debug messages")
+    H.section("Short alias")
+    H.line("basic", "same as basicAliases")
+    H.foot("v" .. VERSION .. "  triggers=" .. (rune.group.is_enabled(GROUP) and "on" or "off") .. " debug=" .. (debugOn and "on" or "off"))
+  end)
+  if not shown then
+    say("v" .. VERSION .. "  basicAliases | basicAliases on|off | basicAliases debug on|off | basic")
+  end
+end
+
+local function command(m)
+  local a, b = string.lower(m[1] or ""):match("^(%S*)%s*(%S*)")
+  if a == "" or a == "help" then
+    help()
+  elseif a == "on" or a == "off" then
+    if a == "on" then rune.group.enable(GROUP) else rune.group.disable(GROUP) end
+    say("triggers " .. a)
+  elseif a == "debug" and (b == "on" or b == "off") then
+    debugOn = (b == "on")
+    say("debug " .. b)
+  else
+    say("unknown option; type basicAliases or basic for help")
+  end
+end
+
+rune.alias.regex("^(?:basicAliases|basic)(?: +(.*))?$", command)
+
+say("v" .. VERSION .. " loaded (basicAliases or basic for help)")

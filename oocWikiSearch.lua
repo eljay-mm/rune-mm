@@ -1,8 +1,13 @@
 -- Filename: eljayPlugins/oocWikiSearch.lua
 -- Purpose: Search and open pages on the OOC wiki (Order of Chaos).
--- Version: 2.2
--- Date: 2026-Oct-14
+-- Version: 2.3
+-- Date: 2026-Oct-16
 -- Changelog:
+--   2.3  Display method aligned with annwnQuestSearch (paint/say/emit via
+--        rune.echo, cyan prefix via rune.style.cyan); bare oocWikiSearch and
+--        ooc are exact aliases so help always shows, term commands use a
+--        separate regex alias; on/off and debug persisted in rune.store;
+--        alias registration is guarded and reports failures.
 --   2.2  Main command is now oocWikiSearch with ooc as the short alias;
 --        bare command shows help (helpstyle) with version footer;
 --        on/off and debug toggles added (debug defaults to off);
@@ -35,7 +40,7 @@
 --   oocWikiSearch debug on|off       toggle debug messages (default off)
 
 local NAME = "oocWikiSearch"
-local VERSION = "2.2"
+local VERSION = "2.3"
 
 local BASE_URL = "https://ooc.dune.net"
 local USER_AGENT = "Rune-oocWikiSearch/" .. VERSION
@@ -62,10 +67,10 @@ if not rune.alias or not rune.alias.regex then
 end
 
 ---------------------------------------------------------------------------
--- Output
+-- Output (same display method as annwnQuestSearch)
 ---------------------------------------------------------------------------
 
-local function echo(text)
+local function emit(text)
   text = tostring(text or "")
 
   if rune.echo then
@@ -75,19 +80,34 @@ local function echo(text)
   end
 end
 
--- Cyan "[name] " prefix, then plain text (single row).
+-- Cyan text via rune.style.cyan, with an ANSI fallback.
+local function paint(text)
+  text = tostring(text or "")
+
+  local ok, result = pcall(function()
+    return rune.style.cyan(text)
+  end)
+
+  if ok and type(result) == "string" then
+    return result
+  end
+
+  return "\27[36m" .. text .. "\27[0m"
+end
+
+-- Single row with the coloured "[name]" prefix.
 local function say(text)
-  echo("\27[36m[" .. NAME .. "]\27[0m " .. tostring(text or ""))
+  emit(paint("[" .. NAME .. "]") .. " " .. tostring(text or ""))
 end
 
 -- Unprefixed output (page text, result list).
 local function plain(text)
-  echo(text)
+  emit(text)
 end
 
 local function dbg(text)
   if DEBUG then
-    echo("\27[33m[" .. NAME .. ":debug]\27[0m " .. tostring(text or ""))
+    emit(paint("[" .. NAME .. ":debug]") .. " " .. tostring(text or ""))
   end
 end
 
@@ -95,8 +115,46 @@ local function onoff(flag)
   return flag and "on" or "off"
 end
 
+-- Settings persisted in rune.store (guarded; falls back to in-memory only).
+local function to_bool(value, default)
+  if value == nil then
+    return default
+  end
+
+  if value == true or value == "true" or value == "on" or value == 1 then
+    return true
+  end
+
+  if value == false or value == "false" or value == "off" or value == 0 then
+    return false
+  end
+
+  return default
+end
+
+local function store_get(key, default)
+  local ok, value = pcall(function()
+    return rune.store.get(NAME .. "." .. key)
+  end)
+
+  if ok then
+    return to_bool(value, default)
+  end
+
+  return default
+end
+
+local function store_set(key, value)
+  pcall(function()
+    rune.store.set(NAME .. "." .. key, value)
+  end)
+end
+
+ENABLED = store_get("enabled", true)
+DEBUG = store_get("debug", false)
+
 ---------------------------------------------------------------------------
--- Help (helpstyle, as in autopouch)
+-- Help (helpstyle rows passed to emit)
 ---------------------------------------------------------------------------
 
 local has_helpstyle, H = pcall(require, "helpstyle")
@@ -133,15 +191,15 @@ local function help_foot(text)
 end
 
 local function usage()
-  echo(help_title(NAME .. " - search the OOC wiki (alias: ooc)"))
-  echo(help_section("Commands"))
-  echo(help_line("oocWikiSearch <term>", "Search the Order of Chaos wiki"))
-  echo(help_line("oocWikiSearch <number>", "Open a search result"))
-  echo(help_line("oocWikiSearch list", "Show the previous result list"))
-  echo(help_line("oocWikiSearch search <term>", "Search for a term that is also a command"))
-  echo(help_line("oocWikiSearch on|off", "Enable or disable searching"))
-  echo(help_line("oocWikiSearch debug on|off", "Toggle debug messages"))
-  echo(help_foot(string.format(
+  emit(help_title(NAME .. " - search the OOC wiki (alias: ooc)"))
+  emit(help_section("Commands"))
+  emit(help_line("oocWikiSearch <term>", "Search the Order of Chaos wiki"))
+  emit(help_line("oocWikiSearch <number>", "Open a search result"))
+  emit(help_line("oocWikiSearch list", "Show the previous result list"))
+  emit(help_line("oocWikiSearch search <term>", "Search for a term that is also a command"))
+  emit(help_line("oocWikiSearch on|off", "Enable or disable searching"))
+  emit(help_line("oocWikiSearch debug on|off", "Toggle debug messages"))
+  emit(help_foot(string.format(
     "v%s  state=%s debug=%s results=%d",
     VERSION, onoff(ENABLED), onoff(DEBUG), #last_results
   )))
@@ -585,13 +643,7 @@ local function open_result(number)
   show_page(index, 0)
 end
 
-local function wiki_command(matches)
-  local argument = ""
-
-  if type(matches) == "table" then
-    argument = matches[1] or ""
-  end
-
+local function dispatch(argument)
   argument = trim(argument)
 
   if argument == "" or argument:lower() == "help" then
@@ -603,6 +655,7 @@ local function wiki_command(matches)
 
   if lowered == "on" or lowered == "off" then
     ENABLED = (lowered == "on")
+    store_set("enabled", ENABLED)
     say("Searching " .. onoff(ENABLED))
     return
   end
@@ -612,6 +665,7 @@ local function wiki_command(matches)
   if debug_setting then
     DEBUG = set_toggle("debug", DEBUG, trim(debug_setting))
     if trim(debug_setting) ~= "" then
+      store_set("debug", DEBUG)
       say("Debug " .. onoff(DEBUG))
     end
     return
@@ -644,17 +698,59 @@ local function wiki_command(matches)
 end
 
 ---------------------------------------------------------------------------
--- Rune alias (no / prefix; ooc is the short alias)
+-- Rune aliases (no / prefix; ooc is the short alias)
 ---------------------------------------------------------------------------
 
-rune.alias.regex(
-  "^(?:oocWikiSearch|ooc)(?:\\s+(.*))?$",
-  wiki_command,
-  {
-    name = "oocWikiSearch",
-    group = "oocWikiSearch",
-    priority = 10,
-  }
-)
+-- Bare command: exact alias handler taking (args, ctx); always shows help.
+local function bare_command(args, ctx)
+  if type(args) == "string" and trim(args) ~= "" then
+    dispatch(args)
+    return
+  end
+
+  usage()
+end
+
+-- Command with arguments: regex alias, capture 1 is the argument text.
+local function term_command(matches)
+  local argument = ""
+
+  if type(matches) == "table" then
+    argument = matches[1] or ""
+  elseif type(matches) == "string" then
+    argument = matches
+  end
+
+  dispatch(argument)
+end
+
+local function register(kind, pattern, handler, options)
+  local ok, err = pcall(rune.alias[kind], pattern, handler, options)
+
+  if not ok then
+    say("Alias '" .. tostring(pattern) .. "' failed: " .. tostring(err))
+  end
+
+  return ok
+end
+
+local has_exact = type(rune.alias.exact) == "function"
+
+for _, command in ipairs({ "oocWikiSearch", "ooc" }) do
+  local options = { name = command, group = NAME, priority = 10 }
+
+  if has_exact then
+    register("exact", command, bare_command, options)
+  else
+    register("regex", "^" .. command .. "\\s*$", bare_command, options)
+  end
+
+  register(
+    "regex",
+    "^" .. command .. "\\s+(.+)$",
+    term_command,
+    { name = command .. "_args", group = NAME, priority = 10 }
+  )
+end
 
 say(string.format("v%s loaded (oocWikiSearch or ooc for help)", VERSION))

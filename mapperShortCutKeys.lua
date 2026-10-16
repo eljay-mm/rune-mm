@@ -1,77 +1,135 @@
 -- Filename: eljayPlugins/mapperShortCutKeys.lua
 -- Purpose: Mapper shortcut aliases for common map locations and movement lookups.
--- Version: 2.3
+-- Version: 2.6
 -- Date: 2026-Oct-16
 -- Changelog:
---   2.3  Standard pass: loader line, help via helpstyle, on/off toggle (persisted), debug toggle,
---        table-driven shortcuts, duplicate r4 removed (post office kept), short alias maps.
+--   2.6  Display and commands rebuilt on the working annwnQuestSearch pattern: helpstyle rows are
+--        passed to rune.echo (they return text, they do not print), and bare commands are
+--        rune.alias.exact handlers. This fixes help not showing in 2.3 to 2.5.
+--   2.5  Output helper with fallbacks (superseded by 2.6).
+--   2.4  Separate bare and argument aliases (superseded by 2.6).
+--   2.3  Standard pass: loader line, help, on/off toggle, debug toggle, table-driven shortcuts,
+--        duplicate r4 removed (post office kept), short alias maps.
 --   2.2  House-style pass: repo-standard header, "How it works" and "Commands" sections.
 --   2.1  Original alias conversion from XML, no dependencies.
 --
 -- How it works:
---   * Registers short aliases that send mapper commands: mapf/mapg/mapb/mapw/mapi, plus
+--   * Registers short aliases that send mapper commands: mapf, mapg, mapb, mapw and mapi, plus
 --     fixed "mapper goto <room id>" shortcuts for common towns and dungeons (r0, s1, hbrex, ...).
 --   * Shortcuts are kept in one table below, one row per alias, grouped by area.
---   * No parsing, no triggers, no network calls; the only state is the on/off flag,
---     which is saved in rune.store.
---   * When shortcuts are off, the aliases report that and send nothing.
+--   * No triggers and no network calls; the only saved setting is on/off (rune.store).
+--   * Commands are typed without a / prefix. mapperShortCutKeys is the full command and maps is
+--     the short alias; typing either alone shows the command summary.
+--   * When shortcuts are off, the aliases say so and send nothing.
 --
--- Commands:
---   mapperShortCutKeys           show help
---   maps                         short alias for mapperShortCutKeys
---   maps on|off                  enable or disable all shortcut aliases
---   maps debug on|off            show each command sent (default off)
+-- Commands (maps works in place of mapperShortCutKeys):
+--   mapperShortCutKeys               show this summary
+--   mapperShortCutKeys on|off        enable or disable all shortcut aliases
+--   mapperShortCutKeys debug on|off  toggle debug messages (default off)
 
-local NAME    = "mapperShortCutKeys"
-local VERSION = "2.3"
-local DEBUG   = false
-local enabled = true
+local VERSION      = "2.6"
+local NAME         = "mapperShortCutKeys"
+local PREFIX       = "[" .. NAME .. "] "
+local SETTINGS_KEY = "mapperShortCutKeys.settings"
 
-local STORE_KEY = NAME .. ".enabled"
+local ANSI_CYAN  = "\27[36m"
+local ANSI_RESET = "\27[0m"
 
--- Output helpers -------------------------------------------------------------
+local enabled       = true
+local debug_enabled = false  -- never saved: always starts off
 
-local function cyan(s)
-  local ok, r = pcall(function() return rune.style.cyan(s) end)
-  if ok and r then return r end
-  return s
+-- Optional shared help styling (same module autopouch.lua uses).
+local helpstyle_ok, H = pcall(require, "helpstyle")
+if not helpstyle_ok then
+  H = nil
 end
 
-local function say(msg) rune.echo(cyan("[" .. NAME .. "] ") .. msg) end
-local function dbg(msg) if DEBUG then say("debug: " .. msg) end end
 
-local function send(cmd)
-  dbg("send: " .. cmd)
-  rune.send(cmd)
+-- Cyan "[name] " prefix: rune.style.cyan, then rune.style("cyan", ...), then a
+-- plain ANSI escape, so the colour shows whichever style API Rune provides.
+local function paint(message)
+  local prefix
+  local style = rune and rune.style
+  if type(style) == "table" and type(style.cyan) == "function" then
+    local ok, text = pcall(style.cyan, PREFIX)
+    if ok and type(text) == "string" then prefix = text end
+  elseif type(style) == "function" then
+    local ok, text = pcall(style, "cyan", PREFIX)
+    if ok and type(text) == "string" then prefix = text end
+  end
+  prefix = prefix or (ANSI_CYAN .. PREFIX .. ANSI_RESET)
+  return prefix .. tostring(message)
 end
 
--- Persistence (guarded: a store failure never breaks the plugin) -------------
 
-local function load_enabled()
-  local ok, v = pcall(function() return rune.store.get(STORE_KEY) end)
-  if ok and v ~= nil then return v == true or v == "true" end
-  return true
-end
-
-local function save_enabled()
-  pcall(function() rune.store.set(STORE_KEY, enabled) end)
-end
-
-enabled = load_enabled()
-
--- Wrap a handler so it only runs while shortcuts are on
-local function guard(fn)
-  return function(m)
-    if not enabled then
-      say("shortcuts are off (type 'maps on')")
-      return
-    end
-    fn(m or {})
+local function say(message)
+  if not pcall(rune.echo, paint(message)) then
+    print(PREFIX .. tostring(message))
   end
 end
 
--- Shortcut data ----------------------------------------------------------------
--- { alias, room id, note }
+
+local function dbg(message)
+  if debug_enabled then
+    say(message)
+  end
+end
+
+
+local function onoff(flag)
+  return flag and "on" or "off"
+end
+
+
+local function emit(text)
+  if text ~= nil then
+    rune.echo(text)
+  end
+end
+
+
+-- Only the on/off setting is persisted.
+local function load_settings()
+  if not (rune and rune.store and type(rune.store.get) == "function") then
+    return
+  end
+
+  local ok, saved = pcall(rune.store.get, SETTINGS_KEY)
+  if ok and type(saved) == "table" and type(saved.enabled) == "boolean" then
+    enabled = saved.enabled
+  end
+end
+
+
+local function save_settings()
+  if not (rune and rune.store and type(rune.store.set) == "function") then
+    return
+  end
+
+  pcall(rune.store.set, SETTINGS_KEY, { enabled = enabled })
+end
+
+
+-- Send a command to the game, with a debug echo.
+local function send(command)
+  dbg("send: " .. command)
+  rune.send(command)
+end
+
+
+-- Wrap an alias handler so it only runs while shortcuts are on.
+local function guard(handler)
+  return function(args, ctx)
+    if not enabled then
+      say("shortcuts are off (mapperShortCutKeys on to enable)")
+      return
+    end
+    handler(tostring(args or ""), ctx)
+  end
+end
+
+
+-- Shortcut data: { alias, room id, note } -------------------------------------
 
 local SHORTCUTS = {
   -- Dungeon Deceit teleports
@@ -114,7 +172,7 @@ local SHORTCUTS = {
   { "v1",    40221,   "king" },
 }
 
--- Prefix aliases: "<alias> <args>" -> "<mapper command> <args>"
+-- Prefix aliases: "<alias> <args>" sends "<mapper command> <args>"
 local PREFIXES = {
   { "mapf", "mapper nearby " },
   { "mapg", "mapper goto " },
@@ -122,83 +180,102 @@ local PREFIXES = {
   { "mapw", "mapper where " },
 }
 
--- Registration -------------------------------------------------------------------
 
-local count = 0
+-- Help and command handling -----------------------------------------------------
 
-rune.alias.regex("^mapi$", guard(function() send("mapper roominfo") end))
-count = count + 1
+local alias_count = 0
 
-for _, p in ipairs(PREFIXES) do
-  local alias, cmd = p[1], p[2]
-  rune.alias.regex("^" .. alias .. " *(.*)$", guard(function(m) send(cmd .. (m[1] or "")) end))
-  count = count + 1
+local function show_help()
+  -- One status row, starting with the version, as the footer.
+  local status = "v" .. VERSION .. "  enabled=" .. onoff(enabled) .. " debug=" .. onoff(debug_enabled)
+    .. " aliases=" .. alias_count
+
+  local styled = H and pcall(function()
+    emit(H.title("Mapper shortcut keys"))
+    emit(H.section("Commands"))
+    emit(H.line("mapperShortCutKeys", "show this summary (short alias: maps)"))
+    emit(H.line("mapperShortCutKeys on|off", "enable or disable all shortcut aliases"))
+    emit(H.line("mapperShortCutKeys debug on|off", "toggle debug messages (default off)"))
+    emit(H.section("Usage"))
+    emit(H.line("mapf / mapg / mapb / mapw <text>", "mapper nearby / goto / bookmark goto / where"))
+    emit(H.line("mapi", "mapper roominfo"))
+    emit(H.line("wo <item>", "Ganuk's Iron Worm: buy <item> and hand in the token"))
+    emit(H.line("r0-r9, s0-s2, m0-m3, ...", "mapper goto fixed rooms"))
+    emit(H.foot(status))
+  end)
+
+  if styled then
+    return
+  end
+
+  -- Plain fallback when helpstyle is missing or its API differs.
+  rune.echo("Mapper shortcut keys")
+  rune.echo("  mapperShortCutKeys               show this summary (short alias: maps)")
+  rune.echo("  mapperShortCutKeys on|off        enable or disable all shortcut aliases")
+  rune.echo("  mapperShortCutKeys debug on|off  toggle debug messages (default off)")
+  rune.echo(status)
+end
+
+
+local function msk_command(args, ctx)
+  local text    = tostring(args or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+  local command = text:match("^(%S*)") or ""
+  local value   = text:match("^%S+%s*(.*)$") or ""
+
+  if command == "on" or command == "off" then
+    enabled = (command == "on")
+    save_settings()
+    say("shortcuts are " .. onoff(enabled))
+    return
+  end
+
+  if command == "debug" then
+    if value == "on" then
+      debug_enabled = true
+    elseif value == "off" then
+      debug_enabled = false
+    elseif value ~= "" then
+      show_help()
+      return
+    end
+
+    say("debug is " .. onoff(debug_enabled))
+    return
+  end
+
+  -- Bare command, "help" or anything unrecognised.
+  show_help()
+end
+
+
+-- Registration ------------------------------------------------------------------
+-- Bare commands are aliases (rune.command.add would only create /slash commands).
+
+rune.alias.exact("mapperShortCutKeys", msk_command)
+rune.alias.exact("maps", msk_command)
+
+rune.alias.exact("mapi", guard(function() send("mapper roominfo") end))
+alias_count = alias_count + 1
+
+for _, row in ipairs(PREFIXES) do
+  local command = row[2]
+  rune.alias.exact(row[1], guard(function(args) send(command .. args) end))
+  alias_count = alias_count + 1
 end
 
 -- Ganuk's Iron Worm: go there, buy, go down, hand in the token
-rune.alias.regex("^wo *(.*)$", guard(function(m)
-  send("mapper goto 10636; shop buy " .. (m[1] or "") .. "; down; give token ganuk")
+rune.alias.exact("wo", guard(function(args)
+  send("mapper goto 10636; shop buy " .. args .. "; down; give token ganuk")
 end))
-count = count + 1
+alias_count = alias_count + 1
 
-for _, s in ipairs(SHORTCUTS) do
-  local cmd = "mapper goto " .. s[2]
-  rune.alias.regex("^" .. s[1] .. "$", guard(function() send(cmd) end))
-  count = count + 1
+for _, row in ipairs(SHORTCUTS) do
+  local command = "mapper goto " .. row[2]
+  rune.alias.exact(row[1], guard(function() send(command) end))
+  alias_count = alias_count + 1
 end
 
--- Help and command handling ------------------------------------------------------
+load_settings()
 
-local HELP = {
-  { NAME,               "show this help" },
-  { "maps",             "short alias for " .. NAME },
-  { "maps on|off",      "enable or disable all shortcut aliases" },
-  { "maps debug on|off", "show each command sent (default off)" },
-}
-
-local function show_help()
-  local foot = "v" .. VERSION .. "  shortcuts=" .. (enabled and "on" or "off")
-    .. "  debug=" .. (DEBUG and "on" or "off") .. "  aliases=" .. count
-
-  local ok = pcall(function()
-    local H = require("helpstyle")
-    H.title(NAME)
-    H.section("Commands")
-    for _, row in ipairs(HELP) do H.line(row[1], row[2]) end
-    H.foot(foot)
-  end)
-
-  if not ok then
-    rune.echo(NAME)
-    for _, row in ipairs(HELP) do rune.echo("  " .. row[1] .. "  -  " .. row[2]) end
-    rune.echo(foot)
-  end
-end
-
-local function handle(m)
-  local arg = ((m and m[1]) or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
-
-  if arg == "on" then
-    enabled = true
-    save_enabled()
-    say("shortcuts on")
-  elseif arg == "off" then
-    enabled = false
-    save_enabled()
-    say("shortcuts off")
-  elseif arg == "debug on" then
-    DEBUG = true
-    say("debug on")
-  elseif arg == "debug off" then
-    DEBUG = false
-    say("debug off")
-  else
-    show_help()
-  end
-end
-
--- Commands are bare aliases (rune.command.add only creates /slash commands)
-rune.alias.regex("^" .. NAME .. " *(.*)$", handle)
-rune.alias.regex("^maps *(.*)$", handle)
-
-say("v" .. VERSION .. " loaded (" .. NAME .. " or maps for help)")
+-- Loader line (single row).
+say("v" .. VERSION .. " loaded (mapperShortCutKeys or maps for help)")

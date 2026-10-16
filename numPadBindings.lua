@@ -1,8 +1,10 @@
 -- Filename: eljayPlugins/numPadBindings.lua
 -- Purpose: Numpad bindings for movement, look, and door accelerators.
--- Version: 2.2
--- Date: 2026-Oct-13
+-- Version: 2.3
+-- Date: 2026-Oct-16
 -- Changelog:
+--   2.3  Standard pass: numPadBindings command with npb alias, bare aliases (no / prefix),
+--        annwnQuestSearch-style display, loader line, version in the status footer.
 --   2.2  Repo-style header cleanup and safe command registration; behavior preserved.
 --   2.1  Original implementation.
 --
@@ -14,15 +16,19 @@
 --       - ctrl+numpad   : "open <direction> door" (no ctrl+numpad5)
 --   * "add" (numpad +) is down and "subtract" (numpad -) is up in all layers.
 --   * Every command is a fixed literal built at load time; nothing is ever taken from game output.
---   * Typing "numpad" alone shows the status and a command summary.
---   * numpad on|off pauses/resumes every binding while leaving the handlers registered.
---   * numpad debug on|off echoes each key and the command it sends.
+--   * Typing "numPadBindings" (or "npb") alone shows the command summary.
+--   * on|off pauses/resumes every binding while leaving the handlers registered.
+--   * debug on|off echoes each key and the command it sends (default off).
 --
 -- Commands:
---   numpad                 status + command summary
---   numpad on|off          enable / disable the accelerators
---   numpad list            show every binding
---   numpad debug on|off    echo keypresses and emitted commands
+--   numPadBindings               command summary (short alias: npb)
+--   numPadBindings on|off        enable / disable the accelerators
+--   numPadBindings list          show every binding
+--   numPadBindings debug on|off  echo keypresses and emitted commands (default off)
+
+local NAME = "numPadBindings"
+local ALIAS = "npb"
+local VERSION = "2.3"
 
 rune.config.set("numpad", true)
 
@@ -44,33 +50,49 @@ local DIRS = {
   { "subtract", "up",        nil,    true  },
 }
 
+-- Display helpers (paint/say via rune.echo, help rows via helpstyle)
 local H = nil
 pcall(function() H = require("helpstyle") end)
 
-local function echo(text)
-  if rune and rune.echo then
-    rune.echo(text)
+local function paint(color, text)
+  local fn = rune.style and rune.style[color]
+  if type(fn) == "function" then
+    local ok, out = pcall(fn, text)
+    if ok and out ~= nil then
+      return out
+    end
+  end
+  return text
+end
+
+local function emit(row)
+  if row ~= nil and rune.echo then
+    rune.echo(row)
   end
 end
 
-local function style(fname, text)
-  if not H or type(H[fname]) ~= "function" then
-    echo(text)
-    return
-  end
+local function say(text)
+  local ok, row = pcall(function()
+    return paint("cyan", "[" .. NAME .. "] ") .. text
+  end)
+  emit(ok and row or ("[" .. NAME .. "] " .. text))
+end
 
-  local ok, out = pcall(H[fname], text)
-  if ok and type(out) == "string" then
-    echo(out)
-    return
+local function help_row(fname, text)
+  local f = H and H[fname]
+  if type(f) == "function" then
+    local ok, out = pcall(f, text)
+    if ok then
+      emit(out)
+      return
+    end
   end
-
-  echo(text)
+  emit(text)
 end
 
 local function dbg(text)
   if debug_on then
-    echo("[numpad] " .. text)
+    say("debug: " .. text)
   end
 end
 
@@ -104,29 +126,33 @@ for _, d in ipairs(DIRS) do
 end
 
 -- Commands
+local function footer()
+  help_row("foot", string.format("v%s  enabled=%s debug=%s bindings=%d",
+    VERSION, enabled and "on" or "off", debug_on and "on" or "off", #bindings))
+end
+
 local function show_summary()
-  style("title", "Numpad accelerators")
-  style("section", "Commands")
-  style("line", "numpad on | off        enable / disable the bindings")
-  style("line", "numpad list            show every binding")
-  style("line", "numpad debug on|off    echo keypresses (default off)")
-  style("section", "Layers")
-  style("line", "numpad    walk (5 = look)")
-  style("line", "alt+      look <dir> (5 = scan)")
-  style("line", "ctrl+     open <dir> door")
-  style("foot", string.format("accelerators: %s | debug: %s | bindings: %d",
-    enabled and "on" or "off", debug_on and "on" or "off", #bindings))
+  help_row("title", "Numpad accelerators")
+  help_row("section", "Commands")
+  help_row("line", NAME .. " | " .. ALIAS .. "        this summary")
+  help_row("line", NAME .. " on | off     enable / disable the bindings")
+  help_row("line", NAME .. " list         show every binding")
+  help_row("line", NAME .. " debug on|off echo keypresses (default off)")
+  help_row("section", "Layers")
+  help_row("line", "numpad    walk (5 = look)")
+  help_row("line", "alt+      look <dir> (5 = scan)")
+  help_row("line", "ctrl+     open <dir> door")
+  footer()
 end
 
 local function show_list()
-  style("title", "Numpad bindings")
+  help_row("title", "Numpad bindings")
 
   for _, b in ipairs(bindings) do
-    style("line", string.format("%-14s -> %s", b[1], b[2]))
+    help_row("line", string.format("%-14s -> %s", b[1], b[2]))
   end
 
-  style("foot", string.format("%d bindings | accelerators %s",
-    #bindings, enabled and "on" or "off"))
+  footer()
 end
 
 local function run_command_impl(arg_text)
@@ -139,7 +165,7 @@ local function run_command_impl(arg_text)
 
   if action == "on" or action == "off" then
     enabled = (action == "on")
-    style("foot", "numpad accelerators " .. action)
+    say("accelerators " .. action)
   elseif action == "list" then
     show_list()
   elseif action == "debug" then
@@ -150,7 +176,7 @@ local function run_command_impl(arg_text)
     else
       debug_on = not debug_on
     end
-    style("foot", "numpad debug " .. (debug_on and "on" or "off"))
+    say("debug " .. (debug_on and "on" or "off"))
   else
     show_summary()
   end
@@ -159,7 +185,7 @@ end
 local function run_command(arg_text)
   local ok, err = pcall(run_command_impl, arg_text)
   if not ok then
-    echo("numpad error: " .. tostring(err))
+    say("error: " .. tostring(err))
   end
 end
 
@@ -170,25 +196,20 @@ local function args_to_text(args)
   return tostring(args or "")
 end
 
--- Alias for plain `numpad ...` plus a safe client registration for `/numpad ...`.
-if rune.alias and rune.alias.regex then
-  pcall(rune.alias.regex, "^/?numpad(.*)$", function(match)
-    run_command(match[1])
-  end, { name = "numpad-cmd" })
-end
-
-if rune.command then
-  local ok = false
-  for _, fname in ipairs({ "add", "register", "create", "define", "set", "on" }) do
-    local f = rune.command[fname]
-    if type(f) == "function" then
-      local status = pcall(f, "numpad", function(args)
-        run_command(args_to_text(args))
-      end)
-      if status then
-        ok = true
-        break
-      end
-    end
+-- Bare commands are aliases (rune.command only makes /slash commands).
+-- The exact aliases handle the bare word; the regex alias handles "<name> <args>".
+if rune.alias and rune.alias.exact then
+  for _, word in ipairs({ NAME, ALIAS }) do
+    pcall(rune.alias.exact, word, function(args, ctx)
+      run_command(args_to_text(args))
+    end)
   end
 end
+
+if rune.alias and rune.alias.regex then
+  pcall(rune.alias.regex, "^(?:" .. NAME .. "|" .. ALIAS .. ") +(.*)$", function(match)
+    run_command(match[1])
+  end, { name = "numPadBindings-cmd" })
+end
+
+say(string.format("v%s loaded (%s or npb for help)", VERSION, NAME))

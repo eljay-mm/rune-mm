@@ -3,7 +3,7 @@
 -- Version: 2.7
 -- Date: 2026-Oct-15
 -- Changelog:
---   2.7  Full command is annwnQuestSearch, annwn kept as the short alias; loader
+--   2.7  Full command is annwnQuestSearch, aqs kept as the short alias; loader
 --        line in the standard format with the coloured prefix; Purpose aligned
 --        with README.md; only the on/off setting is saved (debug always starts
 --        off); settings are no longer rewritten on every load.
@@ -19,7 +19,7 @@
 --     confirmation, a clickable OSC 8 hyperlink, and the plain URL text. In
 --     Ghostty, Ctrl+Shift+click opens either one in the default browser.
 --   * Commands are typed without a / prefix. annwnQuestSearch is the full
---     command and annwn is the short alias; typing either alone shows the
+--     command and aqs is the short alias; typing either alone shows the
 --     command summary.
 --   * The on/off setting is saved with rune.store; the debug toggle always
 --     starts off.
@@ -28,7 +28,7 @@
 --   * Safety: control characters are stripped before echo and the quest name
 --     is capped before URL generation.
 --
--- Commands (annwn works in place of annwnQuestSearch):
+-- Commands (aqs works in place of annwnQuestSearch):
 --   annwnQuestSearch               show this summary
 --   annwnQuestSearch on|off        enable or disable the trigger
 --   annwnQuestSearch debug on|off  toggle debug messages (default off)
@@ -147,7 +147,7 @@ local function show_help()
   local styled = H and pcall(function()
     emit(H.title("Annwn quest search"))
     emit(H.section("Commands"))
-    emit(H.line("annwnQuestSearch", "show this summary (short alias: annwn)"))
+    emit(H.line("annwnQuestSearch", "show this summary (short alias: aqs)"))
     emit(H.line("annwnQuestSearch on|off", "enable or disable the trigger"))
     emit(H.line("annwnQuestSearch debug on|off", "toggle debug messages (default off)"))
     emit(H.section("Usage"))
@@ -162,7 +162,7 @@ local function show_help()
 
   -- Plain fallback when helpstyle is missing or its API differs.
   rune.echo("Annwn quest search")
-  rune.echo("  annwnQuestSearch               show this summary (short alias: annwn)")
+  rune.echo("  annwnQuestSearch               show this summary (short alias: aqs)")
   rune.echo("  annwnQuestSearch on|off        enable or disable the trigger")
   rune.echo("  annwnQuestSearch debug on|off  toggle debug messages (default off)")
   rune.echo("  Ctrl+Shift+click               open the link or URL in the browser (Ghostty)")
@@ -241,11 +241,11 @@ end
 -- Full command and short alias share one handler. Bare commands are aliases
 -- (rune.command.add would only create /slash commands).
 rune.alias.exact("annwnQuestSearch", annwn_command)
-rune.alias.exact("annwn", annwn_command)
+rune.alias.exact("aqs", annwn_command)
 
 rune.trigger.regex("^This quest \\[([0-9]+)\\] is called '(.+)',$", annwn_quest_search, { name = "annwn-quest-search" })
 
 load_settings()
 
 -- Loader line (single row).
-say("v" .. VERSION .. " loaded (annwnQuestSearch or annwn for help)")
+say("v" .. VERSION .. " loaded (annwnQuestSearch or aqs for help)")

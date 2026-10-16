@@ -1,12 +1,15 @@
 -- Filename: eljayPlugins/spdxyCoordinates.lua
 -- Purpose: Walks to sextant coordinates, towns and clan halls, including unmapped wilderness
--- Version: 3.4
--- Date: 2026-Oct-14
+-- Version: 3.5
+-- Date: 2026-Oct-16
+--   3.5  Bare spdxyCoordinates, spdxy and nearby are now rune.alias.exact handlers
+--        (args, ctx), so each always shows help or runs; help rows go through
+--        emit(); loader line `[spdxyCoordinates] v3.5 loaded (spdxyCoordinates for
+--        help)`; waypoints capped at 100.
 --   3.4  Command renamed to spdxyCoordinates (spdxy kept as the short alias); new
 --        bare `nearby` alias; helpstyle help with a status footer; on/off and
---        debug toggles (saved); single-row load message; waypoint names sanitised.
+--        debug toggles (saved); waypoint names sanitised.
 --   3.3  Added `nearby` and `back`.
---   3.2  Built-in towns, worldgates and clan halls from the old XML.
 --
 -- How it works:
 --   * Inspired by the MUSHclient plugin by Ruthgul.
@@ -45,13 +48,13 @@
 --   spdxy save <name> [x y] | del <name>
 --   spdxyCoordinates on|off   - enable or disable walking and its triggers
 --   spdxyCoordinates debug on|off   - verbose walk/lookup messages (default off)
---   nearby [x, y]   - same as spdxy nearby
+--   nearby [x, y]   - same as spdxy nearby (alone: from where you stand)
 
 ----------------------------------------------------------------------
 -- Plugin identity, helpers, settings
 ----------------------------------------------------------------------
 local PLUGIN  = "spdxyCoordinates"
-local VERSION = "3.4"
+local VERSION = "3.5"
 
 local ok_h, H = pcall(require, "helpstyle")
 if not ok_h or type(H) ~= "table" then
@@ -71,6 +74,7 @@ end
 
 local PREFIX = paint("cyan", "[" .. PLUGIN .. "] ")
 local function say(msg) rune.echo(PREFIX .. msg) end
+local function emit(s) rune.echo(s) end   -- helpstyle rows (H.*) go through here
 
 local KEY_ENABLED = "spdxy.enabled"   -- default on
 local KEY_DEBUG   = "spdxy.debug"     -- default off
@@ -104,6 +108,7 @@ local GROUP        = "spdxy-walk"
 local KEY_PLACES   = "spdxy.places"
 local KEY_LAST     = "spdxy.last"
 local KEY_ORIGIN   = "spdxy.origin"
+local MAX_WAYPOINTS = 100        -- cap on saved waypoints (keeps rune.store small)
 
 -- Zones where coord.x/y are sextant coordinates (lowercase).
 local VMAP_ZONES = {
@@ -839,25 +844,25 @@ local function status_row()
 end
 
 local function help()
-  rune.echo(H.title("spdxyCoordinates (alias: spdxy) - walk to sextant coordinates, towns and clan halls"))
-  rune.echo(H.section("Walk:"))
-  rune.echo(H.line("spdxy <x>, <y>", "walk to coordinates (comma optional)"))
-  rune.echo(H.line("spdxy <town>", "town, landmark, worldgate or waypoint"))
-  rune.echo(H.line("spdxy clan <name|#>", "walk to a clan hall"))
-  rune.echo(H.line("spdxy again | back", "last destination | last start"))
-  rune.echo(H.line("spdxy stop | pause | resume", "control the walk"))
-  rune.echo(H.section("Look up:"))
-  rune.echo(H.line("spdxy nearby [x, y]", "nearest known place (also: nearby)"))
-  rune.echo(H.line("spdxy find <text>", "list matching places and clan halls"))
-  rune.echo(H.line("spdxy here", "your coordinates, zone and exits"))
-  rune.echo(H.section("Waypoints:"))
-  rune.echo(H.line("spdxy save <name> [x y]", "save this spot or given coordinates"))
-  rune.echo(H.line("spdxy del <name> | list", "delete a waypoint | list them"))
-  rune.echo(H.section("Settings:"))
-  rune.echo(H.line("spdxyCoordinates on | off", "enable or disable walking"))
-  rune.echo(H.line("spdxyCoordinates debug on | off", "verbose walk and lookup messages"))
-  rune.echo("")
-  rune.echo(H.foot(status_row()))
+  emit(H.title("spdxyCoordinates (alias: spdxy) - walk to sextant coordinates, towns and clan halls"))
+  emit(H.section("Walk:"))
+  emit(H.line("spdxy <x>, <y>", "walk to coordinates (comma optional)"))
+  emit(H.line("spdxy <town>", "town, landmark, worldgate or waypoint"))
+  emit(H.line("spdxy clan <name|#>", "walk to a clan hall"))
+  emit(H.line("spdxy again | back", "last destination | last start"))
+  emit(H.line("spdxy stop | pause | resume", "control the walk"))
+  emit(H.section("Look up:"))
+  emit(H.line("spdxy nearby [x, y]", "nearest known place (also: nearby)"))
+  emit(H.line("spdxy find <text>", "list matching places and clan halls"))
+  emit(H.line("spdxy here", "your coordinates, zone and exits"))
+  emit(H.section("Waypoints:"))
+  emit(H.line("spdxy save <name> [x y]", "save this spot or given coordinates"))
+  emit(H.line("spdxy del <name> | list", "delete a waypoint | list them"))
+  emit(H.section("Settings:"))
+  emit(H.line("spdxyCoordinates on | off", "enable or disable walking"))
+  emit(H.line("spdxyCoordinates debug on | off", "verbose walk and lookup messages"))
+  emit("")
+  emit(H.foot(status_row()))
 end
 
 local function parse_xy(s)
@@ -1091,6 +1096,10 @@ local function cmd_save(rest)
     say("no current coordinates; give them: spdxy save <name> <x> <y>")
     return
   end
+  if not places[name] and count_places() >= MAX_WAYPOINTS then
+    say(string.format("waypoint limit (%d) reached; remove one with: spdxy del <name>", MAX_WAYPOINTS))
+    return
+  end
   places[name] = { x = x, y = y, plane = plane }
   save_table(KEY_PLACES, places)
   say(string.format("saved '%s' = %d, %d", name, x, y))
@@ -1246,6 +1255,7 @@ end
 
 local function dispatch(arg)
   arg = trim(arg or "")
+  dbg("command: %s", arg == "" and "(bare)" or arg)
   if arg == "" then help(); return end
 
   local x, y = parse_xy(arg)
@@ -1286,12 +1296,16 @@ local function dispatch(arg)
   end
 end
 
--- Aliases (typed bare, no leading slash). One handler for every form so
--- commands and place names cannot collide.
-local function run(m) dispatch(m[1] or "") end
-rune.alias.regex("^spdxyCoordinates(?:[ ]+(.*))?$", run, { name = "spdxyCoordinates" })
-rune.alias.regex("^spdxy(?:[ ]+(.*))?$", run, { name = "spdxy" })
-rune.alias.regex("^nearby(?:[ ]+(.*))?$", function(m) cmd_nearby(m[1] or "") end, { name = "nearby" })
+-- Aliases (typed bare, no leading slash). The bare forms are rune.alias.exact
+-- handlers taking (args, ctx); the forms with arguments are regex aliases.
+-- Every form goes through dispatch() so commands and place names cannot collide.
+local function run_args(m) dispatch(m[1] or "") end
+rune.alias.exact("spdxyCoordinates", function(args, ctx) help() end, { name = "spdxyCoordinates" })
+rune.alias.exact("spdxy", function(args, ctx) help() end, { name = "spdxy" })
+rune.alias.exact("nearby", function(args, ctx) cmd_nearby("") end, { name = "nearby" })
+rune.alias.regex("^spdxyCoordinates[ ]+(.+)$", run_args, { name = "spdxyCoordinates-args" })
+rune.alias.regex("^spdxy[ ]+(.+)$", run_args, { name = "spdxy-args" })
+rune.alias.regex("^nearby[ ]+(.+)$", function(m) cmd_nearby(m[1] or "") end, { name = "nearby-args" })
 
-say(string.format("v%s loaded - %d places, %d clan halls, %d waypoints%s",
-  VERSION, #PLACES, #CLANS, count_places(), enabled and "" or " (walking disabled)"))
+-- One row on load.
+say(string.format("v%s loaded (spdxyCoordinates or spdxy for help)%s", VERSION, enabled and "" or " - walking disabled"))

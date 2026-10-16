@@ -1,6 +1,6 @@
 # Contributing to rune-mm
 
-This repository is a collection of Lua plugins for the Rune client, designed to work with the horstgs Materia Magica configuration. It is developed with Rune running in Ghostty on Debian 13, and the plugins are written to work on Windows and macOS as well. The project prefers a consistent house style across all plugins.
+This repository (https://github.com/eljay-mm/rune-mm) is a collection of Lua plugins for the Rune client, designed to work with the horstgs Materia Magica configuration. It is developed with Rune running in Ghostty on Debian 13, and the plugins are written to work on Windows and macOS as well. The project prefers a consistent house style across all plugins.
 
 ## Project context
 
@@ -8,7 +8,18 @@ This repository is a collection of Lua plugins for the Rune client, designed to 
 - Development terminal: Ghostty on Debian 13; plugins should also work on Windows and macOS (see [Cross-platform](#cross-platform))
 - Game: Materia Magica at materiamagica.com
 - Persistent settings: use `rune.store`, not separate config files, unless a plugin explicitly requires otherwise
-- `RUNE_CHARACTER` does not exist; do not rely on it
+
+## Reference plugins
+
+When in doubt, copy the pattern from a plugin that already works:
+
+| Topic | Reference |
+| --- | --- |
+| Display method (`paint`/`say`, `H.*` rows, bare-command aliases) | `annwnQuestSearch.lua` |
+| Loader line, command name plus short alias | `eqdbResultsPicker.lua` |
+| Cyan `[pluginName] ` prefix via `rune.style` | `jmcSolver.lua`, `druidSpellTLAs.lua` |
+| Help footer with the version at the start of the row | `jmcSolver.lua` |
+| Help layout | `autopouch.lua` (horstgs configuration) |
 
 ## Required conventions
 
@@ -16,7 +27,6 @@ This repository is a collection of Lua plugins for the Rune client, designed to 
 
 - Put each plugin file directly in `eljayPlugins/`. The repository root *is* the `eljayPlugins` directory once cloned into `~/.config/rune/eljayPlugins`, so in the repository the files sit at the top level and are never nested further
 - Use the filename format: `eljayPlugins/<camelName>.lua`
-- Do not use a `y_` prefix on the filename or the header `Filename` line
 - Keep the plugin name in the same style as the rest of the repo: short, camel-cased, and descriptive
 
 ### Header format
@@ -35,6 +45,14 @@ Every plugin must begin with the same header pattern:
 --   * ...
 --   * ...
 --
+-- Commands (type without "/"; "xyz" is a short alias for "<camelName>"):
+--   <camelName>            show this help
+--   <camelName> on|off     enable / disable the trigger(s)
+--   <camelName> debug      toggle debug messages (default off)
+--
+-- Tweaks (top of file):
+--   * NAME   what it controls
+--
 ```
 
 Rules:
@@ -47,21 +65,26 @@ Rules:
 - Include a bulleted "How it works" summary in the header using the style already used in the repo
 - The "How it works" statement must match the `Purpose` line
 - Keep any existing "Inspired by" line in the "How it works" section if it was present before
-- If an earlier version had it and it was dropped, restore it
 - If the plugin needs another plugin or an alias defined elsewhere (for example `researchNotesPicker` uses the `rrl` and `rrr` aliases from `basicAliases`), say so in "How it works"
+- List the plugin's commands in the header, including the short alias. If the file has constants at the top that are meant to be tweaked, list them under "Tweaks"
+- Use plain `--` line comments only. Never use `[[ ]]` block-comment markers in plugin comments
 
 ### Commands and toggles
 
-- Commands are defined without a `/` prefix
+- Commands are defined without a `/` prefix. `rune.command.add` only creates `/slash` commands, so bare commands are always aliases
+- The full command is the plugin name, with a short alias (for example `crystalLocator` and `crystal`, `statusTray` and `tray`, `eqdbResultsPicker` and `erp`). Both are handled the same way and both are listed in the help and the header
+- The command name must not clash with an in-game command (`eqdbResultsPicker`, not `eqdb`)
+- Register the bare command as a `rune.alias.exact` handler taking `(args, ctx)`, as `annwnQuestSearch.lua` does. Check the alias works when typed bare before delivering; a command that shows nothing when typed is the most common failure
 - Every plugin that has triggers or commands must provide an on/off toggle for its trigger(s), using a pattern like:
   - `<pluginName> on|off`
 - Every plugin must provide a debug toggle that defaults to off, using a pattern like:
   - `<pluginName> debug on|off`
+- On/off and debug states are kept in `rune.store`, so they survive a restart. When nothing is stored, the defaults are on for the trigger(s) and off for debug
 - Typing the command bare must print a command summary / help screen
 - Help output follows the repo's `helpstyle` pattern:
   - `local H = require("helpstyle")`
   - use `H.title`, `H.section`, `H.line`, `H.foot`
-  - print with `rune.echo`
+  - the rows are printed with `rune.echo` (or passed to `emit()`, as `annwnQuestSearch.lua` does)
 - The version appears at the start of the single `H.foot` status row, without the plugin name in that row
 - Exception: a loader with no commands or triggers, such as `initEljay.lua`, has no on/off toggle or help output. It may use a file-level `DEBUG` switch instead, and its header says so
 
@@ -71,10 +94,11 @@ Example pattern:
 local H = require("helpstyle")
 
 local function help()
-  rune.echo(H.title("Plugin title"))
+  rune.echo(H.title("Plugin title  (alias: xyz)"))
   rune.echo(H.section("Commands"))
-  rune.echo(H.line("plugin on|off"))
-  rune.echo(H.line("plugin debug on|off"))
+  rune.echo(H.line("plugin",           "show this help"))
+  rune.echo(H.line("plugin on|off",    "enable / disable the trigger(s)"))
+  rune.echo(H.line("plugin debug",     "toggle debug messages"))
   rune.echo(H.foot("v1.4  enabled=true debug=false"))
 end
 ```
@@ -82,8 +106,22 @@ end
 ### Load output
 
 - On load, a plugin prints a single row, with a cyan `[pluginName] ` prefix, as `jmcSolver` does (its `paint`/`say` helpers use `rune.style`)
+- The row is a loader line in the `eqdbResultsPicker` form: `[pluginName] vX.Y loaded (<command> for help)`
+- Exception: `characterLog` prints its own single row instead, showing the full log path including the character name in the filename
 - Extra rows are printed only when something needs attention, such as an error
 - Never print one row per alias, trigger or file
+
+Example pattern:
+
+```lua
+local style = rune.style
+
+local function say(msg)
+  rune.echo(style.cyan("[" .. NAME .. "] ") .. msg)
+end
+
+say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))
+```
 
 ### Settings
 
@@ -166,14 +204,17 @@ When providing or updating a plugin:
 Before considering a plugin complete, confirm:
 
 - [ ] File is in `eljayPlugins/` and named correctly
-- [ ] Header uses the required format
-- [ ] Purpose and "How it works" match the actual behavior
+- [ ] Header uses the required format, with commands (and tweaks, if any) listed
+- [ ] Header and code use `--` line comments only, with no `[[ ]]` markers
+- [ ] Purpose and "How it works" match the actual behavior, and any "Inspired by" line is kept
 - [ ] Changelog is present and current
-- [ ] Commands are defined without a `/` prefix
+- [ ] Commands are defined without a `/` prefix, as bare `rune.alias.exact` handlers
+- [ ] Full command is the plugin name, with a short alias, and neither clashes with an in-game command
 - [ ] On/off toggle exists
 - [ ] Debug toggle exists and defaults to off
+- [ ] Toggle states are kept in `rune.store`
 - [ ] Help summary works when the command is typed bare, with the version at the start of the footer row
-- [ ] Load output is a single row with the coloured `[pluginName] ` prefix
+- [ ] Load output is a single loader row (`[pluginName] vX.Y loaded (<command> for help)`) with the coloured prefix, unless it is `characterLog`
 - [ ] Settings are stored with `rune.store`
 - [ ] Works on Windows as well as Linux, or the limitation is documented
 - [ ] No forbidden aliases or helpers were added

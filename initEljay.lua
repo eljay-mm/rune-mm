@@ -53,6 +53,7 @@ local PLUGINS = {
   "highlights",
   "jmcSolver",
   "mapperShortCutKeys",
+  "missingAffects",
   "numPadBindings",
   "oocWikiSearch",
   "researchNotesPicker",

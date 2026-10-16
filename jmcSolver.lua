@@ -1,17 +1,19 @@
 -- Filename: eljayPlugins/jmcSolver.lua
 -- Purpose: Joint Magical Consortium (JMC) projectile puzzle - standalone solver (no website, no network).
--- Version: 1.5
--- Date: 2026-Oct-13
+-- Version: 1.7
+-- Date: 2026-Oct-15
 -- Changelog:
+--   1.7  Auto-drop: choosing a solution arms it, and each mirror is dropped when you reach its grid square (arrival line "Grid X, N of the Projectile Testing Range"; `drop 90clock` / `45clock` / `90counter` / `45counter`); new `arm`, `plan` and `stop` commands, `autodrop` and `dropcmd` settings.
+--   1.6  Brought to standard: full command jmcSolver with jmc as the short alias; on/off toggle for the capture trigger (kept in rune.store, as are the settings); Windows clipboard support (clip.exe); loader line and [jmcSolver] prefix; no block-comment markers.
 --   1.5  Repo-style header pass; command summary aligned to current formatting and still preserves the original solver logic.
 --   1.4  Help screen now copies autopouch.lua's style (require("helpstyle"): H.title / H.section / H.line / H.foot printed via rune.echo, commands typed bare, key=value status footer).
 --   1.3  No minimum mirror count is enforced: solutions you can build entirely from the mirrors you carry come first and are marked with `*` (even if they use more mirrors than the shortest answer); shorter answers that need mirrors you lack follow. New `more` setting; `maxm` now defaults to 8.
---   1.2  Lists several solutions (up to `alts`) so you can choose with `jmc pick <n>`; the chosen (or only) solution is copied to the clipboard, `jmc copy [n|all]` copies on demand; selftest also checks the website's own answers are among the alternatives; header brought to current format.
+--   1.2  Lists several solutions (up to `alts`) so you can choose with `jmcSolver pick <n>`; the chosen (or only) solution is copied to the clipboard, `jmcSolver copy [n|all]` copies on demand; selftest also checks the website's own answers are among the alternatives; header brought to current format.
 --   1.1  Standalone local solver replaces the ooc.dune.net web solver (no network, no clipboard, no io.popen).
 --   1.0  First version: captured the console look + mirrors and submitted them to the ooc.dune.net JMC solver.
 --
 -- How it works:
---   * `jmc solve` (alias `jms`) sends `look console` and `inventory`, captures both replies and solves the puzzle locally.
+--   * `jmcSolver solve` (short alias `jmc solve`, or `jms`) sends `look console` and `inventory`, captures both replies and solves the puzzle locally.
 --   * From the console look it reads the map, the launcher (position + direction) and the receiver; from the inventory
 --     it counts your "angled mirror rotated ..." lines. Nothing else is kept.
 --   * Rules used (inferred from the Projectile Test Ballistics Guide and from solved examples):
@@ -25,27 +27,38 @@
 --     them, with the missing mirrors named; they are only shown when they beat the best `*` answer.
 --   * One solution is shown as the map with the mirrors drawn in plus a list like "90cw at C-12"
 --     (column letter - row number, row 1 at the bottom) and copied to the clipboard.
---   * Several solutions are listed as numbered one-liners, e.g. `*1) [5] 90cw at A-2, ...`; `jmc pick <n>` shows and
+--   * Several solutions are listed as numbered one-liners, e.g. `*1) [5] 90cw at A-2, ...`; `jmcSolver pick <n>` shows and
 --     copies the one you choose.
---   * `jmc copy [n|all]` copies a solution (default: the picked one) or all of them; `copy`/`clip` settings control
---     the automatic copy and the method (wl-copy / xclip / xsel, OSC 52 as last resort).
---   * `jmc selftest` solves two built-in puzzles whose website answers are known and checks them.
---   * Typing `jmc` alone shows the command summary; `jmc debug on|off` toggles debug messages (default off).
+--   * `jmcSolver copy [n|all]` copies a solution (default: the picked one) or all of them; the `copy`/`clip` settings control
+--     the automatic copy and the method (wl-copy / xclip / xsel / pbcopy, clip on Windows, OSC 52 as last resort).
+--   * `jmcSolver on|off` turns the console/inventory capture trigger on or off (default on); on/off and the settings
+--     are remembered in rune.store, debug is not.
+--   * Choosing a solution (`jmcSolver pick <n>`, or the only solution found) arms auto-drop: when you step onto a planned
+--     square ("Grid X, N of the Projectile Testing Range") the plugin sends `drop <keyword>` for the mirror planned there
+--     (90clock, 45clock, 90counter, 45counter), confirms it from the game's "You drop an angled mirror rotated ..." reply
+--     and tells you how many are left. It never moves you; `look` on a planned square drops its mirror if you armed while standing there.
+--   * `jmcSolver selftest` solves two built-in puzzles whose website answers are known and checks them.
+--   * Typing `jmcSolver` (or `jmc`) alone shows the command summary; `jmcSolver debug on|off` toggles debug messages (default off).
 --
--- Commands:
---   jmc                 show this summary
---   jmc solve (jms)     look at the console + inventory and solve the puzzle
---   jmc again           solve the last captured look + mirrors again
---   jmc last            show the last result again
---   jmc pick <n>        show and copy solution n
---   jmc copy [n|all]    copy the picked solution, solution n, or all solutions
---   jmc rules           show the rules the solver assumes
---   jmc selftest        solve two built-in puzzles with known answers
---   jmc set             list settings
---   jmc set <key> <value>  change one setting
---   jmc debug on|off   toggle debug messages
+-- Commands (jmc is the short alias):
+--   jmcSolver                    show the command summary
+--   jmcSolver on | off           turn the capture trigger on or off
+--   jmcSolver solve (jms)        look at the console + inventory and solve the puzzle
+--   jmcSolver again              solve the last captured look + mirrors again
+--   jmcSolver last               show the last result again
+--   jmcSolver pick <n>           show and copy solution n, and arm its mirrors for auto-drop
+--   jmcSolver arm [n]            arm solution n (default: the picked one) for auto-drop
+--   jmcSolver plan               show which mirrors are placed and which are still to place
+--   jmcSolver stop               cancel auto-drop
+--   jmcSolver copy [n|all]       copy the picked solution, solution n, or all solutions
+--   jmcSolver rules              show the rules the solver assumes
+--   jmcSolver selftest           solve two built-in puzzles with known answers
+--   jmcSolver set                list settings
+--   jmcSolver set <key> <value>  change one setting
+--   jmcSolver debug on | off     toggle debug messages
 
-local VERSION = "1.5"
+local VERSION = "1.7"
+local NAME    = "jmcSolver"
 
 -- Lines (Lua patterns) that frame the captures
 local LOOK_HEADER = "^%s*You focus your powers of observation on the ignition console"
@@ -54,7 +67,7 @@ local INV_HEADER  = "^%s*You are carrying:"
 local INV_EMPTY   = "^%s*You are not carrying anything"
 local INV_END     = "^%s*You may carry a maximum of"
 
---[[ Settings (change live with: jmc set <key> <value>) ]]--
+-- Settings (change live with: jmc set <key> <value>) ----
 local cfg = {
   debug    = false,        -- verbose [jmc:debug] output
   gates    = "auto",       -- distinct gates the beam must pass: auto (= min(3, gates on the map)) or a number
@@ -64,6 +77,8 @@ local cfg = {
   maxtotal = 10,           -- most mirrors tried when allowed to add missing ones (only shown if fewer than the best *)
   alts     = 5,            -- most alternative solutions collected and listed
   copy     = true,         -- copy the shown/picked solution to the clipboard automatically
+  autodrop = true,         -- arm the chosen solution so its mirrors are dropped as you reach each square
+  dropcmd  = "drop",       -- command word used to drop a mirror (followed by its keyword, e.g. drop 90clock)
   clip     = "auto",       -- clipboard method: auto | osc | wl-copy | xclip | xsel
   budget   = 1500000,      -- search steps allowed per attempt before giving up
   lookcmd  = "look console",
@@ -72,24 +87,70 @@ local cfg = {
 }
 
 local SETTINGS = {
-  debug = "bool", copy = "bool", gates = "gates", place = "string", lookcmd = "string", invcmd = "string",
-  clip = { "auto", "osc", "wl-copy", "xclip", "xsel" },
+  debug = "bool", copy = "bool", autodrop = "bool", gates = "gates", place = "string", lookcmd = "string", invcmd = "string",
+  dropcmd = "string",
+  clip = { "auto", "osc", "wl-copy", "xclip", "xsel", "pbcopy", "clip" },
   maxm = "number", more = "number", maxtotal = "number", alts = "number", budget = "number", maxlines = "number",
 }
 
---[[ State ]]--
+-- State ----
 local state = {
-  pending = false,                       -- `jmc solve` is waiting for look + inventory
+  pending = false,                       -- `jmcSolver solve` is waiting for look + inventory
   fresh   = { look = false, inv = false },
   look    = nil,                         -- last captured console look (table of lines)
   owned   = nil,                         -- last captured mirror counts { ["90cw"] = n, ... }
   last    = nil,                         -- last solved { P = puzzle, res = result }
   pick    = nil,                         -- index of the solution the player picked (or the only one)
+  plan    = nil,                         -- armed auto-drop plan { entries = { {x, y, t, done, sent} }, remaining, at }
 }
 
 local cap = { look = nil, inv = nil }    -- captures in progress
 
---[[ Output helpers ]]--
+-- Persistence (rune.store): the on/off switch and every setting except debug
+local function storeGet(key)
+  if not (rune.store and rune.store.get) then return nil end
+  local ok, v = pcall(rune.store.get, key)
+  if ok then return v end
+  return nil
+end
+
+local function storeSet(key, value)
+  if not (rune.store and rune.store.set) then return end
+  pcall(rune.store.set, key, value)
+end
+
+local enabled = (storeGet("jmcSolver.enabled") ~= false)
+
+local function saveSettings()
+  local out = {}
+  for k in pairs(SETTINGS) do
+    if k ~= "debug" then out[k] = cfg[k] end
+  end
+  storeSet("jmcSolver.settings", out)
+end
+
+local function loadSettings()
+  local saved = storeGet("jmcSolver.settings")
+  if type(saved) ~= "table" then return end
+  for k, spec in pairs(SETTINGS) do
+    local v = saved[k]
+    if k ~= "debug" and v ~= nil then
+      if spec == "bool" and type(v) == "boolean" then cfg[k] = v
+      elseif spec == "number" and type(v) == "number" then cfg[k] = v
+      elseif spec == "gates" and (v == "auto" or type(v) == "number") then cfg[k] = v
+      elseif spec == "string" and type(v) == "string" and v ~= "" then cfg[k] = v
+      elseif type(spec) == "table" then
+        for _, allowed in ipairs(spec) do
+          if allowed == v then cfg[k] = v end
+        end
+      end
+    end
+  end
+end
+
+loadSettings()
+
+-- Output helpers ----
 local function paint(color, text)
   local fn = rune.style and rune.style[color]
   if type(fn) == "function" then
@@ -100,12 +161,12 @@ local function paint(color, text)
 end
 
 local function say(msg)
-  rune.echo(paint("cyan", "[jmc] ") .. msg)
+  rune.echo(paint("cyan", "[" .. NAME .. "] ") .. msg)
 end
 
 local function dbg(msg)
   if cfg.debug then
-    rune.echo(paint("blue", "[jmc:debug] ") .. msg)
+    rune.echo(paint("blue", "[" .. NAME .. ":debug] ") .. msg)
   end
 end
 
@@ -116,7 +177,10 @@ local function cleanLine(ln)
   return tostring(ln)
 end
 
---[[ Clipboard ]]--
+-- Clipboard ----
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+local NULL = IS_WINDOWS and "nul" or "/dev/null"
+
 local function sanitize(text)
   text = text:gsub("\r", "")
   text = text:gsub("[\1-\8\11-\31\127]", "")
@@ -124,7 +188,8 @@ local function sanitize(text)
 end
 
 local function hasTool(name)
-  local ok, p = pcall(io.popen, "command -v " .. name .. " 2>/dev/null")
+  local probe = IS_WINDOWS and ("where " .. name .. " 2>" .. NULL) or ("command -v " .. name .. " 2>" .. NULL)
+  local ok, p = pcall(io.popen, probe)
   if not ok or not p then return false end
   local out = p:read("*l")
   p:close()
@@ -135,13 +200,20 @@ local EXTERNAL = {
   ["wl-copy"] = "wl-copy",
   ["xclip"]   = "xclip -selection clipboard",
   ["xsel"]    = "xsel --clipboard --input",
+  ["pbcopy"]  = "pbcopy",
+  ["clip"]    = "clip",
 }
 
 local function pickClipMethod()
   if cfg.clip ~= "auto" then return cfg.clip end
+  if IS_WINDOWS then
+    if hasTool("clip") then return "clip" end
+    return "osc"
+  end
   if os.getenv("WAYLAND_DISPLAY") and hasTool("wl-copy") then return "wl-copy" end
   if os.getenv("DISPLAY") and hasTool("xclip") then return "xclip" end
   if os.getenv("DISPLAY") and hasTool("xsel") then return "xsel" end
+  if hasTool("pbcopy") then return "pbcopy" end
   return "osc"
 end
 
@@ -159,9 +231,12 @@ local function copyToClipboard(text)
     return true, method
   end
 
-  local okp, p = pcall(io.popen, EXTERNAL[method] .. " 2>/dev/null", "w")
+  local cmd = EXTERNAL[method]
+  if not cmd then return false, method, "unknown clipboard method" end
+  if IS_WINDOWS then text = text:gsub("\n", "\r\n") end
+  local okp, p = pcall(io.popen, cmd .. " 2>" .. NULL, "w")
   if not okp or not p then
-    return false, method, "io.popen is not available (try: jmc set clip osc)"
+    return false, method, "io.popen is not available (try: " .. NAME .. " set clip osc)"
   end
   p:write(text)
   p:close()
@@ -180,7 +255,7 @@ local function doCopy(text, announce)
   return ok
 end
 
---[[ Puzzle model ]]--
+-- Puzzle model ----
 -- Directions 0..7 = N NE E SE S SW W NW; a mirror adds its rotation to the direction
 local DX  = { [0] = 0, 1, 1, 1, 0, -1, -1, -1 }
 local DY  = { [0] = 1, 1, 0, -1, -1, -1, 0, 1 }
@@ -261,7 +336,7 @@ local function makePuzzle(rows, lcol, lrow, ldir, rcol, rrow, owned)
   return P
 end
 
---[[ Solver ]]--
+-- Solver ----
 local function nodeKey(P, x, y, d, m)
   return ((((y - 1) * P.W + x) * 8) + d) * P.M + m
 end
@@ -501,7 +576,7 @@ local function solvePuzzle(P)
   end
 
   if #entries == 0 then
-    if aborted then return { ok = false, why = "search budget exhausted (jmc set budget <n>)" } end
+    if aborted then return { ok = false, why = "search budget exhausted (jmcSolver set budget <n>)" } end
     return { ok = false, why = string.format("no solution with up to %d mirrors", math.max(P.maxm, P.maxtotal)) }
   end
   table.sort(entries, function(a, b)
@@ -514,7 +589,7 @@ local function solvePuzzle(P)
   return { ok = true, solutions = entries }
 end
 
---[[ Parsing the captured text ]]--
+-- Parsing the captured text ----
 local MAPROW = "^[%.#XO<>{}]+$"
 
 -- Returns puzzle or nil, err
@@ -574,31 +649,37 @@ local function mirrorCounts(invLines)
   return owned
 end
 
---[[ Help (helpstyle, as in autopouch.lua) ]]--
+-- Help (helpstyle, as in autopouch.lua) ----
 local H = require("helpstyle")
 
 -- Status line for the help footer, key=value like autopouch
 local function statusLine()
-  return string.format("v%s  debug=%s  gates=%s  maxm=%d  more=%d  alts=%d  copy=%s",
-    VERSION, cfg.debug and "on" or "off", tostring(cfg.gates), cfg.maxm, cfg.more, cfg.alts, cfg.copy and "on" or "off")
+  return string.format("v%s  trigger=%s  debug=%s  gates=%s  maxm=%d  more=%d  alts=%d  copy=%s  autodrop=%s",
+    VERSION, enabled and "on" or "off", cfg.debug and "on" or "off", tostring(cfg.gates), cfg.maxm, cfg.more,
+    cfg.alts, cfg.copy and "on" or "off", cfg.autodrop and "on" or "off")
 end
 
 local function showHelp()
-  rune.echo(H.title("jmc - Joint Magical Consortium puzzle solver (standalone)"))
+  rune.echo(H.title("jmcSolver (alias jmc) - Joint Magical Consortium puzzle solver, standalone"))
   rune.echo(H.section("Run:"))
-  rune.echo(H.line("jmc solve (jms)", "look at the console + inventory and solve the puzzle"))
-  rune.echo(H.line("jmc again", "solve the last captured look + mirrors again"))
-  rune.echo(H.line("jmc last", "show the last result again"))
+  rune.echo(H.line("jmcSolver solve (jms)", "look at the console + inventory and solve the puzzle"))
+  rune.echo(H.line("jmcSolver again", "solve the last captured look + mirrors again"))
+  rune.echo(H.line("jmcSolver last", "show the last result again"))
+  rune.echo(H.line("jmcSolver on | off", "turn the console/inventory capture trigger on or off"))
   rune.echo(H.section("Choose:"))
-  rune.echo(H.line("jmc pick <n>", "show and copy solution n (* = only your own mirrors)"))
-  rune.echo(H.line("jmc copy [n|all]", "copy the picked solution, solution n, or all of them"))
+  rune.echo(H.line("jmcSolver pick <n>", "show, copy and arm solution n (* = only your own mirrors)"))
+  rune.echo(H.line("jmcSolver copy [n|all]", "copy the picked solution, solution n, or all of them"))
+  rune.echo(H.section("Place:"))
+  rune.echo(H.line("jmcSolver arm [n]", "drop the solution's mirrors as you reach each grid square"))
+  rune.echo(H.line("jmcSolver plan", "show which mirrors are placed and which are still to place"))
+  rune.echo(H.line("jmcSolver stop", "cancel auto-drop"))
   rune.echo(H.section("Info:"))
-  rune.echo(H.line("jmc rules", "show the rules the solver assumes"))
-  rune.echo(H.line("jmc selftest", "solve two built-in puzzles with known answers"))
+  rune.echo(H.line("jmcSolver rules", "show the rules the solver assumes"))
+  rune.echo(H.line("jmcSolver selftest", "solve two built-in puzzles with known answers"))
   rune.echo(H.section("Settings:"))
-  rune.echo(H.line("jmc set", "list the settings"))
-  rune.echo(H.line("jmc set <key> <value>", "change one (debug gates place maxm more maxtotal alts copy clip budget lookcmd invcmd maxlines)"))
-  rune.echo(H.line("jmc debug on | off", "toggle debug messages (default off)"))
+  rune.echo(H.line("jmcSolver set", "list the settings"))
+  rune.echo(H.line("jmcSolver set <key> <value>", "change one (gates place maxm more maxtotal alts copy clip autodrop dropcmd budget lookcmd invcmd maxlines)"))
+  rune.echo(H.line("jmcSolver debug on | off", "toggle debug messages (default off)"))
   rune.echo("")
   rune.echo(H.foot(statusLine()))
 end
@@ -635,7 +716,7 @@ end
 local function setSetting(key, val)
   local spec = SETTINGS[key]
   if not spec then
-    say("Unknown setting '" .. key .. "'. Type 'jmc set' to list them.")
+    say("Unknown setting '" .. key .. "'. Type 'jmcSolver set' to list them.")
     return
   end
   if spec == "bool" then
@@ -666,10 +747,87 @@ local function setSetting(key, val)
     if not okv then say(key .. " must be one of: " .. table.concat(spec, ", ")); return end
     cfg[key] = val
   end
+  saveSettings()
   say(key .. " = " .. tostring(cfg[key]))
 end
 
---[[ Showing a solution ]]--
+-- Auto-drop ----
+-- Drop keywords as the game accepts them (seen: `drop 90clock`, `drop 45counter`; the other two follow the same pattern)
+local MIRROR_KEY = { ["45cw"] = "45clock", ["90cw"] = "90clock", ["45ccw"] = "45counter", ["90ccw"] = "90counter" }
+
+local function planLeft(plan)
+  local left = {}
+  for _, e in ipairs(plan.entries) do
+    if not e.done then left[#left + 1] = cellName(e.x, e.y) .. " " .. e.t end
+  end
+  return left
+end
+
+-- Arm the mirrors of one solution; `force` ignores the autodrop setting (explicit `arm`)
+local function armPlan(res, idx, force)
+  if not (cfg.autodrop or force) then state.plan = nil; return end   -- choosing another solution drops an older plan
+  local entry = res.solutions[idx]
+  if not entry then return end
+  local entries = {}
+  for i, s in ipairs(entry.list) do entries[i] = { x = s.x, y = s.y, t = s.t } end
+  state.plan = { entries = entries, remaining = #entries, at = nil, idx = idx }
+  say(string.format("Auto-drop armed (solution %d): walk to %s - each mirror is dropped on arrival (%s stop cancels)",
+    idx, table.concat(planLeft(state.plan), ", "), NAME))
+  local miss = {}
+  for _, t in ipairs(TYPES) do
+    if entry.missing[t] then miss[#miss + 1] = entry.missing[t] .. " " .. t end
+  end
+  if #miss > 0 then
+    say(paint("red", "You lack: ") .. table.concat(miss, ", ") .. " - those squares cannot be completed")
+  end
+end
+
+-- You arrived on grid square (x, y): drop the mirror planned there
+local function arrival(x, y)
+  local plan = state.plan
+  plan.at = { x, y }
+  for _, e in ipairs(plan.entries) do
+    if e.x == x and e.y == y and not e.done and (not e.sent or os.time() - e.sent >= 3) then
+      e.sent = os.time()
+      dbg(string.format("Arrived at %s: dropping %s", cellName(x, y), e.t))
+      rune.send(cfg.dropcmd .. " " .. MIRROR_KEY[e.t])
+    end
+  end
+end
+
+-- The game confirmed a drop of mirror type t on the square you are standing on
+local function confirmDrop(t)
+  local plan = state.plan
+  if not plan.at then return end
+  for _, e in ipairs(plan.entries) do
+    if e.x == plan.at[1] and e.y == plan.at[2] and e.t == t and not e.done then
+      e.done = true
+      plan.remaining = plan.remaining - 1
+      if plan.remaining == 0 then
+        say(paint("green", "All mirrors are in place") .. " - push the console to start the test")
+      else
+        say(string.format("Placed %s at %s - %d to go", e.t, cellName(e.x, e.y), plan.remaining))
+      end
+      return
+    end
+  end
+end
+
+local function planStatus()
+  local plan = state.plan
+  if not plan then
+    say("No mirrors armed - choose a solution first: " .. NAME .. " pick <n>")
+    return
+  end
+  local left = planLeft(plan)
+  if #left == 0 then
+    say("All " .. #plan.entries .. " mirrors are placed")
+  else
+    say(string.format("%d of %d placed; still to place: %s", #plan.entries - #left, #plan.entries, table.concat(left, ", ")))
+  end
+end
+
+-- Showing a solution ----
 local function mapRows(P, entry, colored)
   local at = {}
   for _, s in ipairs(entry.list) do at[(s.y - 1) * P.W + s.x] = s.t end
@@ -776,11 +934,12 @@ local function showResult(P, res, autoCopy)
     state.pick = 1
     showSolution(P, res, 1)
     if autoCopy and cfg.copy then doCopy(solutionText(P, res.solutions[1]), true) end
+    if autoCopy then armPlan(res, 1, false) end
   else
     state.pick = nil
     local starred = 0
     for _, e in ipairs(res.solutions) do if e.nmiss == 0 then starred = starred + 1 end end
-    say(paint("green", string.format("FOUND %d SOLUTIONS", n)) .. " - choose one with: jmc pick <n>")
+    say(paint("green", string.format("FOUND %d SOLUTIONS", n)) .. " - choose one with: jmcSolver pick <n>")
     for i, e in ipairs(res.solutions) do
       local mark = paint(e.nmiss == 0 and "green" or "white", string.format("%s%d)", e.nmiss == 0 and "*" or " ", i))
       rune.echo(string.format("  %s %s", mark, oneLine(e)))
@@ -794,20 +953,21 @@ local function showResult(P, res, autoCopy)
 end
 
 local function pickSolution(arg)
-  if not state.last or not state.last.res.ok then say("Nothing solved yet - run: jmc solve"); return end
+  if not state.last or not state.last.res.ok then say("Nothing solved yet - run: jmcSolver solve"); return end
   local P, res = state.last.P, state.last.res
   local n = tonumber(arg)
   if not n or n < 1 or n > #res.solutions or n ~= math.floor(n) then
-    say(string.format("Usage: jmc pick <1-%d>", #res.solutions))
+    say(string.format("Usage: jmcSolver pick <1-%d>", #res.solutions))
     return
   end
   state.pick = n
   showSolution(P, res, n)
   if cfg.copy then doCopy(solutionText(P, res.solutions[n]), true) end
+  armPlan(res, n, false)
 end
 
 local function copyCommand(arg)
-  if not state.last or not state.last.res.ok then say("Nothing solved yet - run: jmc solve"); return end
+  if not state.last or not state.last.res.ok then say("Nothing solved yet - run: jmcSolver solve"); return end
   local P, res = state.last.P, state.last.res
   arg = (arg or ""):lower()
   if arg == "all" or (arg == "" and not state.pick) then
@@ -816,7 +976,7 @@ local function copyCommand(arg)
   end
   local n = tonumber(arg) or state.pick
   if not n or n < 1 or n > #res.solutions or n ~= math.floor(n) then
-    say(string.format("Usage: jmc copy [1-%d|all]", #res.solutions))
+    say(string.format("Usage: jmcSolver copy [1-%d|all]", #res.solutions))
     return
   end
   doCopy(solutionText(P, res.solutions[n]), true)
@@ -836,7 +996,7 @@ end
 
 local function solveCaptured()
   if not state.look then
-    say(paint("red", "No console look captured yet.") .. " Stand at the console and run: jmc solve")
+    say(paint("red", "No console look captured yet.") .. " Stand at the console and run: jmcSolver solve")
     return
   end
   local P, err = parseLook(state.look, state.owned or {})
@@ -859,7 +1019,7 @@ local function solveCaptured()
   runSolve(P)
 end
 
---[[ Self test: the two puzzles whose ooc.dune.net answers are known ]]--
+-- Self test: the two puzzles whose ooc.dune.net answers are known ----
 local SAMPLES = {
   { name = "puzzle 1 (north from A-1 to E-12)", lcol = 1, lrow = 1, ldir = 0, rcol = 5, rrow = 12,
     expectFirst = 5, expectStar = true,
@@ -916,7 +1076,7 @@ local function selftest()
   say(string.format("Self test: %d of %d passed", passed, #SAMPLES))
 end
 
---[[ Captures ]]--
+-- Captures ----
 local maybeSolve
 
 local function finishLook()
@@ -950,9 +1110,21 @@ end
 
 -- Runs for every line; stays cheap while no capture is active
 local function onLine(_, ctx)
+  if not enabled then return end
   local ln = ctx and ctx.line
   if ln == nil then return end
   local text = cleanLine(ln)
+
+  local plan = state.plan
+  if plan then
+    local gc, gr = text:match("^%s*Grid (%a), (%d+) of the Projectile Testing Range")
+    if gc then
+      arrival(gc:upper():byte() - 64, tonumber(gr))
+    else
+      local deg, dir = text:match("^You drop an angled mirror rotated (%d+) degrees (%a+)%.")
+      if deg then confirmDrop(deg .. ((dir == "counterclockwise") and "ccw" or "cw")) end
+    end
+  end
 
   if cap.look then
     if text:find(INV_HEADER) then
@@ -987,9 +1159,14 @@ end
 
 rune.trigger.regex("^.*$", onLine, { name = "jmc-line" })
 
---[[ Commands ]]--
+-- Commands ----
 local function solve()
+  if not enabled then
+    say("The trigger is off - turn it on with: " .. NAME .. " on")
+    return
+  end
   cap.look, cap.inv = nil, nil
+  state.plan = nil
   state.fresh = { look = false, inv = false }
   state.pending = true
   say("Looking at the console and checking your mirrors...")
@@ -997,30 +1174,58 @@ local function solve()
   rune.send(cfg.invcmd)
 end
 
+local function setEnabled(on)
+  enabled = on
+  storeSet("jmcSolver.enabled", on)
+  if not on then
+    cap.look, cap.inv = nil, nil
+    state.pending = false
+    state.plan = nil
+  end
+  say("Trigger " .. (on and "on" or "off"))
+end
+
 local commands = {
   [""]     = showHelp,
   help     = showHelp,
+  on       = function() setEnabled(true) end,
+  off      = function() setEnabled(false) end,
   solve    = solve,
   pick     = pickSolution,
   copy     = copyCommand,
+  arm      = function(arg)
+    if not state.last or not state.last.res.ok then say("Nothing solved yet - run: " .. NAME .. " solve"); return end
+    local res = state.last.res
+    local n = tonumber(arg) or state.pick
+    if not n or n < 1 or n > #res.solutions or n ~= math.floor(n) then
+      say(string.format("Usage: %s arm <1-%d>", NAME, #res.solutions))
+      return
+    end
+    state.pick = n
+    armPlan(res, n, true)
+  end,
+  plan     = planStatus,
+  stop     = function()
+    if state.plan then state.plan = nil; say("Auto-drop cancelled") else say("Auto-drop is not armed") end
+  end,
   again    = function()
     if cap.look then finishLook() end
     solveCaptured()
   end,
   last     = function()
-    if state.last then showResult(state.last.P, state.last.res, false) else say("Nothing solved yet - run: jmc solve") end
+    if state.last then showResult(state.last.P, state.last.res, false) else say("Nothing solved yet - run: jmcSolver solve") end
   end,
   rules    = showRules,
   selftest = selftest,
   debug    = function(arg)
     local b = parseBool((arg or ""):lower())
-    if b == nil then say("Usage: jmc debug on|off"); return end
+    if b == nil then say("Usage: jmcSolver debug on|off"); return end
     cfg.debug = b
     say("Debug messages " .. (b and "on" or "off"))
   end,
 }
 
-rune.alias.regex("^jmc(?:\\s+(\\S+))?(?:\\s+(.*))?$", function(m, ctx)
+local function dispatch(m, ctx)
   m = m or (ctx and ctx.matches) or {}
   local sub  = (m[1] or ""):lower()
   local rest = m[2] or ""
@@ -1038,8 +1243,9 @@ rune.alias.regex("^jmc(?:\\s+(\\S+))?(?:\\s+(.*))?$", function(m, ctx)
     say("Unknown command '" .. sub .. "'.")
     showHelp()
   end
-end, { name = "jmc-cmd" })
+end
 
-rune.alias.exact("jms", "jmc solve")
+rune.alias.regex("^(?:jmcSolver|jmc)(?:\\s+(\\S+))?(?:\\s+(.*))?$", dispatch, { name = "jmcSolver-cmd" })
+rune.alias.exact("jms", "jmcSolver solve")
 
-say("JmcSolver v" .. VERSION .. " loaded - type 'jmc'")
+say("v" .. VERSION .. " loaded (" .. NAME .. " or jmc for help)")

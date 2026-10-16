@@ -1,12 +1,13 @@
 -- Filename: eljayPlugins/spellTLAs.lua
 -- Purpose: General spell Three Letter Aliases, optionally targettable.
--- Version: 3.6
--- Date: 2026-Oct-13
+-- Version: 3.7
+-- Date: 2026-Oct-16
 -- Changelog:
+--   3.7  Standard pass: spellTLAs command (short alias spell), on/off and debug persisted, loader line, version footer.
 --   3.6  Repo-style header and command summary cleanup; behavior preserved.
 --   3.5  cwo = word of recall (replaces wor); clre removed; header and help brought in line.
 --   3.4  one dispatcher alias for casts and one for n-keys; target validation.
---   3.3  "How it works" header; spelltla help, list and debug.
+--   3.3  "How it works" header; help, list and debug.
 --   3.2  spells added from class path spell lists.
 --   3.1  spells grouped and sorted; n* "aff clear" aliases.
 --   3.0  merged ySpells.xml + ySpells2.xml.
@@ -21,26 +22,55 @@
 --   * targets are validated: only letters, digits, spaces and . ' - _ (max 60 chars) are sent;
 --     anything else (such as ";" or control characters) is refused and nothing is sent
 --   * spells are grouped (buffs, cures, offense, ...) and sorted by spell name within each group
---   * spelltla is the only standalone alias (wor became cwo; clre was removed)
---   * "spelltla" alone shows a command summary; "spelltla list [text]" lists aliases;
---     "spelltla debug on|off" echoes every command sent (default off, resets on reload)
+--   * "spellTLAs off" disables the cast and n-aliases (typing one only shows a notice);
+--     on/off and debug are saved in rune.store and survive a reload (debug defaults to off)
+--   * typing spellTLAs (or spell) alone shows a command summary; the last row shows the version
 --
 -- Commands:
---   spelltla                 show this summary
---   spelltla list [text]     list aliases, optionally filtered by key or spell
---   spelltla debug on|off    toggle debug output
---   cXX [target]             cast 'spell' [target]
---   nXX                     aff clear 'spell'  (for c-keys only)
+--   spellTLAs                 show the command summary (short alias: spell)
+--   spellTLAs on|off          enable or disable the cast and n-aliases
+--   spellTLAs list [text]     list aliases, optionally filtered by key or spell
+--   spellTLAs debug on|off    toggle debug output (default off)
+--   cXX [target]              cast 'spell' [target]
+--   nXX                       aff clear 'spell'  (for c-keys only)
 
-local DEBUG = false
+local NAME    = "spellTLAs"
+local VERSION = "3.7"
 local MAX_TARGET = 60
 
 local casts    = {}   -- key  -> spell name   (cXX, ill, bbm, ...)
 local clears   = {}   -- nkey -> spell name   (nXX)
-local registry = {}   -- ordered { {key, spell}, ... } used by "spelltla list"
+local registry = {}   -- ordered { {key, spell}, ... } used by "spellTLAs list"
+
+-- Output helpers: cyan "[name] " prefix, one row per message.
+local function paint(text)
+  local ok, s = pcall(function() return rune.style.cyan(text) end)
+  if ok and type(s) == "string" then return s end
+  return text
+end
+
+local function say(msg)
+  rune.echo(paint("[" .. NAME .. "] ") .. msg)
+end
+
+-- Persisted settings (rune.store); any failure falls back to the default.
+local function load_flag(key, default)
+  local ok, v = pcall(function() return rune.store.get(key) end)
+  if not ok or v == nil then return default end
+  if v == true or v == "true" or v == "on" or v == 1 then return true end
+  if v == false or v == "false" or v == "off" or v == 0 then return false end
+  return default
+end
+
+local function save_flag(key, val)
+  pcall(function() rune.store.set(key, val and "on" or "off") end)
+end
+
+local ENABLED = load_flag(NAME .. ".enabled", true)
+local DEBUG   = load_flag(NAME .. ".debug", false)
 
 local function dbg(msg)
-  if DEBUG then rune.echo("[spellTLAs] " .. msg) end
+  if DEBUG then say("debug: " .. msg) end
 end
 
 -- Validate a user-supplied target before it is placed in a command.
@@ -50,8 +80,7 @@ local function safe_target(raw)
   raw = raw:match("^%s*(.-)%s*$")
   if raw == "" then return "" end
   if #raw > MAX_TARGET or not raw:match("^[%w %.'_%-]+$") then
-    rune.echo("[spellTLAs] target refused (allowed: letters, digits, space, . ' - _ ; max "
-      .. MAX_TARGET .. " chars)")
+    say("target refused (allowed: letters, digits, space, . ' - _ ; max " .. MAX_TARGET .. " chars)")
     return nil
   end
   return raw
@@ -66,16 +95,15 @@ local function send_cast(spell, target)
   rune.send(cmd)
 end
 
---[[ Helper (must be defined before use)
-      cast("cXX", "spell name") records:
-        cXX [target]  ->  cast 'spell name' [target]
-        nXX           ->  aff clear 'spell name'   (only for keys starting with "c")
-      e.g. cast("cla", "portal to the laser dimension") also gives "nla".
-      Aliases are registered once, after the table below (see "Dispatcher aliases").
-]]--
+-- Helper (must be defined before use)
+--   cast("cXX", "spell name") records:
+--     cXX [target]  ->  cast 'spell name' [target]
+--     nXX           ->  aff clear 'spell name'   (only for keys starting with "c")
+--   e.g. cast("cla", "portal to the laser dimension") also gives "nla".
+--   Aliases are registered once, after the table below (see "Dispatcher aliases").
 local function cast(key, spell)
   if casts[key] then
-    rune.echo("[spellTLAs] duplicate key ignored: " .. key)
+    say("duplicate key ignored: " .. key)
     return
   end
   casts[key] = spell
@@ -83,14 +111,14 @@ local function cast(key, spell)
   if key:sub(1, 1) == "c" then
     local nkey = "n" .. key:sub(2)
     if clears[nkey] or casts[nkey] then
-      rune.echo("[spellTLAs] n-alias clash ignored: " .. nkey)
+      say("n-alias clash ignored: " .. nkey)
     else
       clears[nkey] = spell
     end
   end
 end
 
---[[ Cast Spells (with optional targets), grouped, then sorted by spell name ]]--
+-- Cast Spells (with optional targets), grouped, then sorted by spell name
 
 -- Protection & Buffs
 cast("cae", "aegis")
@@ -238,7 +266,8 @@ cast("crv", "revert catastrophe")
 cast("cso", "soul sacrifice")
 cast("cwo", "word of recall")
 
---[[ Dispatcher aliases: one regex for all cast keys, one for all n-keys ]]--
+
+-- Dispatcher aliases: one regex for all cast keys, one for all n-keys
 local function key_pattern(tbl)
   local keys = {}
   for k in pairs(tbl) do keys[#keys + 1] = k end
@@ -246,12 +275,18 @@ local function key_pattern(tbl)
   return table.concat(keys, "|")
 end
 
+local function off_notice()
+  say("aliases are off (" .. NAME .. " on to enable)")
+end
+
 rune.alias.regex("^(" .. key_pattern(casts) .. ")(?:[ ]+(.+))?$", function(m)
+  if not ENABLED then off_notice() return end
   local spell = casts[m[1]]
   if spell then send_cast(spell, m[2]) end
 end)
 
 rune.alias.regex("^(" .. key_pattern(clears) .. ")$", function(m)
+  if not ENABLED then off_notice() return end
   local spell = clears[m[1]]
   if spell then
     local cmd = "aff clear '" .. spell .. "'"
@@ -260,57 +295,82 @@ rune.alias.regex("^(" .. key_pattern(clears) .. ")$", function(m)
   end
 end)
 
---[[ Help / list / debug command ]]--
+-- Help / list / on-off / debug command
 local okH, H = pcall(require, "helpstyle")
 if not okH or type(H) ~= "table" then
   H = {
     title   = function(t) return "== " .. t .. " ==" end,
     section = function(t) return "-- " .. t end,
-    line    = function(a, b) return string.format("  %-22s %s", a, b or "") end,
+    line    = function(a, b) return string.format("  %-24s %s", a, b or "") end,
     foot    = function(t) return t end,
   }
 end
 
+local function emit(row) rune.echo(row) end
+
+local function status_row()
+  return string.format("v%s  on=%s debug=%s aliases=%d", VERSION,
+    ENABLED and "on" or "off", DEBUG and "on" or "off", #registry)
+end
+
 local function show_help()
-  rune.echo(H.title("spellTLAs"))
-  rune.echo(H.section("Commands"))
-  rune.echo(H.line("spelltla", "this summary"))
-  rune.echo(H.line("spelltla list [text]", "list aliases (optionally filtered by key or spell)"))
-  rune.echo(H.line("spelltla debug on|off", "echo every command sent"))
-  rune.echo(H.section("Aliases"))
-  rune.echo(H.line("cXX [target]", "cast 'spell' [target]"))
-  rune.echo(H.line("nXX", "aff clear 'spell'  (c-keys only)"))
-  rune.echo(H.foot(string.format("%d spell aliases | debug: %s", #registry, DEBUG and "on" or "off")))
+  emit(H.title(NAME))
+  emit(H.section("Commands"))
+  emit(H.line("spellTLAs", "this summary (short alias: spell)"))
+  emit(H.line("spellTLAs on|off", "enable or disable the aliases"))
+  emit(H.line("spellTLAs list [text]", "list aliases, optionally filtered"))
+  emit(H.line("spellTLAs debug on|off", "echo every command sent"))
+  emit(H.section("Aliases"))
+  emit(H.line("cXX [target]", "cast 'spell' [target]"))
+  emit(H.line("nXX", "aff clear 'spell'  (c-keys only)"))
+  emit(H.foot(status_row()))
 end
 
 local function show_list(filter)
   filter = filter and filter:lower() or ""
   local n = 0
-  rune.echo(H.title("spellTLAs list"))
+  emit(H.title(NAME .. " list"))
   for _, e in ipairs(registry) do
     if filter == "" or e[1]:find(filter, 1, true) or e[2]:find(filter, 1, true) then
       local nk = e[1]:sub(1, 1) == "c" and ("n" .. e[1]:sub(2)) or "-"
-      rune.echo(H.line(e[1] .. " / " .. nk, e[2]))
+      emit(H.line(e[1] .. " / " .. nk, e[2]))
       n = n + 1
     end
   end
-  rune.echo(H.foot(n .. " shown"))
+  emit(H.foot(status_row() .. " shown=" .. n))
 end
 
-rune.alias.regex("^spelltla(?:[ ]+(.*))?$", function(m)
-  local arg = (m[1] or ""):match("^%s*(.-)%s*$")
+local function set_flag(which, arg)
+  arg = arg:lower()
+  if which == "enabled" then
+    if arg == "on" then ENABLED = true elseif arg == "off" then ENABLED = false else ENABLED = not ENABLED end
+    save_flag(NAME .. ".enabled", ENABLED)
+    say("aliases " .. (ENABLED and "on" or "off"))
+  else
+    if arg == "on" then DEBUG = true elseif arg == "off" then DEBUG = false else DEBUG = not DEBUG end
+    save_flag(NAME .. ".debug", DEBUG)
+    say("debug " .. (DEBUG and "on" or "off"))
+  end
+end
+
+local function handle(line)
+  local arg = (line or ""):match("^%s*(.-)%s*$")
   local cmd, rest = arg:match("^(%S*)%s*(.-)$")
   cmd = (cmd or ""):lower()
-  if cmd == "" then
-    show_help()
+  if cmd == "on" or cmd == "off" then
+    set_flag("enabled", cmd)
   elseif cmd == "list" then
     show_list(rest)
   elseif cmd == "debug" then
-    rest = rest:lower()
-    if rest == "on" then DEBUG = true elseif rest == "off" then DEBUG = false
-    else DEBUG = not DEBUG end
-    rune.echo("[spellTLAs] debug " .. (DEBUG and "on" or "off"))
+    set_flag("debug", rest or "")
   else
     show_help()
   end
-end)
+end
+
+-- Bare commands are exact aliases; commands with arguments are regex aliases.
+rune.alias.exact("spellTLAs", function(args, ctx) show_help() end)
+rune.alias.exact("spell", function(args, ctx) show_help() end)
+rune.alias.regex("^(?:spellTLAs|spell)[ ]+(.+)$", function(m) handle(m[1]) end)
+
+say(string.format("v%s loaded (%s or spell for help)", VERSION, NAME))

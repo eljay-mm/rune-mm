@@ -1,388 +1,546 @@
 -- Filename: eljayPlugins/missingAffects.lua
--- Purpose: Shows which wanted affects are missing from your current affects.
--- Version: 1.1
+-- Purpose: Compare listed affects with a wanted-affects list and report missing affects.
+-- Version: 1.8
 -- Date: 2026-Oct-16
 -- Changelog:
---   1.1  Scope persistent settings to rune.connection.character when available;
---        fall back to global keys when Rune does not expose a character identity.
---   1.0  Convert the MUSHclient missing_affects plugin for Rune.
+--   1.8  Bard play and druid invoke/evoke reintegrated from bardSongTLAs 2.4 and
+--        druidSpellTLAs 2.6: separate BARD_SONGS and DRUID_SPELLS tables, a class
+--        setting picks the method for names both classes share (shield, light...),
+--        and the druid analogues missing before (enhanced strength, shield,
+--        levitation, refresh, blindness, fireball, haste) are added.
+--   1.7  Brought to standard: annwnQuestSearch display method, bare commands as
+--        rune.alias.exact handlers taking (args, ctx), loader line with short
+--        alias, regex-syntax trigger patterns, stale-listing reset.
 --
 -- How it works:
---   * Inspired by the MUSHclient plugin by Ruthgul.
---   * Keeps a wanted-affects list in rune.store and compares it with your
---     current affects when the affects list is displayed.
---   * Settings use Rune's current character identity when available.
---   * Treats the configured similar affects as interchangeable.
+--   * Compares affects in the current listing against the wanted-affects list.
+--   * Matching is case-insensitive; configured similar-affect groups suppress
+--     alerts when a listed affect is equivalent to a wanted one.
+--   * At the listing summary, reports wanted affects that were not found.
+--   * "missingAffects cast" sends one command per item in the most recent
+--     missing-affects result: play '<song>' for bard songs, invoke <element> or
+--     evoke <element> for druid spells (element unquoted), cast '<spell>' for
+--     anything else.
+--   * Names that are both a bard song and a druid analogue use the class
+--     setting (bard or druid, default bard); names known to only one class
+--     always use that class's method.
+--   * Settings (wanted list, on/off, debug, class) are stored in rune.store per
+--     character when rune.connection.character is available, and globally
+--     otherwise.
+--   * A listing that never reaches its summary line is discarded when the next
+--     affect line arrives more than LISTING_TIMEOUT seconds later.
 --
--- Commands (type without "/"; "ma" is a short alias for "missingAffects"):
---   missingAffects            show this help
---   ma                        show this help
---   missingAffects add <affect>
---   missingAffects del <affect>
---   missingAffects list
---   missingAffects on|off     enable / disable affects tracking
---   missingAffects debug      toggle debug messages (default off)
+-- Commands:
+--   missingAffects [help]          show help and current settings
+--   ma [help]                      short alias
+--   missingAffects on|off          enable or disable listing triggers
+--   missingAffects debug on|off    toggle debug output (default off)
+--   missingAffects class bard|druid  choose the method for shared names
+--   missingAffects want <names>    replace wanted list; separate names with commas
+--   missingAffects add <name>      add an affect to the wanted list
+--   missingAffects remove <name>   remove an affect from the wanted list
+--   missingAffects list            show wanted affects
+--   missingAffects clear           clear wanted affects
+--   missingAffects cast            play/invoke/evoke/cast the last missing-affects list
+--   mac                            alias for "missingAffects cast"
 --
--- Tweaks (top of file):
---   * MAX_AFFECT_LENGTH   Maximum affect name length accepted and stored.
---   * Similar-affect groups are defined below.
---   * Keep affect names as plain text; this plugin never sends them to the game.
+-- Tweaks:
+--   Edit DEFAULT_WANTED and SIMILAR_AFFECT_GROUPS to suit your character.
+--   Keep BARD_SONGS and DRUID_SPELLS in step with bardSongTLAs and druidSpellTLAs.
+--   Command names are validated before being sent.
 
-local NAME, SHORT, VERSION, GROUP =
-  "missingAffects", "ma", "1.1", "missingAffects"
+local NAME = "missingAffects"
+local SHORT = "ma"
+local VERSION = "1.8"
 
-local MAX_AFFECT_LENGTH = 20
-local MAX_WANTED = 200
+local KEY_WANTED = "missingAffects.wanted"
+local KEY_ENABLED = "missingAffects.enabled"
+local KEY_DEBUG = "missingAffects.debug"
+local KEY_CLASS = "missingAffects.class"
 
-local ANSI_CYAN = "\27[36m"
-local ANSI_RESET = "\27[0m"
+local LISTING_TIMEOUT = 10 -- seconds before an unfinished listing is discarded
 
-local debugEnabled = false -- deliberately not persisted
+local DEFAULT_WANTED = {}
+local SIMILAR_AFFECT_GROUPS = {}
+
+-- Bard songs (affect name -> song), from bardSongTLAs: play '<song>'.
+local BARD_SONGS = {
+  "battle march", "detect invisibility", "footloose", "enhanced strength",
+  "epiphany", "inspirational hymn", "levitation", "light", "mass levitation",
+  "shield", "traveling song", "blindness", "cacophony", "fireball", "earworm",
+  "hands of wind", "harmonize", "hinder", "pensive dirge", "plodding fugue",
+  "soothing nocturne", "tremolo", "ode to the moon", "tempus rigor", "calm",
+  "cure light", "invigorating performance", "nights fortune", "refresh",
+  "rime of the glacierbreaker", "thunderclap", "tremor",
+}
+
+-- Druid invocations (affect name -> verb, element), from druidSpellTLAs:
+-- invoke <element> / evoke <element>, element unquoted.
+local DRUID_SPELLS = {
+  ["magma invocation"]    = { "invoke", "magma" },
+  ["magma invocation"]    = { "invoke", "minerals" },
+  ["ice invocation"]      = { "invoke", "ice" },
+  ["ooze invocation"]     = { "invoke", "ooze" },
+  ["air invocation"]      = { "invoke", "air" },
+  ["steam invocation"]    = { "invoke", "steam" },
+  ["dust invocation"]     = { "invoke", "dust" },
+  ["fire invocation"]     = { "invoke", "fire" },
+  ["lightning invocation"]= { "invoke", "lightning" },
+}
+
+local BARD_LOOKUP = {}
+for _, song in ipairs(BARD_SONGS) do BARD_LOOKUP[song] = true end
+
 local enabled = true
+local debug_enabled = false
+local class_mode = "bard" -- which class wins for names both classes share
 local wanted = {}
-local currentAffects = nil
+local listed = {}
+local missing_last = {}
+local listing_active = false
+local listing_stamp = 0
 
-local function characterIdentity()
-  local connection = rune and rune.connection
-  if type(connection) ~= "table" then
-    return nil
+local okH, H = pcall(require, "helpstyle")
+if not okH or type(H) ~= "table" then H = nil end
+
+-- ---------------------------------------------------------------------------
+-- Display (annwnQuestSearch method: paint/say via rune.echo, H.* rows via emit)
+-- ---------------------------------------------------------------------------
+
+local function paint(color, text)
+  if rune and rune.style and type(rune.style[color]) == "function" then
+    local ok, styled = pcall(rune.style[color], text)
+    if ok and type(styled) == "string" then return styled end
   end
-
-  local identity = connection.character
-  if type(identity) == "function" then
-    local ok, value = pcall(identity)
-    if ok then
-      identity = value
-    else
-      return nil
-    end
-  end
-
-  if type(identity) ~= "string" and type(identity) ~= "number" then
-    return nil
-  end
-
-  identity = tostring(identity):match("^%s*(.-)%s*$")
-  if not identity or identity == "" then
-    return nil
-  end
-
-  -- Keep the identity safe to use as part of a storage key.
-  identity = identity:lower():gsub("[^%w_.%-]", "_")
-  if identity == "" then
-    return nil
-  end
-
-  return identity
+  return text
 end
 
-local CHARACTER_ID = characterIdentity()
-local STORE_SUFFIX = CHARACTER_ID and ("." .. CHARACTER_ID) or ""
-
-local STORE_WANTED  = "missingAffects.wanted" .. STORE_SUFFIX
-local STORE_ENABLED = "missingAffects.enabled" .. STORE_SUFFIX
-
-local helpstyle_ok, H = pcall(require, "helpstyle")
-if not helpstyle_ok or type(H) ~= "table" then
-  H = nil
-end
-
-local function paintCyan(text)
-  local style = rune and rune.style
-
-  if type(style) == "table" and type(style.cyan) == "function" then
-    local ok, result = pcall(style.cyan, text)
-    if ok and type(result) == "string" then
-      return result
-    end
-  elseif type(style) == "function" then
-    local ok, result = pcall(style, "cyan", text)
-    if ok and type(result) == "string" then
-      return result
-    end
+local function emit(text)
+  if rune and type(rune.echo) == "function" then
+    rune.echo(tostring(text))
   end
-
-  return ANSI_CYAN .. text .. ANSI_RESET
 end
 
-local function say(message)
-  rune.echo(paintCyan("[" .. NAME .. "] ") .. tostring(message))
+local function say(text)
+  emit(paint("cyan", "[" .. NAME .. "] ") .. tostring(text))
 end
 
-local function dbg(message)
-  if debugEnabled then
-    say("debug: " .. tostring(message))
-  end
+local function dbg(fmt, ...)
+  if not debug_enabled then return end
+  local ok, text = pcall(string.format, fmt, ...)
+  say("debug: " .. (ok and text or tostring(fmt)))
+end
+
+-- ---------------------------------------------------------------------------
+-- Helpers
+-- ---------------------------------------------------------------------------
+
+local function trim(text)
+  return (tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function normalize(text)
+  return (trim(text):lower():gsub("%s+", " "))
 end
 
 local function onoff(value)
   return value and "on" or "off"
 end
 
-local function normalize(value)
-  local text = tostring(value or ""):lower():match("^%s*(.-)%s*$") or ""
-  return text:sub(1, MAX_AFFECT_LENGTH)
-end
-
-local function hasValue(list, value)
-  for _, item in ipairs(list) do
-    if item == value then
-      return true
+local function split_names(text)
+  local out = {}
+  for item in tostring(text or ""):gmatch("[^,]+") do
+    item = trim(item)
+    if item ~= "" then
+      out[#out + 1] = item
     end
   end
+  return out
+end
+
+-- Alias handlers receive (args, ctx); args is normally the text after the command.
+local function arg_text(args)
+  if type(args) == "string" then return trim(args) end
+  if type(args) == "table" then
+    local parts = {}
+    for _, v in ipairs(args) do parts[#parts + 1] = tostring(v) end
+    return trim(table.concat(parts, " "))
+  end
+  return ""
+end
+
+-- ---------------------------------------------------------------------------
+-- Settings
+-- ---------------------------------------------------------------------------
+
+local function character_scope()
+  local character = rune and rune.connection and rune.connection.character
+  if type(character) == "string" and character ~= "" then
+    return ":" .. character
+  end
+  return ""
+end
+
+local function store_key(base)
+  return base .. character_scope()
+end
+
+local function default_wanted()
+  local out = {}
+  for _, item in ipairs(DEFAULT_WANTED) do out[#out + 1] = item end
+  return out
+end
+
+local function load_settings()
+  wanted = default_wanted()
+
+  if not (rune and rune.store and type(rune.store.get) == "function") then
+    return
+  end
+
+  local ok_wanted, saved_wanted = pcall(rune.store.get, store_key(KEY_WANTED))
+  if ok_wanted and type(saved_wanted) == "table" then
+    wanted = saved_wanted
+  end
+
+  local ok_enabled, saved_enabled = pcall(rune.store.get, store_key(KEY_ENABLED))
+  if ok_enabled and type(saved_enabled) == "boolean" then
+    enabled = saved_enabled
+  end
+
+  local ok_debug, saved_debug = pcall(rune.store.get, store_key(KEY_DEBUG))
+  if ok_debug and type(saved_debug) == "boolean" then
+    debug_enabled = saved_debug
+  end
+
+  local ok_class, saved_class = pcall(rune.store.get, store_key(KEY_CLASS))
+  if ok_class and (saved_class == "bard" or saved_class == "druid") then
+    class_mode = saved_class
+  end
+end
+
+local function save_value(key, value)
+  if rune and rune.store and type(rune.store.set) == "function" then
+    pcall(rune.store.set, store_key(key), value)
+  end
+end
+
+local function save_wanted()
+  save_value(KEY_WANTED, wanted)
+end
+
+-- ---------------------------------------------------------------------------
+-- Matching and reporting
+-- ---------------------------------------------------------------------------
+
+local function is_safe_command_name(name)
+  return type(name) == "string"
+    and name ~= ""
+    and name:match("^[%w %-]+$") ~= nil
+end
+
+local function has_similar_match(name, found)
+  local wanted_name = normalize(name)
+  if found[wanted_name] then return true end
+
+  for _, group in ipairs(SIMILAR_AFFECT_GROUPS) do
+    local contains_wanted = false
+    local contains_found = false
+
+    for _, member in ipairs(group) do
+      local normalized = normalize(member)
+      if normalized == wanted_name then contains_wanted = true end
+      if found[normalized] then contains_found = true end
+    end
+
+    if contains_wanted and contains_found then return true end
+  end
+
   return false
 end
 
-local function removeValue(list, value)
-  for i = #list, 1, -1 do
-    if list[i] == value then
-      table.remove(list, i)
-    end
-  end
-end
-
-local function saveValue(key, value)
-  if rune.store and type(rune.store.set) == "function" then
-    pcall(rune.store.set, key, value)
-  end
-end
-
-local function sortAndSaveWanted()
-  table.sort(wanted)
-  saveValue(STORE_WANTED, wanted)
-end
-
-local function loadSettings()
-  if not (rune.store and type(rune.store.get) == "function") then
-    return
-  end
-
-  local enabledOk, savedEnabled = pcall(rune.store.get, STORE_ENABLED)
-  if enabledOk and type(savedEnabled) == "boolean" then
-    enabled = savedEnabled
-  end
-
-  local wantedOk, savedWanted = pcall(rune.store.get, STORE_WANTED)
-  if wantedOk and type(savedWanted) == "table" then
-    local seen = {}
-
-    for _, item in ipairs(savedWanted) do
-      if type(item) == "string" then
-        local value = normalize(item)
-        if value ~= "" and not seen[value] and #wanted < MAX_WANTED then
-          wanted[#wanted + 1] = value
-          seen[value] = true
-        end
-      end
-    end
-
-    table.sort(wanted)
-  end
-end
-
-local similarAffects = {
-  { "armor", "aegis", "guise of nature" },
-  { "detect invisibility", "radiance invocation" },
-  { "enhanced strength", "minerals invocation", "unnatural strength" },
-  { "fireshield", "frostborne", "magma invocation" },
-  { "haste", "lightning invocation", "whirlwind" },
-  { "levitation", "air invocation", "float" },
-  { "pass door", "steam invocation", "wind walk" },
-  { "sanctuary", "fire invocation" },
-  { "sense life", "infravision", "pense" },
-  { "shield", "ice invocation", "force field" },
-  { "stone skin", "ooze invocation", "statuary skin" },
-  { "underwater breathing", "otolithic growth" },
-}
-
-local function emit(text)
-  if text ~= nil then
-    rune.echo(text)
-  end
-end
-
-local function showHelp()
-  local status = "v" .. VERSION ..
-    "  enabled=" .. onoff(enabled) ..
-    " debug=" .. onoff(debugEnabled)
-
-  local styled = H and pcall(function()
-    emit(H.title("Missing affects  (alias: " .. SHORT .. ")"))
-    emit(H.section("Commands"))
-    emit(H.line(NAME, "show this help"))
-    emit(H.line(SHORT, "show this help"))
-    emit(H.line(NAME .. " add <affect>", "add an affect to the wanted list"))
-    emit(H.line(NAME .. " del <affect>", "remove an affect from the wanted list"))
-    emit(H.line(NAME .. " list", "show wanted affects"))
-    emit(H.line(NAME .. " on|off", "enable or disable affects tracking"))
-    emit(H.line(NAME .. " debug", "toggle debug messages (default off)"))
-    emit(H.foot(status))
-  end)
-
-  if not styled then
-    rune.echo("Missing affects  (alias: " .. SHORT .. ")")
-    rune.echo("  " .. NAME .. "                 show this help")
-    rune.echo("  " .. SHORT .. "                         show this help")
-    rune.echo("  " .. NAME .. " add <affect>     add an affect to the wanted list")
-    rune.echo("  " .. NAME .. " del <affect>     remove an affect from the wanted list")
-    rune.echo("  " .. NAME .. " list            show wanted affects")
-    rune.echo("  " .. NAME .. " on|off          enable or disable affects tracking")
-    rune.echo("  " .. NAME .. " debug           toggle debug messages (default off)")
-    rune.echo(status)
-  end
-end
-
-local function listWanted()
-  say("wanted affects: " ..
-    (#wanted > 0 and table.concat(wanted, ", ") or "-"))
-end
-
-local function addWanted(argument)
-  local affect = normalize(argument)
-  if affect == "" then
-    say("usage: " .. NAME .. " add <affect>")
-    return
-  end
-
-  if hasValue(wanted, affect) then
-    say("already wanted: " .. affect)
-    return
-  end
-
-  if #wanted >= MAX_WANTED then
-    say("wanted list is at its limit (" .. MAX_WANTED .. " affects)")
-    return
-  end
-
-  wanted[#wanted + 1] = affect
-  sortAndSaveWanted()
-  listWanted()
-end
-
-local function deleteWanted(argument)
-  local affect = normalize(argument)
-  if affect == "" then
-    say("usage: " .. NAME .. " del <affect>")
-    return
-  end
-
-  removeValue(wanted, affect)
-  sortAndSaveWanted()
-  listWanted()
-end
-
-local function showMissing()
-  local missing = {}
-
-  for _, affect in ipairs(wanted) do
-    if not currentAffects[affect] then
-      missing[#missing + 1] = affect
+local function report_missing()
+  missing_last = {}
+  for _, name in ipairs(wanted) do
+    if not has_similar_match(name, listed) then
+      missing_last[#missing_last + 1] = name
     end
   end
 
-  for _, group in ipairs(similarAffects) do
-    local groupPresent = false
-
-    for _, affect in ipairs(group) do
-      if currentAffects[affect] then
-        groupPresent = true
-        break
-      end
-    end
-
-    if groupPresent then
-      for _, affect in ipairs(group) do
-        removeValue(missing, affect)
-      end
-    end
+  if #missing_last == 0 then
+    say("No wanted affects are missing.")
+    return
   end
 
-  if #missing > 0 then
-    say("You are missing: " .. table.concat(missing, ", "))
-  end
+  say("Missing affects: " .. table.concat(missing_last, ", "))
 end
 
-local function command(args)
-  local text = tostring(args or ""):lower():match("^%s*(.-)%s*$") or ""
-  local option, argument = text:match("^(%S*)%s*(.-)%s*$")
-  option = option or ""
+local function begin_listing()
+  listed = {}
+  listing_active = true
+  listing_stamp = os.time()
+  dbg("started affect listing")
+end
 
-  if option == "" or option == "help" then
-    showHelp()
-  elseif option == "add" then
-    addWanted(argument)
-  elseif option == "del" or option == "delete" then
-    deleteWanted(argument)
-  elseif option == "list" then
-    listWanted()
-  elseif option == "on" then
-    enabled = true
-    saveValue(STORE_ENABLED, true)
-    rune.group.enable(GROUP)
-    say("affects tracking enabled")
-  elseif option == "off" then
-    enabled = false
-    currentAffects = nil
-    saveValue(STORE_ENABLED, false)
-    rune.group.disable(GROUP)
-    say("affects tracking disabled")
-  elseif option == "debug" and argument == "" then
-    debugEnabled = not debugEnabled
-    say("debug " .. onoff(debugEnabled))
+local function record_affect(name)
+  name = trim((tostring(name or ""):gsub("%.$", "")))
+  if name == "" then return end
+
+  -- Discard a listing that never reached its summary line.
+  if listing_active and (os.time() - listing_stamp) > LISTING_TIMEOUT then
+    dbg("discarding stale listing")
+    listing_active = false
+  end
+
+  if not listing_active then
+    begin_listing()
+  end
+
+  listing_stamp = os.time()
+  listed[normalize(name)] = true
+  dbg("listed affect: %s", name)
+end
+
+local function finish_listing()
+  if not listing_active then
+    begin_listing()
+  end
+  listing_active = false
+  report_missing()
+end
+
+-- Resolve an affect name to { method, name }; nil verb means generic cast.
+local function resolve_ability(name)
+  local key = normalize(name)
+  local bard = BARD_LOOKUP[key] and { "play", key } or nil
+  local druid = DRUID_SPELLS[key]
+
+  local pick
+  if bard and druid then
+    pick = (class_mode == "druid") and druid or bard
   else
-    say("unknown command; type " .. NAME .. " for help")
+    pick = bard or druid
+  end
+
+  if pick then return pick[1], pick[2] end
+  return "cast", name
+end
+
+local function send_ability(name)
+  if not is_safe_command_name(name) then
+    say("Skipped unsafe affect name: " .. tostring(name))
+    return
+  end
+
+  local method, ability_name = resolve_ability(name)
+
+  if not is_safe_command_name(ability_name) then
+    say("Skipped unsafe ability name: " .. tostring(ability_name))
+    return
+  end
+
+  local command
+  if method == "invoke" or method == "evoke" then
+    command = method .. " " .. ability_name
+  else
+    command = method .. " '" .. ability_name .. "'"
+  end
+
+  dbg("sending: %s", command)
+  if rune and type(rune.send) == "function" then
+    rune.send(command)
   end
 end
 
--- All triggers share a group so the on/off command controls them together.
+local function cast_missing()
+  if #missing_last == 0 then
+    say("No saved missing-affects result to cast.")
+    return
+  end
 
-rune.trigger.regex(
-  "^You are affected by the following:",
-  function()
-    currentAffects = {}
-    dbg("started reading affects")
-  end,
-  { group = GROUP }
-)
+  for _, name in ipairs(missing_last) do
+    send_ability(name)
+  end
+end
 
-rune.trigger.regex(
-  "^(?:Spell|Prof):\\s+(.+?)\\s+- Level",
-  function(matches)
-    if not currentAffects or type(matches) ~= "table" then
+local function show_list()
+  if #wanted == 0 then
+    say("Wanted-affects list is empty.")
+  else
+    say("Wanted affects: " .. table.concat(wanted, ", "))
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Help
+-- ---------------------------------------------------------------------------
+
+local function help_summary()
+  local status = "v" .. VERSION
+    .. "  enabled=" .. onoff(enabled)
+    .. " debug=" .. onoff(debug_enabled)
+    .. " class=" .. class_mode
+    .. " wanted=" .. #wanted
+
+  if H and H.title and H.section and H.line and H.foot then
+    emit(H.title("Missing affects"))
+    emit(H.section("Commands"))
+    emit(H.line("missingAffects / ma", "show this help"))
+    emit(H.line("missingAffects on|off", "enable or disable listing triggers"))
+    emit(H.line("missingAffects debug on|off", "toggle debug output"))
+    emit(H.line("missingAffects class bard|druid", "method for names both classes share"))
+    emit(H.line("missingAffects want <names>", "replace wanted list; comma-separated"))
+    emit(H.line("missingAffects add|remove <name>", "edit wanted-affects list"))
+    emit(H.line("missingAffects list|clear", "show or clear wanted list"))
+    emit(H.line("missingAffects cast / mac", "play/invoke/evoke/cast the last missing result"))
+    emit(H.foot(status))
+    return
+  end
+
+  say("Missing affects")
+  say("  missingAffects / ma            show this help")
+  say("  missingAffects on|off           enable or disable listing triggers")
+  say("  missingAffects debug on|off     toggle debug output")
+  say("  missingAffects class bard|druid method for names both classes share")
+  say("  missingAffects want <names>     replace wanted list; comma-separated")
+  say("  missingAffects add <name>       add an affect")
+  say("  missingAffects remove <name>    remove an affect")
+  say("  missingAffects list|clear       show or clear wanted list")
+  say("  missingAffects cast / mac       play/invoke/evoke/cast the last missing result")
+  say(status)
+end
+
+-- ---------------------------------------------------------------------------
+-- Command handling
+-- ---------------------------------------------------------------------------
+
+local function handle_command(text)
+  text = trim(text)
+  local verb, rest = text:match("^(%S+)%s*(.-)$")
+  verb = (verb or ""):lower()
+  rest = trim(rest or "")
+
+  if verb == "cast" then
+    cast_missing()
+  elseif verb == "on" then
+    enabled = true
+    save_value(KEY_ENABLED, enabled)
+    say("enabled")
+  elseif verb == "off" then
+    enabled = false
+    save_value(KEY_ENABLED, enabled)
+    say("disabled")
+  elseif verb == "debug" then
+    local setting = rest:lower()
+    if setting == "on" then
+      debug_enabled = true
+    elseif setting == "off" then
+      debug_enabled = false
+    else
+      help_summary()
+      return
+    end
+    save_value(KEY_DEBUG, debug_enabled)
+    say("debug " .. onoff(debug_enabled))
+  elseif verb == "class" then
+    local setting = rest:lower()
+    if setting ~= "bard" and setting ~= "druid" then
+      help_summary()
+      return
+    end
+    class_mode = setting
+    save_value(KEY_CLASS, class_mode)
+    say("class " .. class_mode)
+  elseif verb == "list" then
+    show_list()
+  elseif verb == "clear" then
+    wanted = {}
+    save_wanted()
+    say("wanted-affects list cleared")
+  elseif verb == "want" then
+    wanted = split_names(rest)
+    save_wanted()
+    say("wanted-affects list replaced (" .. #wanted .. " items)")
+  elseif verb == "add" then
+    if rest == "" then
+      help_summary()
       return
     end
 
-    local affect = normalize(matches[1])
-    if affect ~= "" then
-      currentAffects[affect] = true
-      dbg("found affect: " .. affect)
+    local key = normalize(rest)
+    for _, item in ipairs(wanted) do
+      if normalize(item) == key then
+        say("already wanted: " .. rest)
+        return
+      end
     end
-  end,
-  { group = GROUP }
-)
 
--- Accept magical-only, non-magical-only, and combined totals.
-rune.trigger.regex(
-  "^Total of .+affects?\\.$",
-  function()
-    if currentAffects then
-      dbg("finished reading affects")
-      showMissing()
-      currentAffects = nil
+    wanted[#wanted + 1] = rest
+    save_wanted()
+    say("added: " .. rest)
+  elseif verb == "remove" then
+    if rest == "" then
+      help_summary()
+      return
     end
-  end,
-  { group = GROUP }
-)
 
-rune.alias.exact(NAME, command)
-rune.alias.exact(SHORT, command)
+    local key = normalize(rest)
+    for i = #wanted, 1, -1 do
+      if normalize(wanted[i]) == key then
+        table.remove(wanted, i)
+      end
+    end
 
-loadSettings()
-if enabled then
-  rune.group.enable(GROUP)
-else
-  rune.group.disable(GROUP)
+    save_wanted()
+    say("removed: " .. rest)
+  else
+    help_summary()
+  end
 end
 
--- Single loader row.
-say("v" .. VERSION .. " loaded (" .. NAME .. " for help)")
+-- ---------------------------------------------------------------------------
+-- Triggers (regex syntax)
+-- ---------------------------------------------------------------------------
+
+if rune and rune.trigger and type(rune.trigger.regex) == "function" then
+  rune.trigger.regex("^[Yy]ou are affected by (.+?)\\.?$", function(m)
+    if enabled and m and m[1] then
+      record_affect(m[1])
+    end
+  end)
+
+  rune.trigger.regex("^[Aa]ffects:\\s*(.+)$", function(m)
+    if enabled and m and m[1] then
+      for item in tostring(m[1]):gmatch("[^,;]+") do
+        record_affect(item)
+      end
+    end
+  end)
+
+  rune.trigger.regex("^Total of .+ affects?\\.$", function()
+    if enabled then
+      finish_listing()
+    end
+  end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Aliases (bare commands; rune.alias.exact does not create slash commands)
+-- ---------------------------------------------------------------------------
+
+if rune and rune.alias and type(rune.alias.exact) == "function" then
+  rune.alias.exact(NAME, function(args, ctx)
+    handle_command(arg_text(args))
+  end)
+
+  rune.alias.exact(SHORT, function(args, ctx)
+    handle_command(arg_text(args))
+  end)
+
+  rune.alias.exact("mac", function(args, ctx)
+    cast_missing()
+  end)
+end
+
+load_settings()
+say("v" .. VERSION .. " loaded (" .. NAME .. " or " .. SHORT .. " for help)")

@@ -1,8 +1,10 @@
 -- Filename: eljayPlugins/highlights.lua
 -- Purpose: Highlights notable items and mobs in game output for easy recognition.
--- Version: 2.4
+-- Version: 2.5
 -- Date: 2026-Oct-16
 -- Changelog:
+--   2.5  Display aligned with annwnQuestSearch: paint/say helpers, help rows through emit(),
+--        bare commands as exact aliases taking (args, ctx). Highlight behaviour is unchanged.
 --   2.4  Fixed help not showing (helpstyle text is now echoed). Commands are single exact aliases.
 --        `highlights off` now disables the trigger itself, so no regex runs while off.
 --   2.3  One combined trigger instead of seven; category looked up only on matching lines.
@@ -17,6 +19,7 @@
 --   * If a colour is unavailable the line is passed through unstyled.
 --   * Turning highlights off disables the trigger handle, so there is no per-line cost while off.
 --   * Debug (default off) echoes the category that matched each line.
+--   * Output uses paint/say helpers, and help rows from helpstyle go through emit() (rune.echo).
 --   * on/off and debug are saved with rune.store and restored on load.
 --
 -- Commands:
@@ -27,7 +30,7 @@
 --   hl                      - short alias for highlights
 
 local NAME    = "highlights"
-local VERSION = "2.4"
+local VERSION = "2.5"
 
 local state = { enabled = true, debug = false }
 
@@ -150,8 +153,8 @@ local function status_text()
   return "v" .. VERSION .. "  highlights=" .. onoff(state.enabled) .. " debug=" .. onoff(state.debug)
 end
 
--- helpstyle functions return text, so echo whatever comes back (string or array of strings)
-local function out(value)
+-- emit: helpstyle rows are returned as text, so echo whatever comes back (string or array of strings)
+local function emit(value)
   if type(value) == "string" then
     rune.echo(value)
   elseif type(value) == "table" then
@@ -169,14 +172,14 @@ end
 local function show_help()
   local ok = pcall(function()
     local H = require("helpstyle")
-    out(H.title(NAME))
-    out(H.section("Commands"))
-    out(H.line("highlights              show this command summary"))
-    out(H.line("highlights on|off       turn the highlight trigger on or off"))
-    out(H.line("highlights debug on|off toggle debug output (default off)"))
-    out(H.line("highlights list         list categories, colours and entry counts"))
-    out(H.line("hl                      short alias for highlights"))
-    out(H.foot(status_text()))
+    emit(H.title(NAME))
+    emit(H.section("Commands"))
+    emit(H.line("highlights              show this command summary"))
+    emit(H.line("highlights on|off       turn the highlight trigger on or off"))
+    emit(H.line("highlights debug on|off toggle debug output (default off)"))
+    emit(H.line("highlights list         list categories, colours and entry counts"))
+    emit(H.line("hl                      short alias for highlights"))
+    emit(H.foot(status_text()))
   end)
   if not ok then plain_help() end
 end
@@ -221,7 +224,7 @@ local function guarded(fn)
 end
 
 for _, cmd in ipairs({ "highlights", "hl" }) do
-  local ok, err = pcall(rune.alias.exact, cmd, guarded(handle_command))
+  local ok, err = pcall(rune.alias.exact, cmd, guarded(function(args, ctx) handle_command(args) end))
   if not ok then say("alias '" .. cmd .. "' failed: " .. tostring(err)) end
 end
 

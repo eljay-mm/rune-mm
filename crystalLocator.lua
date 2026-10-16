@@ -1,12 +1,14 @@
 -- Filename: eljayPlugins/crystalLocator.lua
 -- Purpose: Finds the coordinates of a guild crystal from the scroll map via the MMAtlas crystal finder and shows them in the status bar.
--- Version: 3.15
--- Date: 2026-Oct-14
+-- Version: 3.17
+-- Date: 2026-Oct-16
 -- Changelog:
---   3.15 Brought to standard: loader line, clipboard tool lookup cached (no shell spawn per copy),
---        tolerant statusTray lookup, restored the Inspired-by line, shorter changelog.
---   3.14 The `cc` alias also clears the statusTray CRYSTAL slot.
---   3.13 Main command is `crystalLocator` with `crystal` as short alias; added the `tc` alias.
+--   3.17 Help output copied from annwnQuestSearch: H.line(command, description) rows in Commands and
+--        Usage sections, sentence-case title, aligned plain fallback, and the same cyan prefix
+--        handling (rune.style.cyan, then rune.style("cyan", ...), then a plain ANSI escape).
+--   3.16 Brought to standard: bare `crystalLocator`, `crystal` and `cs` are rune.alias.exact handlers
+--        taking (args, ctx), so the command typed alone always shows help; help rows go through emit().
+--   3.15 Clipboard tool lookup cached, tolerant statusTray lookup, restored the Inspired-by line.
 -- How it works:
 --   * Inspired by the MUSHclient plugin by Elbereth.
 --   * Receiving the scroll from Tadamir arms the locator (`crystalLocator on` arms it manually).
@@ -38,7 +40,7 @@
 --   * Clipboard writes are sanitized so the server cannot inject control codes.
 --   * Server text echoed to the screen has control characters removed.
 
-local VERSION  = "3.15"
+local VERSION  = "3.17"
 local ENDPOINT = "https://ooc.dune.net/mm/find-crystal-guild-vi.pl"
 local STORE_KEY = "crystallocator.settings"
 local MAX_BODY  = 200000   -- bytes of a reply that are ever parsed
@@ -145,17 +147,38 @@ local function store_crystal(value)
 end
 
 -- Helpers
+-- Colour helper: rune.style.<colour>, then rune.style("<colour>", ...), then a plain ANSI
+-- escape, so the colour shows whichever style API Rune provides.
+local ANSI = {
+  cyan = "\27[36m", blue = "\27[34m", white = "\27[37m", yellow = "\27[33m", red = "\27[31m",
+}
+local ANSI_RESET = "\27[0m"
+
 local function paint(color, text)
-  local fn = rune.style and rune.style[color]
-  if type(fn) == "function" then
-    local ok, out = pcall(fn, text)
-    if ok and out then return out end
+  text = tostring(text)
+  local style = rune and rune.style
+  if type(style) == "table" and type(style[color]) == "function" then
+    local ok, out = pcall(style[color], text)
+    if ok and type(out) == "string" then return out end
+  elseif type(style) == "function" then
+    local ok, out = pcall(style, color, text)
+    if ok and type(out) == "string" then return out end
   end
-  return text
+  return (ANSI[color] or "") .. text .. ANSI_RESET
 end
 
+local PREFIX = "[crystalLocator] "
+
 local function say(msg)
-  rune.echo(paint("cyan", "[crystalLocator] ") .. msg)
+  local line = paint("cyan", PREFIX) .. tostring(msg)
+  if not pcall(rune.echo, line) then
+    print(PREFIX .. tostring(msg))
+  end
+end
+
+-- Single output path for help rows (helpstyle rows and the plain fallback)
+local function emit(line)
+  if line ~= nil then rune.echo(line) end
 end
 
 local function dbg(msg)
@@ -513,44 +536,59 @@ local function status_line()
     VERSION, onoff(state.enabled), onoff(state.armed), onoff(cfg.debug))
 end
 
-local HELP = {
-  { "crystalLocator on",           "enable and arm the locator" },
-  { "crystalLocator off",          "disable the locator and clear the statusTray CRYSTAL slot" },
-  { "crystalLocator last",         "display coords of last crystal (shorthand: cs)" },
-  { "crystalLocator debug",        "show submitted lines (with markers) and the raw reply" },
-  { "crystalLocator debug on|off", "show / hide debug messages while processing (default off)" },
-  { "crystalLocator copy",         "copy the last submitted map block to the clipboard" },
-  { "crystalLocator copytest",     "copy a 3-line test text to check the clipboard path" },
-  { "crystalLocator resend",       "resubmit the last captured block" },
-  { "crystalLocator log",          "save block + reply to crystal_debug.txt in the temp folder" },
-  { "crystalLocator set",          "list settings;  crystalLocator set <key> <value>  to change" },
-  { "crystal",                     "short alias: crystal <command> works like crystalLocator <command>" },
-  { "cl",                          "look crystalQuest" },
-  { "cc",                          "give tadamir Tadamir;drop crystalQuest;sac crystalQuest; clears the statusTray CRYSTAL slot" },
-  { "tc",                          "take crystal" },
+local HELP_COMMANDS = {
+  { "crystalLocator",                "show this summary (short alias: crystal)" },
+  { "crystalLocator on",             "enable and arm the locator" },
+  { "crystalLocator off",            "disable the locator and clear the statusTray CRYSTAL slot" },
+  { "crystalLocator last",           "display the last crystal location" },
+  { "crystalLocator debug",          "show the submitted lines (with markers) and the raw reply" },
+  { "crystalLocator debug on|off",   "toggle debug messages while processing (default off)" },
+  { "crystalLocator copy",           "copy the last submitted map block to the clipboard" },
+  { "crystalLocator copytest",       "copy a 3-line test text to check the clipboard path" },
+  { "crystalLocator resend",         "resubmit the last captured block" },
+  { "crystalLocator log",            "save block and reply to crystal_debug.txt in the temp folder" },
+  { "crystalLocator set",            "list settings" },
+  { "crystalLocator set <key> <v>",  "change a setting (saved)" },
 }
-local KEYS_LINE = "settings keys: debug, method(post|get), lines, mode(blank|count), trim, fallback, copy, clip, timeout"
+
+local HELP_USAGE = {
+  { "settings keys", "debug, method(post|get), lines, mode(blank|count), trim, fallback, copy, clip, timeout" },
+  { "cs",            "shorthand for crystalLocator last" },
+  { "cl",            "look crystalQuest" },
+  { "cc",            "give tadamir Tadamir;drop crystalQuest;sac crystalQuest, and clear the statusTray CRYSTAL slot" },
+  { "tc",            "take crystal" },
+}
 
 local function showHelp()
-  if H then
-    local ok = pcall(function()
-      rune.echo(H.title("Crystal Locator"))
-      rune.echo(H.section("Commands"))
-      for _, row in ipairs(HELP) do
-        rune.echo(H.line(row[1] .. "  -  " .. row[2]))
-      end
-      rune.echo(H.line(KEYS_LINE))
-      rune.echo(H.foot(status_line()))
-    end)
-    if ok then return end
+  -- One status row, starting with the version, as the footer.
+  local status = status_line()
+
+  local styled = H and pcall(function()
+    emit(H.title("Crystal locator"))
+    emit(H.section("Commands"))
+    for _, row in ipairs(HELP_COMMANDS) do emit(H.line(row[1], row[2])) end
+    emit(H.section("Usage"))
+    for _, row in ipairs(HELP_USAGE) do emit(H.line(row[1], row[2])) end
+    emit(H.foot(status))
+  end)
+
+  if styled then
+    return
   end
 
-  say("CrystalLocator v" .. VERSION)
-  for _, row in ipairs(HELP) do
-    rune.echo("* " .. paint("yellow", row[1]) .. "  - " .. row[2])
+  -- Plain fallback when helpstyle is missing or its API differs.
+  local width = 0
+  for _, list in ipairs({ HELP_COMMANDS, HELP_USAGE }) do
+    for _, row in ipairs(list) do width = math.max(width, #row[1]) end
   end
-  rune.echo("    " .. KEYS_LINE)
-  rune.echo(status_line())
+  local function plain(row)
+    emit("  " .. row[1] .. string.rep(" ", width - #row[1]) .. "  " .. row[2])
+  end
+
+  emit("Crystal locator")
+  for _, row in ipairs(HELP_COMMANDS) do plain(row) end
+  for _, row in ipairs(HELP_USAGE) do plain(row) end
+  emit(status)
 end
 
 local function showSettings()
@@ -692,10 +730,15 @@ local commands = {
   end,
 }
 
-rune.alias.regex("^(?:crystalLocator|crystal)(?:\\s+(\\S+))?(?:\\s+(.*))?$", function(m, ctx)
-  m = m or (ctx and ctx.matches) or {}
-  local sub  = (m[1] or ""):lower()
-  local rest = m[2] or ""
+-- Bare commands: rune.alias.exact handlers taking (args, ctx); `crystalLocator` and `crystal`
+-- typed alone show help, `crystalLocator <command> [...]` is dispatched below.
+local function dispatch(args, ctx)
+  if type(args) ~= "string" then
+    args = (ctx and type(ctx.args) == "string") and ctx.args or ""
+  end
+  local sub, rest = args:match("^%s*(%S*)%s*(.-)%s*$")
+  sub  = (sub or ""):lower()
+  rest = rest or ""
 
   if sub == "set" then
     local key, val = rest:match("^(%S+)%s*(.-)%s*$")
@@ -710,7 +753,10 @@ rune.alias.regex("^(?:crystalLocator|crystal)(?:\\s+(\\S+))?(?:\\s+(.*))?$", fun
     say("Unknown command '" .. sub .. "'.")
     showHelp()
   end
-end, { name = "crystal-cmd" })
+end
+
+rune.alias.exact("crystalLocator", dispatch)
+rune.alias.exact("crystal", dispatch)
 
 -- Crystal quest item aliases (map keyword: crystalQuest)
 -- cc: hand in the crystal, then clear the statusTray CRYSTAL slot. The commands are
@@ -722,7 +768,7 @@ end)
 rune.alias.exact("cl", "look crystalQuest")
 rune.alias.exact("tc", "take crystal")
 
-rune.alias.exact("CrystalLocator:help", showHelp)
-rune.alias.exact("cs", "crystalLocator last")
+rune.alias.exact("CrystalLocator:help", function() showHelp() end)
+rune.alias.exact("cs", function() commands.last() end)
 
 say("v" .. VERSION .. " loaded (crystalLocator or crystal for help)")

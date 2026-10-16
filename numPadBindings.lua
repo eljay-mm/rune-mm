@@ -1,8 +1,9 @@
 -- Filename: eljayPlugins/numPadBindings.lua
--- Purpose: Numpad bindings for movement, look, and door accelerators.
--- Version: 2.4
+-- Purpose: Provides numpad bindings for movement, looking, and door commands.
+-- Version: 2.5
 -- Date: 2026-Oct-16
 -- Changelog:
+--   2.5  Use helpstyle rows and standardize command/help output.
 --   2.4  Persist enabled and debug states with rune.store; document binding tweaks.
 --   2.3  Standard pass: numPadBindings command with npb alias, bare aliases (no / prefix),
 --        annwnQuestSearch-style display, loader line, version in the status footer.
@@ -10,22 +11,21 @@
 --   2.1  Original implementation.
 --
 -- How it works:
---   * rune.config.set("numpad", true) makes Rune deliver numpad key events.
---   * Three layers share one direction table:
---       - plain numpad  : walk in that direction (numpad5 = look)
---       - alt+numpad    : "look <direction>" (alt+numpad5 = scan)
---       - ctrl+numpad   : "open <direction> door" (no ctrl+numpad5)
---   * "add" (numpad +) is down and "subtract" (numpad -) is up in all layers.
---   * Every command is a fixed literal built at load time; nothing is taken from game output.
---   * Typing "numPadBindings" (or "npb") alone shows the command summary.
---   * on|off pauses/resumes every binding while leaving the handlers registered.
---   * debug on|off echoes each key and the command it sends (default off).
+--   * rune.config.set("numpad", true) enables Rune's numpad key events.
+--   * Plain numpad keys walk in their direction; numpad5 looks.
+--   * Alt+numpad looks in that direction; alt+numpad5 scans.
+--   * Ctrl+numpad opens the door in that direction; ctrl+numpad5 is not bound.
+--   * Numpad add and subtract send "down" and "up" in each available layer.
+--   * Bindings use fixed commands built at load time; no game output is used.
+--   * Typing "numPadBindings" or "npb" alone shows help; on/off controls bindings.
+--   * Debug output is off by default; state is saved with rune.store.
 --
--- Commands:
---   numPadBindings               command summary (short alias: npb)
---   numPadBindings on|off        enable / disable the accelerators
---   numPadBindings list          show every binding
---   numPadBindings debug on|off  echo keypresses and emitted commands (default off)
+-- Commands (type without "/"; "npb" is a short alias for "numPadBindings"):
+--   numPadBindings                 show this help
+--   npb                            show this help
+--   numPadBindings on|off          enable / disable the bindings
+--   numPadBindings list            show every binding
+--   numPadBindings debug on|off    enable / disable debug messages
 --
 -- Tweaks (top of file):
 --   * DIRS   numpad keys, movement/look directions, and door-binding enablement
@@ -35,7 +35,7 @@
 
 local NAME = "numPadBindings"
 local ALIAS = "npb"
-local VERSION = "2.4"
+local VERSION = "2.5"
 
 rune.config.set("numpad", true)
 
@@ -52,10 +52,7 @@ end
 local function save_setting(key, value)
   if rune.store and type(rune.store.set) == "function" then
     local ok = pcall(rune.store.set, key, value)
-    if not ok then
-      return false
-    end
-    return true
+    return ok
   end
   return false
 end
@@ -63,7 +60,7 @@ end
 local enabled = load_setting(NAME .. ".enabled", true)
 local debug_on = load_setting(NAME .. ".debug", false)
 
--- Binding table (one row per key; edit here to rebind)
+-- Binding table (one row per key; edit here to rebind).
 local DIRS = {
   { "numpad1",  "southwest", nil,    true  },
   { "numpad2",  "south",     nil,    true  },
@@ -78,11 +75,7 @@ local DIRS = {
   { "subtract", "up",        nil,    true  },
 }
 
--- Display helpers (paint/say via rune.echo, help rows via helpstyle)
-local H = nil
-pcall(function()
-  H = require("helpstyle")
-end)
+local H = require("helpstyle")
 
 local function paint(color, text)
   local fn = rune.style and rune.style[color]
@@ -96,7 +89,7 @@ local function paint(color, text)
 end
 
 local function emit(row)
-  if row ~= nil and rune.echo then
+  if row ~= nil then
     rune.echo(row)
   end
 end
@@ -108,16 +101,19 @@ local function say(text)
   emit(ok and row or ("[" .. NAME .. "] " .. text))
 end
 
-local function help_row(fname, text)
-  local f = H and H[fname]
-  if type(f) == "function" then
-    local ok, out = pcall(f, text)
+local function help_row(kind, ...)
+  local fn = H[kind]
+  if type(fn) == "function" then
+    local ok, row = pcall(fn, ...)
     if ok then
-      emit(out)
+      emit(row)
       return
     end
   end
-  emit(text)
+
+  -- Keep help usable if a helpstyle helper fails.
+  local parts = { ... }
+  emit(table.concat(parts, "  "))
 end
 
 local function dbg(text)
@@ -126,13 +122,12 @@ local function dbg(text)
   end
 end
 
--- Bindings
 local bindings = {}
 
 local function bind(key, command)
   bindings[#bindings + 1] = { key, command }
 
-  if rune.bind then
+  if type(rune.bind) == "function" then
     rune.bind(key, function()
       if not enabled then
         return
@@ -155,33 +150,35 @@ for _, d in ipairs(DIRS) do
   end
 end
 
--- Commands
 local function footer()
-  help_row("foot", string.format("v%s  enabled=%s debug=%s bindings=%d",
-    VERSION, enabled and "on" or "off", debug_on and "on" or "off", #bindings))
+  help_row("foot", string.format(
+    "v%s  enabled=%s debug=%s bindings=%d",
+    VERSION,
+    enabled and "on" or "off",
+    debug_on and "on" or "off",
+    #bindings
+  ))
 end
 
 local function show_summary()
-  help_row("title", "Numpad accelerators")
+  help_row("title", "Numpad accelerators  (alias: " .. ALIAS .. ")")
   help_row("section", "Commands")
-  help_row("line", NAME .. " | " .. ALIAS .. "        this summary")
-  help_row("line", NAME .. " on | off     enable / disable the bindings")
-  help_row("line", NAME .. " list         show every binding")
-  help_row("line", NAME .. " debug on|off echo keypresses (default off)")
+  help_row("line", NAME .. " / " .. ALIAS, "show this help")
+  help_row("line", NAME .. " on|off", "enable / disable the bindings")
+  help_row("line", NAME .. " list", "show every binding")
+  help_row("line", NAME .. " debug on|off", "enable / disable debug messages")
   help_row("section", "Layers")
-  help_row("line", "numpad    walk (5 = look)")
-  help_row("line", "alt+      look <dir> (5 = scan)")
-  help_row("line", "ctrl+     open <dir> door")
+  help_row("line", "numpad", "walk (5 = look)")
+  help_row("line", "alt+", "look <direction> (5 = scan)")
+  help_row("line", "ctrl+", "open <direction> door")
   footer()
 end
 
 local function show_list()
   help_row("title", "Numpad bindings")
-
-  for _, b in ipairs(bindings) do
-    help_row("line", string.format("%-14s -> %s", b[1], b[2]))
+  for _, binding in ipairs(bindings) do
+    help_row("line", binding[1], "-> " .. binding[2])
   end
-
   footer()
 end
 
@@ -194,7 +191,7 @@ local function run_command_impl(arg_text)
   local action = words[1] or ""
 
   if action == "on" or action == "off" then
-    enabled = (action == "on")
+    enabled = action == "on"
     if not save_setting(NAME .. ".enabled", enabled) then
       say("warning: could not save enabled state")
     end
@@ -209,6 +206,7 @@ local function run_command_impl(arg_text)
     else
       debug_on = not debug_on
     end
+
     if not save_setting(NAME .. ".debug", debug_on) then
       say("warning: could not save debug state")
     end
@@ -232,9 +230,8 @@ local function args_to_text(args)
   return tostring(args or "")
 end
 
--- Bare commands are aliases (rune.command only makes /slash commands).
--- The exact aliases handle the bare word; the regex alias handles "<name> <args>".
-if rune.alias and rune.alias.exact then
+-- Bare commands are aliases; rune.command.add only creates slash commands.
+if rune.alias and type(rune.alias.exact) == "function" then
   for _, word in ipairs({ NAME, ALIAS }) do
     pcall(rune.alias.exact, word, function(args, ctx)
       run_command(args_to_text(args))
@@ -242,10 +239,15 @@ if rune.alias and rune.alias.exact then
   end
 end
 
-if rune.alias and rune.alias.regex then
-  pcall(rune.alias.regex, "^(?:" .. NAME .. "|" .. ALIAS .. ") +(.*)$", function(match)
-    run_command(match[1])
-  end, { name = "numPadBindings-cmd" })
+if rune.alias and type(rune.alias.regex) == "function" then
+  pcall(
+    rune.alias.regex,
+    "^(?:" .. NAME .. "|" .. ALIAS .. ") +(.*)$",
+    function(match)
+      run_command(match[1])
+    end,
+    { name = NAME .. "-cmd" }
+  )
 end
 
 say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, ALIAS))

@@ -243,4 +243,4 @@ rune.hooks.on("disconnected", function()
 end, { name = "vitalsChanges-disconnected" })
 
 load_settings()
-say("v" .. VERSION .. " loaded (" .. NAME .. " for help)")
+say("v" .. VERSION .. " loaded (" .. NAME .. " or vitals for help)")

@@ -1,61 +1,89 @@
 -- Filename: eljayPlugins/basicAliases.lua
--- Purpose: Basic Aliases Generalized for all Characters
--- Version: 2.10
--- Date: 2026-Oct-15
+-- Purpose: Provides shared aliases and automatic responses for all characters
+-- Version: 2.11
+-- Date: 2026-Oct-16
+-- Changelog:
+--   2.11  Persisted trigger on/off state with rune.store; debug remains off
+--        on startup; registered the full command and short alias as exact aliases.
+--   2.10  Argument aliases are plain rune.alias.exact rows (Rune appends typed
+--        arguments natively), so the regex helper is gone; comments use -- only.
 --
--- Changes in 2.10:
---   * argument aliases are plain rune.alias.exact rows (Rune appends typed arguments natively),
---     so the regex helper is gone; no block-comment markers are used in comments
+-- How it works:
+--   * Triggers: automatic responses to game text and gag triggers for noisy
+--     lines. Yes/no questions use prompt triggers as well as full-line triggers.
+--   * All triggers belong to the "basicAliases" group; basicAliases on|off
+--     switches the group, and its state is saved with rune.store.
+--   * Aliases: one row each with rune.alias.exact; Rune appends typed arguments
+--     natively (for example, "qs 3" runs "quest status 3"). Helper plan() wraps
+--     skill aliases. Aliases are always active; only triggers are toggled.
+--   * Commands are chained with ";" inside a single rune.send string.
+--   * Commands are typed without a / prefix. basicAliases is the full command
+--     and basic is the short alias; typing either alone shows help.
+--   * Debug messages default to off and are not persisted.
 --
--- Changes in 2.9:
---   * brought to standard: basicAliases command (short alias basic) with help, trigger on/off,
---     debug toggle and loader line; triggers now live in one group so on/off covers them all
+-- Commands (basic works in place of basicAliases):
+--   basicAliases                 show this help
+--   basicAliases on|off          enable or disable the triggers
+--   basicAliases debug on|off    show or hide debug messages (default off)
+--
+-- Tweaks (top of file):
+--   * None
 
--- How it works
---  * Triggers: auto-responses to game text, plus gag triggers (gag = true) for noisy lines.
---    Yes/no questions arrive as prompts (no line ending), so those use prompt_trigger().
---    All triggers belong to the "basicAliases" group; `basicAliases on|off` switches the group.
---  * Aliases: one row each with rune.alias.exact; Rune appends anything typed after the alias
---    ("qs" -> "quest status", "qs 3" -> "quest status 3"). Helper plan() wraps skill aliases.
---    Aliases are always active; only the triggers are toggled.
---  * Commands are chained with ";" inside a single rune.send string.
---  * Commands: `basicAliases` (short alias `basic`) shows help; `on|off` toggles the triggers;
---    `debug on|off` toggles debug messages (default off).
-
-local NAME, VERSION, GROUP = "basicAliases", "2.10", "basicAliases"
+local NAME, VERSION, GROUP = "basicAliases", "2.11", "basicAliases"
+local SETTINGS_KEY = "basicAliases.settings"
 local debugOn = false
 
 -- Output helpers
 
 local function paint(color, text)
-  local ok, r = pcall(function() return rune.style[color](text) end)
-  return (ok and type(r) == "string") and r or text
+  local ok, result = pcall(function()
+    return rune.style[color](text)
+  end)
+  return (ok and type(result) == "string") and result or text
 end
 
-local function say(msg) rune.echo(paint("cyan", "[" .. NAME .. "] ") .. msg) end
-local function dbg(msg) if debugOn then say(paint("yellow", "debug: ") .. msg) end end
+local function say(message)
+  rune.echo(paint("cyan", "[" .. NAME .. "] ") .. message)
+end
+
+local function dbg(message)
+  if debugOn then
+    say(paint("yellow", "debug: ") .. message)
+  end
+end
 
 -- Helpers
 
--- auto-response: when the pattern matches, send cmd (on = "prompt" for partial lines)
+-- Auto-response: when the pattern matches, send cmd (on = "prompt" for partial lines).
 local function auto(pattern, cmd, on)
-  rune.trigger.regex(pattern, function() dbg("trigger -> " .. cmd); rune.send(cmd) end, { group = GROUP, on = on })
+  rune.trigger.regex(pattern, function()
+    dbg("trigger -> " .. cmd)
+    rune.send(cmd)
+  end, { group = GROUP, on = on })
 end
 
--- text that may arrive as a prompt (partial line, no newline) or as a full line
-local function prompt_trigger(pattern, cmd) auto(pattern, cmd, "prompt"); auto(pattern, cmd) end
+-- Text that may arrive as a prompt (partial line) or as a full line.
+local function prompt_trigger(pattern, cmd)
+  auto(pattern, cmd, "prompt")
+  auto(pattern, cmd)
+end
 
--- hide matching lines
-local function gag(pattern) rune.trigger.regex(pattern, function() dbg("gagged a line") end, { group = GROUP, gag = true }) end
+-- Hide matching lines.
+local function gag(pattern)
+  rune.trigger.regex(pattern, function()
+    dbg("gagged a line")
+  end, { group = GROUP, gag = true })
+end
 
-local function plan(key, skill) rune.alias.exact(key, "plan '" .. skill .. "'") end
-local function ganuk(m) rune.send("shop buy " .. m[1] .. ";down;give " .. m[1] .. " ganuk") end
+local function plan(key, skill)
+  rune.alias.exact(key, "plan '" .. skill .. "'")
+end
 
 -- Triggers
 
 -- Auto-responses
 auto("^A sudden, strong gust of wind knocks you to the ground!$", "stand")
-auto("^A tangle vine twists around your feet, preventing you from leaving!$", "attack tangle")
+auto("^A tangle vine twists around your feet, preventing you from leaving!", "attack tangle")
 auto("^\\s*An open coffin is covered in dust here\\.$", "enter coffin")
 auto("^Divusmors vanishes with a clap of thunder!$", "get all.loot;get all lootable")
 
@@ -104,7 +132,9 @@ rune.alias.exact("tt", "take all.tourm corpse")
 rune.alias.exact("tg", "take gold corpse")
 rune.alias.exact("fha", "take bernadette miner;eat bernadette")
 rune.alias.exact("ir", "inventory reorder")
-rune.alias.regex("^forge +(.+)$", function(m) rune.send("put " .. m[1] .. " forge;close forge") end)
+rune.alias.regex("^forge +(.+)$", function(matches)
+  rune.send("put " .. matches[1] .. " forge;close forge")
+end)
 
 -- Basics / utility
 
@@ -142,7 +172,9 @@ rune.alias.exact("sg", "ship cargo")
 
 -- Research
 rune.alias.exact("rrl", "read research list")
-rune.alias.regex("^rrr +(.+)$", function(m) rune.send("rem notes;read research buy " .. m[1] .. ";bind thesis notes;hold notes") end)
+rune.alias.regex("^rrr +(.+)$", function(matches)
+  rune.send("rem notes;read research buy " .. matches[1] .. ";bind thesis notes;hold notes")
+end)
 
 -- Locker
 rune.alias.exact("lor", "locker remove")
@@ -177,12 +209,14 @@ rune.alias.exact("cm", "cower mourdul")
 rune.alias.exact("cw", "clan where")
 rune.alias.exact("nt", "clan talk novice")
 rune.alias.exact("ps", "pursuer")
-rune.alias.regex("^setslave +(.+)$", function(m) rune.send("clan security set " .. m[1] .. " alliancetalk chatlog gohall log where") end)
+rune.alias.regex("^setslave +(.+)$", function(matches)
+  rune.send("clan security set " .. matches[1] .. " alliancetalk chatlog gohall log where")
+end)
 rune.alias.exact("ff", "form follow")
 rune.alias.exact("fss", "form structure shield")
 rune.alias.exact("fr", "form rep")
 rune.alias.exact("fw", "form where")
-rune.alias.exact("wc", "who sortbyclan")  -- 'wh' conflicted, renamed
+rune.alias.exact("wc", "who sortbyclan") -- 'wh' conflicted, renamed
 rune.alias.exact("whol", "who 1 19")
 rune.alias.exact("who1", "who 20 60")
 rune.alias.exact("who2", "who 61 120")
@@ -233,41 +267,100 @@ rune.alias.exact("ab", "auction bid")
 rune.alias.exact("ai", "auction identify")
 rune.alias.exact("aw", "alliance where")
 
+-- Settings
 
--- Command: basicAliases (short alias: basic)
+local enabled = true
 
-local function help()
-  local ok, H = pcall(require, "helpstyle")
-  local shown = ok and type(H) == "table" and pcall(function()
-    H.title(NAME)
-    H.section("Commands")
-    H.line("basicAliases", "show this help")
-    H.line("basicAliases on|off", "turn the auto-response and gag triggers on or off")
-    H.line("basicAliases debug on|off", "show or hide debug messages")
-    H.section("Short alias")
-    H.line("basic", "same as basicAliases")
-    H.foot("v" .. VERSION .. "  triggers=" .. (rune.group.is_enabled(GROUP) and "on" or "off") .. " debug=" .. (debugOn and "on" or "off"))
-  end)
-  if not shown then
-    say("v" .. VERSION .. "  basicAliases | basicAliases on|off | basicAliases debug on|off | basic")
+local function load_settings()
+  if not (rune.store and type(rune.store.get) == "function") then
+    return
+  end
+
+  local ok, saved = pcall(rune.store.get, SETTINGS_KEY)
+  if ok and type(saved) == "table" and type(saved.enabled) == "boolean" then
+    enabled = saved.enabled
   end
 end
 
-local function command(m)
-  local a, b = string.lower(m[1] or ""):match("^(%S*)%s*(%S*)")
-  if a == "" or a == "help" then
+local function save_settings()
+  if rune.store and type(rune.store.set) == "function" then
+    pcall(rune.store.set, SETTINGS_KEY, { enabled = enabled })
+  end
+end
+
+local function onoff(value)
+  return value and "on" or "off"
+end
+
+-- Help
+
+local helpstyle_ok, H = pcall(require, "helpstyle")
+if not helpstyle_ok or type(H) ~= "table" then
+  H = nil
+end
+
+local function emit(row)
+  if row ~= nil then
+    rune.echo(row)
+  end
+end
+
+local function help()
+  local status = "v" .. VERSION .. "  triggers=" .. onoff(enabled) ..
+    " debug=" .. onoff(debugOn)
+
+  local styled = H and pcall(function()
+    emit(H.title("Basic aliases  (alias: basic)"))
+    emit(H.section("Commands"))
+    emit(H.line("basicAliases", "show this help (short alias: basic)"))
+    emit(H.line("basicAliases on|off", "enable or disable the automatic-response and gag triggers"))
+    emit(H.line("basicAliases debug on|off", "show or hide debug messages (default off)"))
+    emit(H.foot(status))
+  end)
+
+  if not styled then
+    rune.echo("Basic aliases  (alias: basic)")
+    rune.echo("  basicAliases                 show this help (short alias: basic)")
+    rune.echo("  basicAliases on|off          enable or disable the automatic-response and gag triggers")
+    rune.echo("  basicAliases debug on|off    show or hide debug messages (default off)")
+    rune.echo(status)
+  end
+end
+
+local function command(args, ctx)
+  local text = tostring(args or ""):lower():match("^%s*(.-)%s*$")
+  local option, value = text:match("^(%S*)%s*(%S*)$")
+
+  if option == "" or option == "help" then
     help()
-  elseif a == "on" or a == "off" then
-    if a == "on" then rune.group.enable(GROUP) else rune.group.disable(GROUP) end
-    say("triggers " .. a)
-  elseif a == "debug" and (b == "on" or b == "off") then
-    debugOn = (b == "on")
-    say("debug " .. b)
+  elseif option == "on" or option == "off" then
+    enabled = (option == "on")
+    if enabled then
+      rune.group.enable(GROUP)
+    else
+      rune.group.disable(GROUP)
+    end
+    save_settings()
+    say("triggers " .. option)
+  elseif option == "debug" and (value == "on" or value == "off") then
+    debugOn = (value == "on")
+    say("debug " .. value)
   else
     say("unknown option; type basicAliases or basic for help")
   end
 end
 
-rune.alias.regex("^(?:basicAliases|basic)(?: +(.*))?$", command)
+-- Full command and short alias are bare aliases, not slash commands.
+rune.alias.exact("basicAliases", command)
+rune.alias.exact("basic", command)
 
+-- Restore the saved trigger state after registering this plugin's triggers.
+load_settings()
+if enabled then
+  rune.group.enable(GROUP)
+else
+  rune.group.disable(GROUP)
+end
+
+-- Single loader row.
 say("v" .. VERSION .. " loaded (basicAliases or basic for help)")

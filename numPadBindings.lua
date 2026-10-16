@@ -1,8 +1,9 @@
 -- Filename: eljayPlugins/numPadBindings.lua
 -- Purpose: Numpad bindings for movement, look, and door accelerators.
--- Version: 2.3
+-- Version: 2.4
 -- Date: 2026-Oct-16
 -- Changelog:
+--   2.4  Persist enabled and debug states with rune.store; document binding tweaks.
 --   2.3  Standard pass: numPadBindings command with npb alias, bare aliases (no / prefix),
 --        annwnQuestSearch-style display, loader line, version in the status footer.
 --   2.2  Repo-style header cleanup and safe command registration; behavior preserved.
@@ -15,7 +16,7 @@
 --       - alt+numpad    : "look <direction>" (alt+numpad5 = scan)
 --       - ctrl+numpad   : "open <direction> door" (no ctrl+numpad5)
 --   * "add" (numpad +) is down and "subtract" (numpad -) is up in all layers.
---   * Every command is a fixed literal built at load time; nothing is ever taken from game output.
+--   * Every command is a fixed literal built at load time; nothing is taken from game output.
 --   * Typing "numPadBindings" (or "npb") alone shows the command summary.
 --   * on|off pauses/resumes every binding while leaving the handlers registered.
 --   * debug on|off echoes each key and the command it sends (default off).
@@ -25,15 +26,42 @@
 --   numPadBindings on|off        enable / disable the accelerators
 --   numPadBindings list          show every binding
 --   numPadBindings debug on|off  echo keypresses and emitted commands (default off)
+--
+-- Tweaks (top of file):
+--   * DIRS   numpad keys, movement/look directions, and door-binding enablement
+--
+-- Settings:
+--   * rune.store keys numPadBindings.enabled and numPadBindings.debug
 
 local NAME = "numPadBindings"
 local ALIAS = "npb"
-local VERSION = "2.3"
+local VERSION = "2.4"
 
 rune.config.set("numpad", true)
 
-local enabled = true
-local debug_on = false
+local function load_setting(key, default)
+  if rune.store and type(rune.store.get) == "function" then
+    local ok, value = pcall(rune.store.get, key)
+    if ok and type(value) == "boolean" then
+      return value
+    end
+  end
+  return default
+end
+
+local function save_setting(key, value)
+  if rune.store and type(rune.store.set) == "function" then
+    local ok = pcall(rune.store.set, key, value)
+    if not ok then
+      return false
+    end
+    return true
+  end
+  return false
+end
+
+local enabled = load_setting(NAME .. ".enabled", true)
+local debug_on = load_setting(NAME .. ".debug", false)
 
 -- Binding table (one row per key; edit here to rebind)
 local DIRS = {
@@ -52,7 +80,9 @@ local DIRS = {
 
 -- Display helpers (paint/say via rune.echo, help rows via helpstyle)
 local H = nil
-pcall(function() H = require("helpstyle") end)
+pcall(function()
+  H = require("helpstyle")
+end)
 
 local function paint(color, text)
   local fn = rune.style and rune.style[color]
@@ -165,6 +195,9 @@ local function run_command_impl(arg_text)
 
   if action == "on" or action == "off" then
     enabled = (action == "on")
+    if not save_setting(NAME .. ".enabled", enabled) then
+      say("warning: could not save enabled state")
+    end
     say("accelerators " .. action)
   elseif action == "list" then
     show_list()
@@ -175,6 +208,9 @@ local function run_command_impl(arg_text)
       debug_on = false
     else
       debug_on = not debug_on
+    end
+    if not save_setting(NAME .. ".debug", debug_on) then
+      say("warning: could not save debug state")
     end
     say("debug " .. (debug_on and "on" or "off"))
   else
@@ -212,4 +248,4 @@ if rune.alias and rune.alias.regex then
   end, { name = "numPadBindings-cmd" })
 end
 
-say(string.format("v%s loaded (%s or npb for help)", VERSION, NAME))
+say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, ALIAS))

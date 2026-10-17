@@ -40,7 +40,6 @@ rune.config.set("mouse", true)
 
 local PLUGINS = {
   "annwnQuestSearch",
-  "asciiMapPane",
   "bardSongTLAs",
   "basicAliases",
   "characterLog",

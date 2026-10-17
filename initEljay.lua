@@ -30,7 +30,7 @@
 --   none - this file is a loader and runs at startup only
 
 local VERSION = "2.4"
-local DEBUG = true -- set true to find a hanging plugin
+local DEBUG = false -- set true to find a hanging plugin
 
 -- Cross-platform temp location (Linux/macOS: TMPDIR or /tmp, Windows: TEMP/TMP).
 local TMP = os.getenv("TMPDIR") or os.getenv("TEMP") or os.getenv("TMP") or "/tmp"

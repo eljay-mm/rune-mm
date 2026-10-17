@@ -9,8 +9,8 @@ The plugins are written to work on Linux, macOS and Windows; see [Windows notes]
 
 ## Requirements
 
-- The Rune client (runemud.com).
-- horstgs' Rune configuration for Materia Magica. It provides `helpstyle`, used by the
+- The Rune client (runemud.com and https://github.com/mmcdole/rune).
+- horstgs' Rune configuration (https://github.com/horstgs/rune-materiamagica-public) for Materia Magica. It provides `helpstyle`, used by the
   plugins' help screens, and the mapper modules (`mapper.lua` and friends), which
   `spdxyCoordinates` uses only as a fallback outside the wilderness.
 - A terminal that supports OSC 52 (clipboard) and OSC 8 (hyperlinks). Ghostty does; open
@@ -107,7 +107,6 @@ To enable it again, remove the `--`. Things to know:
 | Plugin                    | What it does                                                                                                         |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `annwnQuestSearch.lua`    | Looks up the quest you are reading about on annwn.info, as a clipboard copy and clickable link.                      |
-| `asciiMapPane.lua`        | ASCII map pane for the current area.                                                                                 |
 | `bardSongTLAs.lua`        | Bard songs with three-letter acronyms.                                                                               |
 | `basicAliases.lua`        | General-purpose aliases and triggers for all characters.                                                             |
 | `characterLog.lua`        | Per-character, per-day session logging, named from GMCP.                                                             |
@@ -117,9 +116,11 @@ To enable it again, remove the `--`. Things to know:
 | `eqdbResultsPicker.lua`   | Turns equipment search results into a picker that runs `eqlookup`.                                                   |
 | `fauxSextant.lua`         | Sextant coordinate display built from GMCP data.                                                                     |
 | `hangmanSolver.lua`       | Solves hangman puzzles using an online solver (needs `curl`).                                                        |
+| `herbAliases.lua          | Provides short aliases for Herbalism mixing, throwing and eating.                                                    |
 | `highlights.lua`          | Item highlights for easy recognition.                                                                                |
 | `jmcSolver.lua`           | Solves the Joint Magical Consortium mirror puzzle locally and lists every solution.                                  |
 | `mapperShortCutKeys.lua`  | Keyboard shortcuts for the mapper.                                                                                   |
+| `missingAffects.lua`      | Shows which wanted affects are missing from your current affects.                                                    |
 | `numPadBindings.lua`      | Numpad movement, look and door keys.                                                                                 |
 | `oocWikiSearch.lua`       | Searches the Materia Magica OOC wiki.                                                                                |
 | `researchNotesPicker.lua` | Searchable picker over the research thesis list, built for repeat purchases, which handles your notes automatically. |
@@ -184,6 +185,6 @@ Older plugins are being brought up to this standard as they are revised.
 
 ## Credits
 
-- [Rune](https://runemud.com) by mmcdole.
-- Base Materia Magica configuration, `mapper.lua` and `helpstyle` by horstgs.
+- [Rune](https://runemud.com) by mmcdole (https://github.com/mmcdole/rune).
+- Base Materia Magica configuration, `mapper.lua` and `helpstyle` by horstgs (https://github.com/horstgs/rune-materiamagica-public).
 - Many plugins began as conversions of MUSHclient XML plugins by Ruthgul, Elbereth, Ferdinand, or Oona.

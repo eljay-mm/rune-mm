@@ -115,6 +115,7 @@ To enable it again, remove the `--`. Things to know:
 | `druidSpellTLAs.lua`      | Druid invoke and evoke spells with three-letter acronyms.                                                            |
 | `eqdbResultsPicker.lua`   | Turns equipment search results into a picker that runs `eqlookup`.                                                   |
 | `fauxSextant.lua`         | Sextant coordinate display built from GMCP data.                                                                     |
+| `gotoAliases.lua`         | Aliases to run to gates, quest masters, banks, post offices and other places in the town you are in.                 |
 | `hangmanSolver.lua`       | Solves hangman puzzles using an online solver (needs `curl`).                                                        |
 | `herbAliases.lua`         | Provides short aliases for Herbalism mixing, throwing and eating.                                                    |
 | `highlights.lua`          | Item highlights for easy recognition.                                                                                |

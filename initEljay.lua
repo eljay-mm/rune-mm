@@ -50,6 +50,7 @@ local PLUGINS = {
   "eqdbResultsPicker",
   "fauxSextant",
   "hangmanSolver",
+  "herbAliases",
   "highlights",
   "jmcSolver",
   "mapperShortCutKeys",

@@ -1,8 +1,30 @@
 -- Filename: eljayPlugins/missingAffects.lua
 -- Purpose: Compare listed affects with a wanted-affects list and report missing affects.
--- Version: 1.8
+-- Version: 1.12
 -- Date: 2026-Oct-16
 -- Changelog:
+--   1.12 Removed the druid-analogue concept. Spells such as shield or refresh are
+--        regular spells that share their name with a bard song: by default they are
+--        sent as cast '<spell>', and with "missingAffects class bard" they are
+--        played as songs instead. Druid invocations ("<element> invocation") are
+--        unchanged and always sent as invoke <element>. Class values are now
+--        spell (default) and bard.
+--   1.11 Added "missingAffects cast all" and "mac all": cast every wanted affect,
+--        present or not, to extend durations. "mac" is now a regex alias so it
+--        accepts the "all" argument.
+--   1.10 Root cause of false "missing" reports fixed: the real affects output has
+--        rows such as "Spell:      shield   - Level 241, modifies ar ..." and
+--        "Affect:     air invocation   - Level ...", which no trigger matched, so
+--        nothing was ever recorded. One trigger now captures the name from
+--        Spell/Affect/Racial/Skill rows; "You are affected by the following:"
+--        starts a fresh listing; the unused "Affects:" trigger is removed.
+--   1.9  Fixed false "missing" reports: each listed line is now reduced to several
+--        candidate names (whole line, label removed, text before ":" "(" " - " or a
+--        number) before matching, so decorated lines such as "Spell: shield : 5
+--        hours" match the wanted name "shield"; trigger patterns tolerate leading
+--        whitespace; "missingAffects lines" shows what the last listing captured.
+--        DRUID_SPELLS fixed (duplicate "magma invocation" key lost minerals) and
+--        rebuilt from rows so duplicates are detected.
 --   1.8  Bard play and druid invoke/evoke reintegrated from bardSongTLAs 2.4 and
 --        druidSpellTLAs 2.6: separate BARD_SONGS and DRUID_SPELLS tables, a class
 --        setting picks the method for names both classes share (shield, light...),
@@ -13,17 +35,30 @@
 --        alias, regex-syntax trigger patterns, stale-listing reset.
 --
 -- How it works:
+--   * Affects output parsed (Materia Magica):
+--       You are affected by the following:
+--       Racial:  sense life
+--       Spell:      shield        - Level 241, modifies ar   by 9 for 715 minutes.
+--       Affect:     air invocation - Level 241, modifies none by 0 for 695 minutes.
+--       Total of 19 magical affects.
+--     The header starts a listing, each Spell/Affect/Racial/Skill row records its
+--     name (repeated rows for one affect are harmless), and the "Total of ..."
+--     line triggers the comparison.
 --   * Compares affects in the current listing against the wanted-affects list.
---   * Matching is case-insensitive; configured similar-affect groups suppress
+--   * Matching is case-insensitive and exact against candidate names derived from
+--     each listed line (see 1.9); configured similar-affect groups suppress
 --     alerts when a listed affect is equivalent to a wanted one.
+--   * "missingAffects cast all" (or "mac all") sends a command for every item in
+--     the wanted list whether or not it is currently present, to refresh spells.
+--   * Run "missingAffects debug on" and then "affects" to see every captured line
+--     and its candidate names; "missingAffects lines" repeats the last capture.
 --   * At the listing summary, reports wanted affects that were not found.
 --   * "missingAffects cast" sends one command per item in the most recent
---     missing-affects result: play '<song>' for bard songs, invoke <element> or
---     evoke <element> for druid spells (element unquoted), cast '<spell>' for
---     anything else.
---   * Names that are both a bard song and a druid analogue use the class
---     setting (bard or druid, default bard); names known to only one class
---     always use that class's method.
+--     missing-affects result.
+--   * Command per name: druid invocations ("magma invocation" and so on) are sent
+--     as invoke <element>; every other name is a regular spell and is sent as
+--     cast '<name>'. With "missingAffects class bard", names that are also bard
+--     songs are sent as play '<song>' instead (class spell is the default).
 --   * Settings (wanted list, on/off, debug, class) are stored in rune.store per
 --     character when rune.connection.character is available, and globally
 --     otherwise.
@@ -35,23 +70,27 @@
 --   ma [help]                      short alias
 --   missingAffects on|off          enable or disable listing triggers
 --   missingAffects debug on|off    toggle debug output (default off)
---   missingAffects class bard|druid  choose the method for shared names
+--   missingAffects class spell|bard  cast spells (default) or play bard songs
 --   missingAffects want <names>    replace wanted list; separate names with commas
 --   missingAffects add <name>      add an affect to the wanted list
 --   missingAffects remove <name>   remove an affect from the wanted list
 --   missingAffects list            show wanted affects
+--   missingAffects lines           show lines captured by the last affects listing
 --   missingAffects clear           clear wanted affects
 --   missingAffects cast            play/invoke/evoke/cast the last missing-affects list
+--   missingAffects cast all        cast every wanted affect, even if already present
 --   mac                            alias for "missingAffects cast"
+--   mac all                        alias for "missingAffects cast all"
 --
 -- Tweaks:
 --   Edit DEFAULT_WANTED and SIMILAR_AFFECT_GROUPS to suit your character.
---   Keep BARD_SONGS and DRUID_SPELLS in step with bardSongTLAs and druidSpellTLAs.
+--   Keep BARD_SONGS and DRUID_INVOCATIONS in step with bardSongTLAs and druidSpellTLAs.
+--   Song names with no regular spell of the same name need class bard to work.
 --   Command names are validated before being sent.
 
 local NAME = "missingAffects"
 local SHORT = "ma"
-local VERSION = "1.8"
+local VERSION = "1.12"
 
 local KEY_WANTED = "missingAffects.wanted"
 local KEY_ENABLED = "missingAffects.enabled"
@@ -63,7 +102,7 @@ local LISTING_TIMEOUT = 10 -- seconds before an unfinished listing is discarded
 local DEFAULT_WANTED = {}
 local SIMILAR_AFFECT_GROUPS = {}
 
--- Bard songs (affect name -> song), from bardSongTLAs: play '<song>'.
+-- Bard songs, from bardSongTLAs: play '<song>' (used when class is bard).
 local BARD_SONGS = {
   "battle march", "detect invisibility", "footloose", "enhanced strength",
   "epiphany", "inspirational hymn", "levitation", "light", "mass levitation",
@@ -74,28 +113,42 @@ local BARD_SONGS = {
   "rime of the glacierbreaker", "thunderclap", "tremor",
 }
 
--- Druid invocations (affect name -> verb, element), from druidSpellTLAs:
--- invoke <element> / evoke <element>, element unquoted.
-local DRUID_SPELLS = {
-  ["magma invocation"]    = { "invoke", "magma" },
-  ["magma invocation"]    = { "invoke", "minerals" },
-  ["ice invocation"]      = { "invoke", "ice" },
-  ["ooze invocation"]     = { "invoke", "ooze" },
-  ["air invocation"]      = { "invoke", "air" },
-  ["steam invocation"]    = { "invoke", "steam" },
-  ["dust invocation"]     = { "invoke", "dust" },
-  ["fire invocation"]     = { "invoke", "fire" },
-  ["lightning invocation"]= { "invoke", "lightning" },
+-- Druid invocations: { affect name, verb, element }, from druidSpellTLAs;
+-- always sent as invoke/evoke <element>, whatever the class setting.
+-- Sent as invoke/evoke <element>, element unquoted.
+local DRUID_INVOCATIONS = {
+  { "magma invocation",     "invoke", "magma" },
+  { "minerals invocation",  "invoke", "minerals" },
+  { "ice invocation",       "invoke", "ice" },
+  { "ooze invocation",      "invoke", "ooze" },
+  { "air invocation",       "invoke", "air" },
+  { "steam invocation",     "invoke", "steam" },
+  { "dust invocation",      "invoke", "dust" },
+  { "fire invocation",      "invoke", "fire" },
+  { "lightning invocation", "invoke", "lightning" },
 }
+
+-- affect name -> { verb, element }; built once at load, first row wins.
+local INVOCATION_LOOKUP = {}
+local DRUID_DUPLICATES = {}
+for _, row in ipairs(DRUID_INVOCATIONS) do
+  local key = row[1]:lower()
+  if INVOCATION_LOOKUP[key] then
+    DRUID_DUPLICATES[#DRUID_DUPLICATES + 1] = key
+  else
+    INVOCATION_LOOKUP[key] = { row[2], row[3] }
+  end
+end
 
 local BARD_LOOKUP = {}
 for _, song in ipairs(BARD_SONGS) do BARD_LOOKUP[song] = true end
 
 local enabled = true
 local debug_enabled = false
-local class_mode = "bard" -- which class wins for names both classes share
+local class_mode = "spell" -- spell: cast regular spells; bard: play songs of the same name
 local wanted = {}
 local listed = {}
+local last_lines = {} -- raw lines captured by the last listing, for diagnosis
 local missing_last = {}
 local listing_active = false
 local listing_stamp = 0
@@ -169,6 +222,41 @@ local function arg_text(args)
   return ""
 end
 
+local function strip_ansi(text)
+  return (tostring(text or ""):gsub("\27%[[%d;]*[A-Za-z]", ""))
+end
+
+-- Reduce one listed line to candidate names: the whole line, the text after a
+-- one-word label ("Spell:"), and the text before a delimiter such as ":" "(" "["
+-- " - " or a number (durations). Matching stays exact against these keys, so a
+-- wanted "light" never matches "cure light".
+local function candidate_keys(raw)
+  local keys, seen = {}, {}
+  local function add(text)
+    text = normalize((tostring(text or ""):gsub("[%.,;]+%s*$", "")))
+    if text ~= "" and not seen[text] then
+      seen[text] = true
+      keys[#keys + 1] = text
+    end
+  end
+
+  local text = normalize(strip_ansi(raw))
+  add(text)
+
+  local label, body = text:match("^(%a+):%s*(.+)$")
+  if label then
+    add(body)
+  else
+    body = text
+  end
+
+  add(body:match("^(.-)%s*[:%(%[]"))
+  add(body:match("^(.-)%s+%-%s"))
+  add(body:match("^(.-)%s+%d"))
+  add(body:match("^(.-)%s+for%s"))
+  return keys
+end
+
 -- ---------------------------------------------------------------------------
 -- Settings
 -- ---------------------------------------------------------------------------
@@ -214,7 +302,7 @@ local function load_settings()
   end
 
   local ok_class, saved_class = pcall(rune.store.get, store_key(KEY_CLASS))
-  if ok_class and (saved_class == "bard" or saved_class == "druid") then
+  if ok_class and (saved_class == "bard" or saved_class == "spell") then
     class_mode = saved_class
   end
 end
@@ -277,13 +365,14 @@ end
 
 local function begin_listing()
   listed = {}
+  last_lines = {}
   listing_active = true
   listing_stamp = os.time()
   dbg("started affect listing")
 end
 
 local function record_affect(name)
-  name = trim((tostring(name or ""):gsub("%.$", "")))
+  name = trim(strip_ansi(name))
   if name == "" then return end
 
   -- Discard a listing that never reached its summary line.
@@ -297,8 +386,10 @@ local function record_affect(name)
   end
 
   listing_stamp = os.time()
-  listed[normalize(name)] = true
-  dbg("listed affect: %s", name)
+  last_lines[#last_lines + 1] = name
+  local keys = candidate_keys(name)
+  for _, key in ipairs(keys) do listed[key] = true end
+  dbg("listed: %s => [%s]", name, table.concat(keys, " | "))
 end
 
 local function finish_listing()
@@ -309,20 +400,15 @@ local function finish_listing()
   report_missing()
 end
 
--- Resolve an affect name to { method, name }; nil verb means generic cast.
+-- Resolve an affect name to method, name. Druid invocations always use
+-- invoke/evoke; with class bard, names that are bard songs are played; every
+-- other name is a regular spell and is cast.
 local function resolve_ability(name)
   local key = normalize(name)
-  local bard = BARD_LOOKUP[key] and { "play", key } or nil
-  local druid = DRUID_SPELLS[key]
+  local invocation = INVOCATION_LOOKUP[key]
 
-  local pick
-  if bard and druid then
-    pick = (class_mode == "druid") and druid or bard
-  else
-    pick = bard or druid
-  end
-
-  if pick then return pick[1], pick[2] end
+  if invocation then return invocation[1], invocation[2] end
+  if class_mode == "bard" and BARD_LOOKUP[key] then return "play", key end
   return "cast", name
 end
 
@@ -363,6 +449,32 @@ local function cast_missing()
   end
 end
 
+local function cast_all()
+  if #wanted == 0 then
+    say("Wanted-affects list is empty; nothing to cast.")
+    return
+  end
+
+  say("Casting all wanted affects: " .. table.concat(wanted, ", "))
+  for _, name in ipairs(wanted) do
+    send_ability(name)
+  end
+end
+
+local function show_lines()
+  if #last_lines == 0 then
+    say("No affect lines captured yet; run your affects command first.")
+    return
+  end
+  say("Captured " .. #last_lines .. " line(s):")
+  for _, line in ipairs(last_lines) do
+    emit("  " .. line)
+  end
+  if #missing_last > 0 then
+    say("Missing: " .. table.concat(missing_last, ", "))
+  end
+end
+
 local function show_list()
   if #wanted == 0 then
     say("Wanted-affects list is empty.")
@@ -388,11 +500,13 @@ local function help_summary()
     emit(H.line("missingAffects / ma", "show this help"))
     emit(H.line("missingAffects on|off", "enable or disable listing triggers"))
     emit(H.line("missingAffects debug on|off", "toggle debug output"))
-    emit(H.line("missingAffects class bard|druid", "method for names both classes share"))
+    emit(H.line("missingAffects class spell|bard", "cast spells (default) or play bard songs"))
     emit(H.line("missingAffects want <names>", "replace wanted list; comma-separated"))
     emit(H.line("missingAffects add|remove <name>", "edit wanted-affects list"))
     emit(H.line("missingAffects list|clear", "show or clear wanted list"))
+    emit(H.line("missingAffects lines", "show lines captured by the last listing"))
     emit(H.line("missingAffects cast / mac", "play/invoke/evoke/cast the last missing result"))
+    emit(H.line("missingAffects cast all / mac all", "cast every wanted affect, even if present"))
     emit(H.foot(status))
     return
   end
@@ -401,12 +515,14 @@ local function help_summary()
   say("  missingAffects / ma            show this help")
   say("  missingAffects on|off           enable or disable listing triggers")
   say("  missingAffects debug on|off     toggle debug output")
-  say("  missingAffects class bard|druid method for names both classes share")
+  say("  missingAffects class spell|bard cast spells (default) or play bard songs")
   say("  missingAffects want <names>     replace wanted list; comma-separated")
   say("  missingAffects add <name>       add an affect")
   say("  missingAffects remove <name>    remove an affect")
   say("  missingAffects list|clear       show or clear wanted list")
+  say("  missingAffects lines            show lines captured by the last listing")
   say("  missingAffects cast / mac       play/invoke/evoke/cast the last missing result")
+  say("  missingAffects cast all / mac all  cast every wanted affect, even if present")
   say(status)
 end
 
@@ -421,7 +537,11 @@ local function handle_command(text)
   rest = trim(rest or "")
 
   if verb == "cast" then
-    cast_missing()
+    if rest:lower() == "all" then
+      cast_all()
+    else
+      cast_missing()
+    end
   elseif verb == "on" then
     enabled = true
     save_value(KEY_ENABLED, enabled)
@@ -444,13 +564,15 @@ local function handle_command(text)
     say("debug " .. onoff(debug_enabled))
   elseif verb == "class" then
     local setting = rest:lower()
-    if setting ~= "bard" and setting ~= "druid" then
+    if setting ~= "bard" and setting ~= "spell" then
       help_summary()
       return
     end
     class_mode = setting
     save_value(KEY_CLASS, class_mode)
     say("class " .. class_mode)
+  elseif verb == "lines" then
+    show_lines()
   elseif verb == "list" then
     show_list()
   elseif verb == "clear" then
@@ -503,21 +625,21 @@ end
 -- ---------------------------------------------------------------------------
 
 if rune and rune.trigger and type(rune.trigger.regex) == "function" then
-  rune.trigger.regex("^[Yy]ou are affected by (.+?)\\.?$", function(m)
-    if enabled and m and m[1] then
-      record_affect(m[1])
+  -- Header: start a fresh listing so a previous partial capture is discarded.
+  rune.trigger.regex("^\\s*[Yy]ou are affected by the following:?\\s*$", function()
+    if enabled then
+      begin_listing()
     end
   end)
 
-  rune.trigger.regex("^[Aa]ffects:\\s*(.+)$", function(m)
-    if enabled and m and m[1] then
-      for item in tostring(m[1]):gmatch("[^,;]+") do
-        record_affect(item)
-      end
+  -- Rows: "Spell:      name   - Level N, modifies ..." (Racial rows have no Level part).
+  rune.trigger.regex("^\\s*(Spell|Affect|Racial|Skill):\\s+(.+?)(?:\\s+-\\s+Level\\b.*)?$", function(m)
+    if enabled and m and m[2] then
+      record_affect(m[2])
     end
   end)
 
-  rune.trigger.regex("^Total of .+ affects?\\.$", function()
+  rune.trigger.regex("^\\s*Total of .+ affects?\\.?\\s*$", function()
     if enabled then
       finish_listing()
     end
@@ -536,11 +658,22 @@ if rune and rune.alias and type(rune.alias.exact) == "function" then
   rune.alias.exact(SHORT, function(args, ctx)
     handle_command(arg_text(args))
   end)
+end
 
-  rune.alias.exact("mac", function(args, ctx)
-    cast_missing()
+-- "mac" takes an optional "all" argument, so it is a regex alias (as in the TLA plugins).
+if rune and rune.alias and type(rune.alias.regex) == "function" then
+  rune.alias.regex("^mac(?:[ ]+(.+))?$", function(m)
+    local arg = trim((m and m[1]) or ""):lower()
+    if arg == "all" then
+      cast_all()
+    else
+      cast_missing()
+    end
   end)
 end
 
 load_settings()
+for _, key in ipairs(DRUID_DUPLICATES) do
+  dbg("duplicate druid affect name ignored: %s", key)
+end
 say("v" .. VERSION .. " loaded (" .. NAME .. " or " .. SHORT .. " for help)")

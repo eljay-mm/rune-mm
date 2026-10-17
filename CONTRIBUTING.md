@@ -1,12 +1,12 @@
 # Contributing to rune-mm
 
-This repository (https://github.com/eljay-mm/rune-mm) is a collection of Lua plugins for the Rune client, designed to work with the horstgs Materia Magica configuration. It is developed with Rune running in Ghostty on Debian 13, and the plugins are written to work on Windows and macOS as well. The project prefers a consistent house style across all plugins.
+This repository (https://github.com/eljay-mm/rune-mm) is a collection of Lua plugins for the Rune client (https://www.runemud.com and https://github.com/mmcdole/rune), designed to work with the horstgs (https://github.com/horstgs/rune-materiamagica-public) Materia Magica configuration. It is developed with Rune running in Ghostty on Debian 13, and the plugins are written to work on Windows and macOS as well. The project prefers a consistent house style across all plugins.
 
 ## Project context
 
-- Target environment: Rune client (runemud.com and https://github.com/mmcdole/rune) with horstgs' MM configuration (https://github.com/horstgs/rune-materiamagica-public).
+- Target environment: Rune client (https://www.runemud.com and https://github.com/mmcdole/rune) with horstgs' MM configuration (https://github.com/horstgs/rune-materiamagica-public).
 - Development terminal: Ghostty on Debian 13; plugins should also work on Windows and macOS (see [Cross-platform](#cross-platform))
-- Game: Materia Magica at materiamagica.com
+- Game: Materia Magica at https://www.materiamagica.com
 - Persistent settings: use `rune.store`, not separate config files, unless a plugin explicitly requires otherwise
 
 ## Reference plugins
@@ -150,6 +150,7 @@ say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))
   - `cbf2`
   - `cbf3`
   - other character-specific variants
+- It is recommended that these types of personal aliases be configured using in-game aliases
 
 ## Cross-platform
 

@@ -9,7 +9,7 @@ The plugins are written to work on Linux, macOS and Windows; see [Windows notes]
 
 ## Requirements
 
-- The Rune client (runemud.com and https://github.com/mmcdole/rune).
+- The Rune client (https://runemud.com and https://github.com/mmcdole/rune).
 - horstgs' Rune configuration (https://github.com/horstgs/rune-materiamagica-public) for Materia Magica. It provides `helpstyle`, used by the
   plugins' help screens, and the mapper modules (`mapper.lua` and friends), which
   `spdxyCoordinates` uses only as a fallback outside the wilderness.
@@ -116,7 +116,7 @@ To enable it again, remove the `--`. Things to know:
 | `eqdbResultsPicker.lua`   | Turns equipment search results into a picker that runs `eqlookup`.                                                   |
 | `fauxSextant.lua`         | Sextant coordinate display built from GMCP data.                                                                     |
 | `hangmanSolver.lua`       | Solves hangman puzzles using an online solver (needs `curl`).                                                        |
-| `herbAliases.lua          | Provides short aliases for Herbalism mixing, throwing and eating.                                                    |
+| `herbAliases.lua`         | Provides short aliases for Herbalism mixing, throwing and eating.                                                    |
 | `highlights.lua`          | Item highlights for easy recognition.                                                                                |
 | `jmcSolver.lua`           | Solves the Joint Magical Consortium mirror puzzle locally and lists every solution.                                  |
 | `mapperShortCutKeys.lua`  | Keyboard shortcuts for the mapper.                                                                                   |

@@ -1,8 +1,20 @@
 -- Filename: eljayPlugins/oocWikiSearch.lua
 -- Purpose: Search and open pages on the OOC wiki (Order of Chaos).
--- Version: 2.3
--- Date: 2026-Oct-16
+-- Version: 2.5
+-- Date: 2026-Oct-17
+--
+--[[ Todo:
+- insert planning notes here between revisions.
+--]]
+--
 -- Changelog:
+--   2.5  Clipboard copy now uses rune.clipboard.set first, as annwnQuestSearch
+--        does (external tools stay as a fallback); paint/say, help and saved
+--        settings follow annwnQuestSearch v2.7 (only on/off is saved, debug
+--        always starts off).
+--   2.4  Selecting a result with `ooc <number>` copies the page URL to the
+--        clipboard (rune.clipboard if present, else wl-copy, xclip, xsel,
+--        pbcopy or clip) and prints the URL; automatic opens do not copy.
 --   2.3  Display method aligned with annwnQuestSearch (paint/say/emit via
 --        rune.echo, cyan prefix via rune.style.cyan); bare oocWikiSearch and
 --        ooc are exact aliases so help always shows, term commands use a
@@ -27,20 +39,26 @@
 --     re-searching.
 --   * A single result, or a result whose title exactly matches the search
 --     term, is opened automatically.
+--   * Opening a result by number also copies its URL to the system clipboard
+--     using rune.clipboard.set (OSC 52), falling back to wl-copy, xclip, xsel,
+--     pbcopy or clip if that is unavailable.
+--   * The on/off setting is saved with rune.store; the debug toggle always
+--     starts off.
 --   * Requests use curl (included with Windows 10+, Linux and macOS) with
 --     short timeouts; no shell-special characters reach the command line.
 --
 -- Commands (alias: ooc):
 --   oocWikiSearch                    show this help
 --   oocWikiSearch <search term>      search the OOC wiki
---   oocWikiSearch <number>           open a previous result by number
+--   oocWikiSearch <number>           open a previous result by number and
+--                                    copy its URL to the clipboard
 --   oocWikiSearch list               show the previous result list
 --   oocWikiSearch search <term>      search for a term that is also a command word
 --   oocWikiSearch on|off             enable or disable searching
 --   oocWikiSearch debug on|off       toggle debug messages (default off)
 
 local NAME = "oocWikiSearch"
-local VERSION = "2.3"
+local VERSION = "2.5"
 
 local BASE_URL = "https://ooc.dune.net"
 local USER_AGENT = "Rune-oocWikiSearch/" .. VERSION
@@ -51,7 +69,7 @@ local CONNECT_TIMEOUT = 3   -- seconds; Rune aborts scripts that run too long
 local MAX_TIME = 4          -- seconds
 
 local ENABLED = true
-local DEBUG = false
+local DEBUG = false  -- never saved: always starts off
 
 local IS_WINDOWS = package.config:sub(1, 1) == "\\"
 
@@ -67,37 +85,52 @@ if not rune.alias or not rune.alias.regex then
 end
 
 ---------------------------------------------------------------------------
--- Output (same display method as annwnQuestSearch)
+-- Output and settings (same method as annwnQuestSearch)
 ---------------------------------------------------------------------------
+
+local PREFIX = "[" .. NAME .. "] "
+local SETTINGS_KEY = NAME .. ".settings"
+local ANSI_CYAN = "\27[36m"
+local ANSI_RESET = "\27[0m"
+
+-- Optional shared help styling (same module autopouch.lua uses).
+local helpstyle_ok, H = pcall(require, "helpstyle")
+if not helpstyle_ok then
+  H = nil
+end
 
 local function emit(text)
   text = tostring(text or "")
 
-  if rune.echo then
-    rune.echo(text)
-  else
+  if not pcall(rune.echo, text) then
     print(text)
   end
 end
 
--- Cyan text via rune.style.cyan, with an ANSI fallback.
-local function paint(text)
-  text = tostring(text or "")
+-- Cyan "[name] " prefix: rune.style.cyan, then rune.style("cyan", ...), then a
+-- plain ANSI escape, so the colour shows whichever style API Rune provides.
+local function paint(message)
+  local prefix
+  local style = rune and rune.style
 
-  local ok, result = pcall(function()
-    return rune.style.cyan(text)
-  end)
-
-  if ok and type(result) == "string" then
-    return result
+  if type(style) == "table" and type(style.cyan) == "function" then
+    local ok, text = pcall(style.cyan, PREFIX)
+    if ok and type(text) == "string" then prefix = text end
+  elseif type(style) == "function" then
+    local ok, text = pcall(style, "cyan", PREFIX)
+    if ok and type(text) == "string" then prefix = text end
   end
 
-  return "\27[36m" .. text .. "\27[0m"
+  prefix = prefix or (ANSI_CYAN .. PREFIX .. ANSI_RESET)
+
+  return prefix .. tostring(message)
 end
 
 -- Single row with the coloured "[name]" prefix.
-local function say(text)
-  emit(paint("[" .. NAME .. "]") .. " " .. tostring(text or ""))
+local function say(message)
+  if not pcall(rune.echo, paint(message)) then
+    print(PREFIX .. tostring(message))
+  end
 end
 
 -- Unprefixed output (page text, result list).
@@ -105,9 +138,9 @@ local function plain(text)
   emit(text)
 end
 
-local function dbg(text)
+local function dbg(message)
   if DEBUG then
-    emit(paint("[" .. NAME .. ":debug]") .. " " .. tostring(text or ""))
+    say(message)
   end
 end
 
@@ -115,94 +148,65 @@ local function onoff(flag)
   return flag and "on" or "off"
 end
 
--- Settings persisted in rune.store (guarded; falls back to in-memory only).
-local function to_bool(value, default)
-  if value == nil then
-    return default
+-- Only the on/off setting is persisted.
+local function load_settings()
+  if not (rune and rune.store and type(rune.store.get) == "function") then
+    return
   end
 
-  if value == true or value == "true" or value == "on" or value == 1 then
-    return true
-  end
+  local ok, saved = pcall(rune.store.get, SETTINGS_KEY)
 
-  if value == false or value == "false" or value == "off" or value == 0 then
-    return false
+  if ok and type(saved) == "table" and type(saved.enabled) == "boolean" then
+    ENABLED = saved.enabled
   end
-
-  return default
 end
 
-local function store_get(key, default)
-  local ok, value = pcall(function()
-    return rune.store.get(NAME .. "." .. key)
-  end)
-
-  if ok then
-    return to_bool(value, default)
+local function save_settings()
+  if not (rune and rune.store and type(rune.store.set) == "function") then
+    return
   end
 
-  return default
+  pcall(rune.store.set, SETTINGS_KEY, { enabled = ENABLED })
 end
 
-local function store_set(key, value)
-  pcall(function()
-    rune.store.set(NAME .. "." .. key, value)
-  end)
-end
-
-ENABLED = store_get("enabled", true)
-DEBUG = store_get("debug", false)
+load_settings()
 
 ---------------------------------------------------------------------------
 -- Help (helpstyle rows passed to emit)
 ---------------------------------------------------------------------------
 
-local has_helpstyle, H = pcall(require, "helpstyle")
-
-if not has_helpstyle or type(H) ~= "table" then
-  H = nil
-end
-
-local function help_call(fn_name, ...)
-  if H and type(H[fn_name]) == "function" then
-    local ok, result = pcall(H[fn_name], ...)
-    if ok and result ~= nil then
-      return tostring(result)
-    end
-  end
-  return nil
-end
-
-local function help_title(text)
-  return help_call("title", text) or text
-end
-
-local function help_section(text)
-  return help_call("section", text) or ("-- " .. text .. " --")
-end
-
-local function help_line(command, description)
-  return help_call("line", command, description)
-    or string.format("  %-34s %s", command, description)
-end
-
-local function help_foot(text)
-  return help_call("foot", text) or text
-end
-
 local function usage()
-  emit(help_title(NAME .. " - search the OOC wiki (alias: ooc)"))
-  emit(help_section("Commands"))
-  emit(help_line("oocWikiSearch <term>", "Search the Order of Chaos wiki"))
-  emit(help_line("oocWikiSearch <number>", "Open a search result"))
-  emit(help_line("oocWikiSearch list", "Show the previous result list"))
-  emit(help_line("oocWikiSearch search <term>", "Search for a term that is also a command"))
-  emit(help_line("oocWikiSearch on|off", "Enable or disable searching"))
-  emit(help_line("oocWikiSearch debug on|off", "Toggle debug messages"))
-  emit(help_foot(string.format(
+  -- One status row, starting with the version, as the footer.
+  local status = string.format(
     "v%s  state=%s debug=%s results=%d",
     VERSION, onoff(ENABLED), onoff(DEBUG), #last_results
-  )))
+  )
+
+  local styled = H and pcall(function()
+    emit(H.title("OOC wiki search"))
+    emit(H.section("Commands"))
+    emit(H.line("oocWikiSearch <term>", "search the Order of Chaos wiki (short alias: ooc)"))
+    emit(H.line("oocWikiSearch <number>", "open a result and copy its URL"))
+    emit(H.line("oocWikiSearch list", "show the previous result list"))
+    emit(H.line("oocWikiSearch search <term>", "search for a term that is also a command"))
+    emit(H.line("oocWikiSearch on|off", "enable or disable searching"))
+    emit(H.line("oocWikiSearch debug on|off", "toggle debug messages (default off)"))
+    emit(H.foot(status))
+  end)
+
+  if styled then
+    return
+  end
+
+  -- Plain fallback when helpstyle is missing or its API differs.
+  emit("OOC wiki search")
+  emit("  oocWikiSearch <term>           search the Order of Chaos wiki (short alias: ooc)")
+  emit("  oocWikiSearch <number>         open a result and copy its URL")
+  emit("  oocWikiSearch list             show the previous result list")
+  emit("  oocWikiSearch search <term>    search for a term that is also a command")
+  emit("  oocWikiSearch on|off           enable or disable searching")
+  emit("  oocWikiSearch debug on|off     toggle debug messages (default off)")
+  emit(status)
 end
 
 ---------------------------------------------------------------------------
@@ -481,6 +485,90 @@ local function parse_results(body)
 end
 
 ---------------------------------------------------------------------------
+-- Clipboard
+---------------------------------------------------------------------------
+
+local clipboard_commands = nil
+
+local function build_clipboard_commands()
+  if IS_WINDOWS then
+    return { "clip 2>nul" }
+  end
+
+  local quiet = " >/dev/null 2>&1"
+  local wayland = os.getenv and os.getenv("WAYLAND_DISPLAY")
+  local list = {}
+
+  if wayland and wayland ~= "" then
+    list[#list + 1] = "wl-copy" .. quiet
+  end
+
+  list[#list + 1] = "xclip -selection clipboard" .. quiet
+  list[#list + 1] = "xsel --clipboard --input" .. quiet
+
+  if not (wayland and wayland ~= "") then
+    list[#list + 1] = "wl-copy" .. quiet
+  end
+
+  list[#list + 1] = "pbcopy" .. quiet
+
+  return list
+end
+
+local function pipe_to_command(command, text)
+  local ok, result = pcall(function()
+    local pipe = io.popen(command, "w")
+
+    if not pipe then
+      return false
+    end
+
+    pipe:write(text)
+
+    local closed = pipe:close()
+
+    return closed == true or closed == 0
+  end)
+
+  return ok and result == true
+end
+
+-- Returns true and the method used, or false.
+local function copy_to_clipboard(text)
+  text = tostring(text or "")
+
+  -- Rune clipboard first (rune.clipboard.set, as annwnQuestSearch does).
+  if type(rune.clipboard) == "table" then
+    for _, fn_name in ipairs({ "set", "copy" }) do
+      local fn = rune.clipboard[fn_name]
+
+      if type(fn) == "function" then
+        local ok, result = pcall(fn, text)
+
+        if ok then
+          dbg("clipboard via rune.clipboard." .. fn_name)
+          return true, "rune.clipboard"
+        end
+      end
+    end
+  end
+
+  -- External tools; the first that succeeds wins.
+  clipboard_commands = clipboard_commands or build_clipboard_commands()
+
+  for _, command in ipairs(clipboard_commands) do
+    if pipe_to_command(command, text) then
+      dbg("clipboard via: " .. command)
+      return true, command
+    end
+
+    dbg("clipboard failed: " .. command)
+  end
+
+  return false
+end
+
+---------------------------------------------------------------------------
 -- Display
 ---------------------------------------------------------------------------
 
@@ -501,7 +589,7 @@ local function show_list()
   say("Open a result with: oocWikiSearch <number>")
 end
 
-local function show_page(index, other_count)
+local function show_page(index, other_count, copy_url)
   local result = last_results[index]
 
   if not result then
@@ -512,8 +600,17 @@ local function show_page(index, other_count)
   -- Use the normal wiki page URL; browse?id results may be invalid.
   local url = page_url(result.path)
 
-  say("Loading: " .. result.title)
   dbg("url: " .. url)
+
+  if copy_url then
+    if copy_to_clipboard(url) then
+      say("URL copied to clipboard: " .. url)
+    else
+      say("Could not copy to the clipboard (install wl-clipboard or xclip). URL: " .. url)
+    end
+  end
+
+  say("Loading: " .. result.title)
 
   local body, error_message = http_get(url)
 
@@ -640,7 +737,7 @@ local function open_result(number)
     return
   end
 
-  show_page(index, 0)
+  show_page(index, 0, true)
 end
 
 local function dispatch(argument)
@@ -655,7 +752,7 @@ local function dispatch(argument)
 
   if lowered == "on" or lowered == "off" then
     ENABLED = (lowered == "on")
-    store_set("enabled", ENABLED)
+    save_settings()
     say("Searching " .. onoff(ENABLED))
     return
   end
@@ -665,7 +762,6 @@ local function dispatch(argument)
   if debug_setting then
     DEBUG = set_toggle("debug", DEBUG, trim(debug_setting))
     if trim(debug_setting) ~= "" then
-      store_set("debug", DEBUG)
       say("Debug " .. onoff(DEBUG))
     end
     return

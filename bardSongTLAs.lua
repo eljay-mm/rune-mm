@@ -1,182 +1,291 @@
 -- Filename: eljayPlugins/bardSongTLAs.lua
--- Purpose: Bard songs with three-letter acronyms.
--- Version: 2.4
--- Date: 2026-Oct-15
+-- Purpose: Provide three-letter aliases for bard songs.
+-- Version: 2.6
+-- Date: 2026-Oct-19
+--[[
+TODO:
+- insert planning notes here between revisions.
+]]
 -- Changelog:
---   2.4  Cyan prefix and loader line copied from druidSpellTLAs (rune.style.cyan); all song TLAs
---        share a single alias; command aliases use one regex; songs are sent with rune.send.
---   2.3  Command renamed bardSongTLAs with short alias bard; loader line; help lists all TLAs;
---        "nights fortune" matches 'help music'.
---   2.2  Command summary, enable/disable toggle, debug toggle, persistent settings.
+--   2.6  Added a list subcommand to show all configured TLAs and their songs.
+--   2.5  Standardized header, help, persistent toggles, command aliases, and load-time reporting.
+--   2.4  Cyan prefix and loader line; all song TLAs share a single alias; commands use one regex.
+--   2.3  Renamed command to bardSongTLAs with short alias bard; help lists all TLAs.
+--   2.2  Added command summary, enable/disable toggle, debug toggle, and persistent settings.
 --
 -- How it works:
 --   * Each row in the songs table maps a TLA to a bard song, e.g. "bfi" -> play 'fireball'.
---   * Songs are grouped as in 'help music': Peace, Martial and Versatile.
---   * All TLAs are matched by one alias built from the table, so adding a song is one new row;
---     a repeated TLA is ignored and reported in debug.
---   * Only fixed, curated song names are ever sent; no user text is forwarded.
---   * When disabled the aliases do nothing; settings persist in rune.store.
+--   * Songs are grouped as in 'help music': Peace, Martial, and Versatile.
+--   * One alias matches all TLAs; adding a song requires adding one row to the table.
+--   * The list subcommand shows all configured TLAs grouped by song type.
+--   * Only fixed, curated song names are sent; no user-supplied text is forwarded.
+--   * When disabled, song aliases do nothing; settings persist in rune.store.
 --
--- Commands (short alias: bard):
---   bardSongTLAs                show this summary
---   bardSongTLAs on|off         enable or disable all song TLAs
---   bardSongTLAs debug on|off   toggle debug output (default off)
+-- Commands (type without "/"; short alias: bard):
+--   bardSongTLAs                 show this help
+--   bard                          show this help
+--   bardSongTLAs list            show all configured TLAs
+--   bard list                    show all configured TLAs
+--   bardSongTLAs on|off          enable / disable the song aliases
+--   bard on|off                  enable / disable the song aliases
+--   bardSongTLAs debug on|off    enable / disable debug messages
+--   bard debug on|off            enable / disable debug messages
+--
+-- Tweaks (top of file):
+--   * songs  TLA-to-song mappings
+--
+
+local LOAD_STARTED = os.clock()
 
 local NAME = "bardSongTLAs"
-local VERSION = "2.4"
+local SHORT = "bard"
+local VERSION = "2.6"
 local SETTINGS_KEY = "bardSongTLAs.settings"
 
 local enabled = true
 local debug_enabled = false
+local load_ms = 0
 
 local okH, H = pcall(require, "helpstyle")
-if not okH or type(H) ~= "table" then H = nil end
-
--- Cyan "[name] " prefix (same as druidSpellTLAs); plain text if rune.style is unavailable.
-local function prefix()
-  local p = "[" .. NAME .. "] "
-  if rune.style and type(rune.style.cyan) == "function" then
-    local ok, s = pcall(rune.style.cyan, p)
-    if ok and type(s) == "string" then return s end
-  end
-  return p
+if not okH or type(H) ~= "table" then
+  H = nil
 end
 
-local function say(text) rune.echo(prefix() .. text) end
+local function prefix()
+  local text = "[" .. NAME .. "] "
+  if rune.style and type(rune.style.cyan) == "function" then
+    local ok, colored = pcall(rune.style.cyan, text)
+    if ok and type(colored) == "string" then
+      return colored
+    end
+  end
+  return text
+end
+
+local function say(text)
+  rune.echo(prefix() .. text)
+end
 
 local function dbg(fmt, ...)
-  if not debug_enabled then return end
-  local ok, s = pcall(string.format, fmt, ...)
-  say("debug: " .. (ok and s or tostring(fmt)))
+  if not debug_enabled then
+    return
+  end
+
+  local ok, message = pcall(string.format, fmt, ...)
+  say("debug: " .. (ok and message or tostring(fmt)))
 end
 
-local function onoff(v) return v and "on" or "off" end
-
 local function load_settings()
-  if not (rune and rune.store and type(rune.store.get) == "function") then return end
-  local ok, t = pcall(rune.store.get, SETTINGS_KEY)
-  if ok and type(t) == "table" then
-    if type(t.enabled) == "boolean" then enabled = t.enabled end
-    if type(t.debug) == "boolean" then debug_enabled = t.debug end
+  if not (rune.store and type(rune.store.get) == "function") then
+    return
+  end
+
+  local ok, stored = pcall(rune.store.get, SETTINGS_KEY)
+  if ok and type(stored) == "table" then
+    if type(stored.enabled) == "boolean" then
+      enabled = stored.enabled
+    end
+    if type(stored.debug) == "boolean" then
+      debug_enabled = stored.debug
+    end
   end
 end
 
 local function save_settings()
-  if not (rune and rune.store and type(rune.store.set) == "function") then return end
-  pcall(rune.store.set, SETTINGS_KEY, { enabled = enabled, debug = debug_enabled })
+  if not (rune.store and type(rune.store.set) == "function") then
+    return
+  end
+
+  pcall(rune.store.set, SETTINGS_KEY, {
+    enabled = enabled,
+    debug = debug_enabled,
+  })
+end
+
+local function bool_text(value)
+  return value and "true" or "false"
 end
 
 local songs = {
   -- Peace songs (not in combat)
-  { "bbm",  "battle march" },
-  { "bdi",  "detect invisibility" },
-  { "bfl",  "footloose" },
-  { "bes",  "enhanced strength" },
-  { "bep",  "epiphany" },
-  { "bih",  "inspirational hymn" },
-  { "ble",  "levitation" },
-  { "bli",  "light" },
-  { "bml",  "mass levitation" },
-  { "bsh",  "shield" },
-  { "bts",  "traveling song" },
+  { "bbm", "battle march" },
+  { "bdi", "detect invisibility" },
+  { "bfl", "footloose" },
+  { "bes", "enhanced strength" },
+  { "bep", "epiphany" },
+  { "bih", "inspirational hymn" },
+  { "ble", "levitation" },
+  { "bli", "light" },
+  { "bml", "mass levitation" },
+  { "bsh", "shield" },
+  { "bts", "traveling song" },
 
   -- Martial songs (in combat)
-  { "bbl",  "blindness" },
+  { "bbl", "blindness" },
   { "bcac", "cacophony" },
-  { "bfi",  "fireball" },
-  { "bea",  "earworm" },
-  { "bhw",  "hands of wind" },
-  { "bha",  "harmonize" },
-  { "bsl",  "hinder" },
-  { "bpd",  "pensive dirge" },
-  { "bpf",  "plodding fugue" },
-  { "bsn",  "soothing nocturne" },
+  { "bfi", "fireball" },
+  { "bea", "earworm" },
+  { "bhw", "hands of wind" },
+  { "bha", "harmonize" },
+  { "bsl", "hinder" },
+  { "bpd", "pensive dirge" },
+  { "bpf", "plodding fugue" },
+  { "bsn", "soothing nocturne" },
   { "btro", "tremolo" },
-  { "bom",  "ode to the moon" },
+  { "bom", "ode to the moon" },
   { "btrr", "tempus rigor" },
 
   -- Versatile songs (any time)
-  { "bca",  "calm" },
-  { "bcl",  "cure light" },
-  { "bip",  "invigorating performance" },
-  { "bnf",  "nights fortune" },
-  { "bre",  "refresh" },
-  { "bri",  "rime of the glacierbreaker" },
-  { "bth",  "thunderclap" },
-  { "btr",  "tremor" },
+  { "bca", "calm" },
+  { "bcl", "cure light" },
+  { "bip", "invigorating performance" },
+  { "bnf", "nights fortune" },
+  { "bre", "refresh" },
+  { "bri", "rime of the glacierbreaker" },
+  { "bth", "thunderclap" },
+  { "btr", "tremor" },
 }
 
--- One lookup table and one alias for every TLA (instead of one alias per song).
-local lookup, names = {}, {}
-for _, s in ipairs(songs) do
-  if lookup[s[1]] then
-    dbg("duplicate TLA %s ignored", s[1])
+local lookup = {}
+local names = {}
+
+for _, song_entry in ipairs(songs) do
+  local tla = song_entry[1]
+  local song_name = song_entry[2]
+
+  if lookup[tla] then
+    dbg("duplicate TLA %s ignored", tla)
   else
-    lookup[s[1]] = s[2]
-    names[#names + 1] = s[1]
+    lookup[tla] = song_name
+    names[#names + 1] = tla
   end
 end
 
-rune.alias.regex("^(" .. table.concat(names, "|") .. ")$", function(m)
-  local name = m and m[1]
-  local song = name and lookup[name]
-  if not song then return end
-  if not enabled then
-    dbg("ignored %s (disabled)", name)
+local function help()
+  local footer = string.format(
+    "v%s  enabled=%s debug=%s  load=%dms",
+    VERSION,
+    bool_text(enabled),
+    bool_text(debug_enabled),
+    load_ms
+  )
+
+  if H and H.title and H.section and H.line and H.foot then
+    rune.echo(H.title("Bard song TLAs  (alias: " .. SHORT .. ")"))
+    rune.echo(H.section("Commands"))
+    rune.echo(H.line(NAME, "show this help"))
+    rune.echo(H.line(NAME .. " list", "show all configured TLAs"))
+    rune.echo(H.line(NAME .. " on|off", "enable / disable the song aliases"))
+    rune.echo(H.line(NAME .. " debug on|off", "toggle debug messages"))
+    rune.echo(H.section("Song aliases"))
+    rune.echo(H.line("bfi", "play 'fireball'"))
+    rune.echo(H.line("bcl", "play 'cure light'"))
+    rune.echo(H.line("See " .. NAME .. " list", "show every configured TLA"))
+    rune.echo(H.foot(footer))
     return
   end
-  local cmd = "play '" .. song .. "'"
-  dbg("sending: %s", cmd)
-  rune.send(cmd)
+
+  rune.echo("Bard song TLAs  (alias: " .. SHORT .. ")")
+  rune.echo("  " .. NAME .. "              show this help")
+  rune.echo("  " .. NAME .. " list         show all configured TLAs")
+  rune.echo("  " .. NAME .. " on|off       enable / disable the song aliases")
+  rune.echo("  " .. NAME .. " debug on|off toggle debug messages")
+  rune.echo("  bfi                       play 'fireball'")
+  rune.echo("  bcl                       play 'cure light'")
+  rune.echo("  See " .. NAME .. " list     show every configured TLA")
+  rune.echo(footer)
+end
+
+local function show_song_list()
+  local groups = {
+    { title = "Peace songs", first = 1, last = 11 },
+    { title = "Martial songs", first = 12, last = 24 },
+    { title = "Versatile songs", first = 25, last = #songs },
+  }
+
+  say("configured song TLAs:")
+  for _, group in ipairs(groups) do
+    rune.echo(group.title .. ":")
+    for i = group.first, group.last do
+      local entry = songs[i]
+      if entry then
+        rune.echo("  " .. entry[1] .. "  " .. entry[2])
+      end
+    end
+  end
+end
+
+local function handle_command(args)
+  local text = tostring(args or ""):lower():match("^%s*(.-)%s*$")
+
+  if text == "on" then
+    enabled = true
+    save_settings()
+    say("enabled")
+    return
+  end
+
+  if text == "off" then
+    enabled = false
+    save_settings()
+    say("disabled")
+    return
+  end
+
+  if text == "debug on" then
+    debug_enabled = true
+    save_settings()
+    say("debug enabled")
+    return
+  end
+
+  if text == "debug off" then
+    debug_enabled = false
+    save_settings()
+    say("debug disabled")
+    return
+  end
+
+  if text == "list" then
+    show_song_list()
+    return
+  end
+
+  help()
+end
+
+-- Bare commands are exact aliases (not slash commands).
+rune.alias.exact(NAME, function(args, ctx)
+  handle_command(args)
 end)
 
-local function help_summary()
-  local status = "v" .. VERSION .. "  enabled=" .. onoff(enabled) .. " debug=" .. onoff(debug_enabled)
-  if H and H.title and H.section and H.line and H.foot then
-    rune.echo(H.title("Bard song TLAs"))
-    rune.echo(H.section("Commands"))
-    rune.echo(H.line("bardSongTLAs", "show this summary (short alias: bard)"))
-    rune.echo(H.line("bardSongTLAs on|off", "enable or disable all aliases"))
-    rune.echo(H.line("bardSongTLAs debug on|off", "toggle debug output"))
-    rune.echo(H.section("Song aliases"))
-    rune.echo(H.line("bfi", "play 'fireball' (see the songs table)"))
-    rune.echo(H.line("bcl", "play 'cure light'"))
-    rune.echo(H.foot(status))
+rune.alias.exact(SHORT, function(args, ctx)
+  handle_command(args)
+end)
+
+-- One regex alias handles every fixed TLA in the songs table.
+rune.alias.regex("^(" .. table.concat(names, "|") .. ")$", function(matches, ctx)
+  local tla = matches and matches[1]
+  local song_name = tla and lookup[tla]
+
+  if not song_name then
     return
   end
-  rune.echo("Bard song TLAs")
-  rune.echo("  bardSongTLAs              show this summary (short alias: bard)")
-  rune.echo("  bardSongTLAs on|off       enable or disable all aliases")
-  rune.echo("  bardSongTLAs debug on|off toggle debug output")
-  rune.echo("  bfi                       play 'fireball' (see the songs table)")
-  rune.echo("  bcl                       play 'cure light'")
-  rune.echo(status)
-end
 
--- Bare commands are aliases (rune.command.add would only create /slash commands).
-rune.alias.regex("^(?:bardSongTLAs|bard)(?:[ ]+(.+))?$", function(m)
-  local text = tostring((m and m[1]) or ""):lower()
-  local cmd = text:match("^(%S*)") or ""
-  local rest = text:match("^%S+%s*(.*)$") or ""
-
-  if cmd == "on" then
-    enabled = true; save_settings(); say("enabled"); return
-  end
-  if cmd == "off" then
-    enabled = false; save_settings(); say("disabled"); return
-  end
-  if cmd == "debug" then
-    if rest == "on" then debug_enabled = true
-    elseif rest == "off" then debug_enabled = false
-    else help_summary(); return end
-    save_settings(); say("debug " .. onoff(debug_enabled)); return
+  if not enabled then
+    dbg("ignored %s (disabled)", tla)
+    return
   end
 
-  help_summary()
+  local command = "play '" .. song_name .. "'"
+  dbg("sending: %s", command)
+  rune.send(command)
 end)
 
 load_settings()
-say("v" .. VERSION .. " loaded (" .. NAME .. " or bard for help)")
+load_ms = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
 
--- Performance: one alias for all songs, built once at load; no I/O at run time.
--- Security: only curated "play" commands are sent, and no user-supplied text is ever forwarded.
+say("v" .. VERSION .. " loaded (" .. NAME .. " or " .. SHORT .. " for help)")
+
+-- Performance: builds the TLA lookup and regex once at load; no runtime file or network I/O.
+-- Security: only curated song names are sent; command input is used only to select fixed toggles.

@@ -1,8 +1,14 @@
 -- Filename: eljayPlugins/numPadBindings.lua
 -- Purpose: Provides numpad bindings for movement, looking, and door commands.
--- Version: 2.5
--- Date: 2026-Oct-16
+-- Version: 2.8
+-- Date: 2026-Oct-19
+--[[
+- Consider adding configurable bindings if more layouts are needed.
+]]
 -- Changelog:
+--   2.8  Measure load time with os.clock().
+--   2.7  Guard load-time measurement when rune.time() is unavailable.
+--   2.6  Measure load time with rune.time().
 --   2.5  Use helpstyle rows and standardize command/help output.
 --   2.4  Persist enabled and debug states with rune.store; document binding tweaks.
 --   2.3  Standard pass: numPadBindings command with npb alias, bare aliases (no / prefix),
@@ -33,9 +39,11 @@
 -- Settings:
 --   * rune.store keys numPadBindings.enabled and numPadBindings.debug
 
+local LOAD_STARTED = os.clock()
+
 local NAME = "numPadBindings"
 local ALIAS = "npb"
-local VERSION = "2.5"
+local VERSION = "2.8"
 
 rune.config.set("numpad", true)
 
@@ -150,13 +158,16 @@ for _, d in ipairs(DIRS) do
   end
 end
 
+local LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
+
 local function footer()
   help_row("foot", string.format(
-    "v%s  enabled=%s debug=%s bindings=%d",
+    "v%s  enabled=%s debug=%s bindings=%d  load=%dms",
     VERSION,
     enabled and "on" or "off",
     debug_on and "on" or "off",
-    #bindings
+    #bindings,
+    LOAD_MS
   ))
 end
 

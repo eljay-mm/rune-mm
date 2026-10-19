@@ -1,56 +1,79 @@
 -- Filename: eljayPlugins/gotoAliases.lua
 -- Purpose: Aliases to run to gates, quest masters, banks, post offices and other places in the town you are in.
--- Version: 1.2
--- Date: 2026-Oct-17
+-- Version: 1.9
+-- Date: 2026-Oct-19
+--
+--[[ Todo:
+- insert planning notes here between revisions.
+--]]
 --
 -- Changelog:
---   1.2  Use the real Rune API: rune.gmcp.subscribe("Room") + rune.gmcp.on("Room.Info"), one exact alias per command,
---        "run <place>" shortcuts registered as exact aliases.
---   1.1  More tolerant GMCP lookup; new "goto where" diagnostic command.
---   1.0  Converted from goto_aliases.xml (MUSHclient). Main command gotoAliases, short alias goto.
+--   1.9  Remove goto next and goto custom (stored sends, defaults and their store key are gone).
+--   1.8  Help no longer lists the custom sends (the footer still shows how many there are).
+--   1.7  Remove all run aliases and helpers (the game's own run command is used as is); destination tables dropped;
+--        handle_goto is now a local function.
 --
 -- How it works:
 --   * Inspired by the MUSHclient plugin by Oona.
 --   * Subscribes to GMCP Room.Info and remembers the latest room, zone and plane to work out which town you are in.
+--   * One regex alias catches "goto ..." and "gotoAliases ..." and runs the matching subcommand.
 --   * goto north|east|south|west|gate runs the mapper to that town exit.
---   * goto next sends the command stored for the current room (for example "run newrigel").
---   * goto custom <text> stores your own "next" command for the current room; "goto custom clear" removes it.
 --   * goto qm, rep, post, bank, reagents, lockers and crystal run the mapper to that spot,
 --     and perform the action (quest request, sayto representative yes, shop buy 1) when you are already there.
 --   * goto pursuer runs leg by leg towards the Orc Pursuer in Wroth; each room change continues the trip.
---   * run <place> accepts the short names below (for example "run toa") and expands them for the continent you are on.
---   * goto where shows what the plugin sees (room, zone, plane, town) to help diagnose detection problems.
---   * Settings (on/off, debug, custom sends) persist in rune.store; no config files are written.
+--   * goto where shows what the plugin sees (room, zone, plane, town) and where the load time went.
+--   * Saves the on/off setting with rune.store; no config files are written.
 --
 -- Commands (type without "/"; "goto" is a short alias for "gotoAliases"):
 --   gotoAliases | goto                   show this help
 --   goto list                            show what you can goto from here
---   goto where                           show detected room, zone, plane and town
+--   goto where                           show detected room, zone, plane, town and load breakdown
 --   goto north|east|south|west|gate      run to that exit of the current town
---   goto next                            send the stored command for this room
---   goto custom <text>                   set this room's "next" command (goto custom clear removes it)
 --   goto qm | rep | post | bank          quest master, tourist rep, post office, bank
 --   goto reagents | lockers              reagent shop, lockers
 --   goto crystal                         crystal quest office in Rune
 --   goto pursuer | goto cancel           run to the Orc Pursuer / stop after this leg
---   goto on|off                          enable or disable the plugin (including the run shortcuts)
---   goto debug                           toggle debug output (default off)
+--   goto on|off                          enable or disable the plugin
+--   goto debug [on|off]                  toggle debug messages (default off)
 
-local PLUGIN_NAME, SHORT, VERSION = "gotoAliases", "goto", "1.2"
-local KEY_ENABLED, KEY_DEBUG, KEY_CUSTOM = "gotoAliases.enabled", "gotoAliases.debug", "gotoAliases.custom"
+local function now()
+  local ok, t = pcall(os.clock)
+  return ok and t or 0
+end
+local T0 = now()
+
+-- Load-time bookkeeping: each Rune-facing step at startup is timed and shown by "goto where".
+local parts = {}
+local function timed(name, fn)
+  local t = now()
+  fn()
+  parts[#parts + 1] = { name, (now() - t) * 1000 }
+end
+
+local PLUGIN_NAME, SHORT, VERSION = "gotoAliases", "goto", "1.9"
+local STORE_KEY = "gotoAliases.settings"
+local GOTO_PATTERN = "^(goto(?:Aliases)?(?:\\s+.*)?)$"  -- captures the whole typed line
 
 local style = rune.style
-local H = require("helpstyle")
 
 -- ---------------------------------------------------------------- helpers
-local function say(msg) rune.echo(style.cyan("[" .. PLUGIN_NAME .. "] ") .. msg) end
-
-local function sget(k, d)
-  local ok, v = pcall(rune.store.get, k)
-  if ok and v ~= nil then return v end
-  return d
+local function paint(color, text)
+  local fn = style[color]
+  if type(fn) == "function" then return fn(text) end
+  return text
 end
-local function sset(k, v) pcall(rune.store.set, k, v) end
+
+local function say(msg) rune.echo(paint("cyan", "[" .. PLUGIN_NAME .. "] ") .. msg) end
+
+-- helpstyle is loaded the first time help is shown (false = unavailable).
+local helpstyle
+local function get_help_lib()
+  if helpstyle == nil then
+    local ok, mod = pcall(require, "helpstyle")
+    helpstyle = ok and mod or false
+  end
+  return helpstyle
+end
 
 local function send(cmd) rune.send(cmd) end
 -- Run through the alias layer (needed for "mapper goto <room>"); falls back to a plain send.
@@ -62,36 +85,31 @@ local function execute(cmd)
 end
 
 -- ---------------------------------------------------------------- state
-local settings = sget("gotoAliases.dummy", nil)  -- placeholder so the store is touched once; value unused
-local enabled = sget(KEY_ENABLED, true) ~= false and sget(KEY_ENABLED, true) ~= "0"
-local DEBUG = sget(KEY_DEBUG, false) == true or sget(KEY_DEBUG, false) == "1"
-local running_to_pursuer, leg_sent, forwarding_run = false, false, false
-local user_sends = {}
+local function load_settings()
+  local ok, s = pcall(rune.store.get, STORE_KEY)
+  if ok and type(s) == "table" then return s end
+  return {}
+end
+
+local enabled = true
+timed("settings", function() enabled = load_settings().enabled ~= false end)
+
+local DEBUG = false
+local running_to_pursuer, leg_sent = false, false
 local cur = { num = nil, zone = nil, plane = nil }  -- latest GMCP Room.Info
 local events_seen = 0
+local load_ms = 0
+local alias_mode = "none"
+local handle_goto  -- defined below; declared here so the exact-alias fallback can call it
 
-local function dbg(msg) if DEBUG then say(style.gray("debug: " .. msg)) end end
+local function dbg(msg) if DEBUG then say(paint("gray", "debug: " .. msg)) end end
+
+local function save_settings()
+  local ok, err = pcall(rune.store.set, STORE_KEY, { enabled = enabled })
+  if not ok then say("could not save settings: " .. tostring(err)) end
+end
 
 -- ---------------------------------------------------------------- data
-local alyria_destinations = {
-  sepharia = {
-    newrigel = "newrigel", xaventry = "xaventry", avarice = "avarice", desertthorn = "desertthorn", runeforest = "runeforest",
-    gilvery = "gilvery", lasler = "lasler", lowangen = "lowangen", mandrake = "mandrake", newkolvir = "newkolvir", rune = "rune",
-    towerofart = "towerofart", wroth = "wroth", twinmoons = "twinmoons", hillgiants = "hillgiants", tavernoftheboars = "tavernoftheboars",
-    travelersretreat = "travelersretreat", lonelydragon = "lonelydragon", jointmagicconsortium = "jointmagicconsortium",
-    toa = "towerofart", thorn = "desertthorn", forest = "runeforest", jmc = "jointmagicconsortium",
-  },
-  auryn = { diocletian = "diocletian", shlarksh = "shlarksh", takhtin = "takhtin", emperorscrossroads = "emperorscrossroads",
-    vospire = "vospire", vesuvius = "vesuvius", sigil = "sigil" },
-  avros = { tellerium = "tellerium", templeton = "templeton", dorathon = "dorathon", winton = "winton", frostgiantskeep = "frostgiantskeep",
-    aroxa = "aroxa", oilwells = "oilwells", desertoasis = "desertoasis", oasis = "desertoasis", fgk = "frostgiantskeep" },
-  beltane = { keep = "keep", deceit = "deceit", vandemaar = "vandemaar", xalt = "xalt", mulakanathos = "mulakanathos", gorth = "gorth", piratescove = "pc" },
-}
-local underground_destinations = { decara = "decara", decaradocks = "decaradocks", docks = "decaradocks", ariendyth = "ariendyth",
-  smugglersgulch = "smugglersgulch", vir = "vir", hellbent = "hellbent" }
-local sug_destinations = { renn = "renn", hlegmal = "hlegmal", tavern = "hlegmal", goblam = "goblam", grigmorth = "grigmorth",
-  cogworkcity = "cogworkcity", cogs = "cogworkcity", waylandersretreat = "waylandersretreat", unreinforcedtunnel = "unreinforcedtunnel", vaatt = "vaatt" }
-
 local zone_key_map = {}
 local function zones(key, ...) for _, z in ipairs({ ... }) do zone_key_map[z] = key end end
 zones("rune", "Towne of Rune", "Runic Castle", "Player Homes - Rune", "Rune Condominiums", "Rune Estates", "Rune Realty", "Temple Crypt",
@@ -168,6 +186,14 @@ loc("naulitas", "ocean", nil, "4137902")
 loc("cogworkcity", "sug", "17452076")
 loc("renn", "sug", "17150349")
 
+-- Gate room number -> town key, built once so Alyria lookups are a table read instead of a scan.
+local gate_index = {}
+for key, l in pairs(locations) do
+  for _, d in ipairs({ "north", "south", "east", "west" }) do
+    if l[d] and not gate_index[l[d]] then gate_index[l[d]] = key end
+  end
+end
+
 local function service(field, rows) for key, n in pairs(rows) do locations[key][field] = n end end
 service("post", { rune = "10560", sigil = "28083", diocletian = "28988", newrigel = "62584", xaventry = "73154", tellerium = "41703",
   templeton = "46556", piratescove = "29943", vospire = "40267", lowangen = "15961", maldra = "68121" })
@@ -178,59 +204,9 @@ service("reagents", { rune = "10554", sigil = "28003", diocletian = "28987", new
 service("locker", { rune = "10558", sigil = "28034", diocletian = "28984", newrigel = "62542", xaventry = "73156", tellerium = "41710",
   templeton = "45967", piratescove = "29894", vospire = "40266", lowangen = "16232", vir = "146151", decara = "116084" })
 
--- Default "goto next" commands, keyed by room number.
-local default_sends = {}
-local function dsend(key, dir, cmd) local n = locations[key][dir]; if n then default_sends[n] = cmd end end
-dsend("rune", "east", "run newrigel"); dsend("rune", "west", "run xaventry")
-dsend("sigil", "south", "run diocletian"); dsend("sigil", "north", "run vospire")
-dsend("piratescove", "west", "run keep"); dsend("piratescove", "east", "run keep"); dsend("piratescove", "south", "run keep")
-dsend("newrigel", "south", "run rune"); dsend("xaventry", "south", "run rune"); dsend("newrigel", "north", "run wroth")
-dsend("tellerium", "north", "run templeton"); dsend("templeton", "west", "run tellerium")
-dsend("diocletian", "south", "run sigil"); dsend("vospire", "east", "run sigil"); dsend("vospire", "west", "run vesuvius")
-dsend("maldra", "south", "run pc"); dsend("decara", "east", "run vir"); dsend("vir", "east", "run decara")
-default_sends["1960870"] = "run newrigel"
-
--- ---------------------------------------------------------------- custom sends (stored as "room<TAB>command" lines)
-local function load_custom()
-  user_sends = {}
-  local raw = sget(KEY_CUSTOM, "")
-  if type(raw) ~= "string" then return end
-  for line in raw:gmatch("[^\n]+") do
-    local r, c = line:match("^(%d+)\t(.*)$")
-    if r then user_sends[r] = c end
-  end
-end
-
-local function save_custom()
-  local rows = {}
-  for r, c in pairs(user_sends) do rows[#rows + 1] = r .. "\t" .. c end
-  table.sort(rows)
-  sset(KEY_CUSTOM, table.concat(rows, "\n"))
-end
-
-local function get_send(r)
-  local u = user_sends[r]
-  if u ~= nil then return u ~= "" and u or nil end  -- "" means the default was cleared
-  return default_sends[r]
-end
-
-local function all_send_rooms()
-  local seen, rooms = {}, {}
-  for r in pairs(default_sends) do seen[r] = true end
-  for r in pairs(user_sends) do seen[r] = true end
-  for r in pairs(seen) do if get_send(r) then rooms[#rooms + 1] = r end end
-  table.sort(rooms)
-  return rooms
-end
-
 -- ---------------------------------------------------------------- location (GMCP Room.Info cache)
 local function zone_key()
-  if cur.zone == "Alyria" then
-    for key, l in pairs(locations) do
-      if l.north == cur.num or l.south == cur.num or l.west == cur.num or l.east == cur.num then return key end
-    end
-    return nil
-  end
+  if cur.zone == "Alyria" then return gate_index[cur.num] end
   return zone_key_map[cur.zone]
 end
 
@@ -245,6 +221,13 @@ local function destination(field)
   return key and locations[key][field] or nil
 end
 
+local function names_of(t)
+  local out = {}
+  if type(t) == "table" then for k in pairs(t) do out[#out + 1] = tostring(k) end end
+  table.sort(out)
+  return #out > 0 and table.concat(out, ", ") or "(none)"
+end
+
 local function show_where()
   say("events=" .. events_seen .. "  room=" .. tostring(cur.num) .. "  zone=" .. tostring(cur.zone)
     .. "  plane=" .. tostring(cur.plane) .. "  town=" .. tostring(zone_key()))
@@ -253,6 +236,10 @@ local function show_where()
   elseif cur.zone and cur.zone ~= "Alyria" and not zone_key_map[cur.zone] then
     say("Zone '" .. cur.zone .. "' is not in the zone map (add it to the zones() table).")
   end
+  local bits = {}
+  for _, p in ipairs(parts) do bits[#bits + 1] = p[1] .. "=" .. string.format("%.1f", p[2]) end
+  say("load " .. load_ms .. "ms: " .. table.concat(bits, "  "))
+  say("aliases=" .. alias_mode)
 end
 
 -- ---------------------------------------------------------------- goto actions
@@ -279,28 +266,6 @@ local function show_locations()
     if l[f] then out[#out + 1] = (f == "locker") and "lockers" or f end
   end
   say("You can goto: " .. table.concat(out, ", "))
-end
-
-local function goto_next()
-  if not have_room() then return end
-  local cmd = get_send(cur.num)
-  if cmd then dbg("next -> " .. cmd); execute(cmd)
-  else say("This room has no custom send; use 'goto custom <text>' to set one.") end
-end
-
-local function custom_send(text)
-  if not have_room() then return end
-  text = (text or ""):match("^%s*(.-)%s*$")
-  if text == "" then
-    local c = get_send(cur.num)
-    say(c and ("Room " .. cur.num .. " next: " .. c) or ("Room " .. cur.num .. " has no next command; use 'goto custom <text>'."))
-  elseif text:lower() == "clear" then
-    user_sends[cur.num] = default_sends[cur.num] and "" or nil
-    save_custom(); say("The next command for this room has been cleared.")
-  else
-    user_sends[cur.num] = text
-    save_custom(); say("'goto next' from this room will send: " .. text)
-  end
 end
 
 local function goto_crystal()
@@ -363,165 +328,183 @@ local function goto_pursuer()
   pursuer_step(true)
 end
 
--- ---------------------------------------------------------------- run <place>
-local function determine(destinations, input)
-  local t = input:lower():match("^%s*(.-)%s*$")
-  if destinations[t] then return destinations[t] end
-  local matches, match, count = {}, nil, 0
-  for shortcut, final in pairs(destinations) do
-    if #shortcut >= #t and shortcut:sub(1, #t) == t and not matches[final] then
-      matches[final], match, count = true, final, count + 1
-    end
-  end
-  if count == 0 then return t end
-  if count == 1 then return match end
-  local names = {}
-  for n in pairs(matches) do names[#names + 1] = n end
-  table.sort(names)
-  say("Ambiguous destination, choose between: " .. table.concat(names, ", "))
-  return nil
-end
-
-local function forward_run(dest)
-  forwarding_run = true
-  send(dest ~= "" and ("run " .. dest) or "run")
-  forwarding_run = false
-end
-
-local function try_run(dest)
-  dest = (dest or ""):match("^%s*(.-)%s*$")
-  if forwarding_run or not enabled or not cur.num then forward_run(dest); return end
-
-  local final = dest
-  if cur.plane == "Alyria" then
-    local key = zone_key()
-    local cont = key and locations[key].continent
-    if cont and alyria_destinations[cont] then
-      final = determine(alyria_destinations[cont], dest)
-    else
-      local all = {}
-      for _, c in ipairs({ "sepharia", "auryn", "beltane", "avros" }) do
-        for k, v in pairs(alyria_destinations[c]) do all[k] = v end
-      end
-      final = determine(all, dest)
-    end
-  elseif cur.plane == "Alyrian Underworld" then final = determine(underground_destinations, dest)
-  elseif cur.plane == "Sigil Underground" then final = determine(sug_destinations, dest)
-  end
-  if final then dbg("run " .. final); forward_run(final) end
-end
-
--- ---------------------------------------------------------------- help / dispatcher
+-- ---------------------------------------------------------------- help
 local function show_help()
-  rune.echo(H.title("Goto Aliases  (alias: goto)"))
-  rune.echo(H.section("Commands"))
-  rune.echo(H.line("gotoAliases | goto", "show this help"))
-  rune.echo(H.line("goto list", "what you can goto from here"))
-  rune.echo(H.line("goto where", "show detected room, zone, plane and town"))
-  rune.echo(H.line("goto north|east|south|west|gate", "run to that exit of the town"))
-  rune.echo(H.line("goto next", "send the stored command for this room"))
-  rune.echo(H.line("goto custom <text>", "set this room's next command (custom clear removes it)"))
-  rune.echo(H.line("goto qm | rep | post | bank", "quest master, tourist rep, post office, bank"))
-  rune.echo(H.line("goto reagents | lockers", "reagent shop, lockers"))
-  rune.echo(H.line("goto crystal", "crystal quest office in Rune"))
-  rune.echo(H.line("goto pursuer | cancel", "run to the Orc Pursuer / stop after this leg"))
-  rune.echo(H.line("goto on|off", "enable or disable the plugin"))
-  rune.echo(H.line("goto debug", "toggle debug messages"))
-  rune.echo(H.section("Custom sends (room -> command)"))
-  for _, r in ipairs(all_send_rooms()) do rune.echo(H.line(r, get_send(r))) end
-  rune.echo(H.foot("v" .. VERSION .. "  enabled=" .. tostring(enabled) .. " debug=" .. tostring(DEBUG)
-    .. " sends=" .. #all_send_rooms()))
+  local H = get_help_lib()
+  local footer = "v" .. VERSION .. "  enabled=" .. tostring(enabled) .. " debug=" .. tostring(DEBUG)
+    .. " load=" .. load_ms .. "ms"
+  local rows = {
+    { "gotoAliases | goto", "show this help" },
+    { "goto list", "what you can goto from here" },
+    { "goto where", "show detected room, zone, plane, town and load breakdown" },
+    { "goto north|east|south|west|gate", "run to that exit of the town" },
+    { "goto qm | rep | post | bank", "quest master, tourist rep, post office, bank" },
+    { "goto reagents | lockers", "reagent shop, lockers" },
+    { "goto crystal", "crystal quest office in Rune" },
+    { "goto pursuer | cancel", "run to the Orc Pursuer / stop after this leg" },
+    { "goto on|off", "enable or disable the plugin" },
+    { "goto debug [on|off]", "toggle debug messages" },
+  }
+  if H then
+    rune.echo(H.title("Goto Aliases  (alias: goto)"))
+    rune.echo(H.section("Commands"))
+    for _, r in ipairs(rows) do rune.echo(H.line(r[1], r[2])) end
+    rune.echo(H.foot(footer))
+  else
+    say("Goto Aliases  (alias: goto)")
+    for _, r in ipairs(rows) do rune.echo("  " .. r[1] .. "  -  " .. r[2]) end
+    rune.echo(footer)
+  end
 end
 
 local function set_enabled(on)
+  if enabled == on then
+    say(on and paint("green", "already on") or paint("red", "already off"))
+    return
+  end
   enabled = on
-  sset(KEY_ENABLED, on)
+  save_settings()
   if not on then stop_pursuer() end
-  say(on and style.green("on") or style.red("off"))
+  say(on and paint("green", "on") or paint("red", "off"))
 end
 
+local function set_debug(on)
+  if on == nil then on = not DEBUG end
+  DEBUG = on
+  say("debug " .. (DEBUG and paint("green", "on") or paint("red", "off")))
+end
+
+-- ---------------------------------------------------------------- dispatcher
+-- Each action receives the rest of the typed line (used by debug).
 local actions = {
-  help = show_help,
-  list = show_locations,
-  where = show_where,
+  help = function() show_help() end,
+  list = function() show_locations() end,
+  where = function() show_where() end,
   north = function() goto_field("north", "north gate") end,
   south = function() goto_field("south", "south gate") end,
   east = function() goto_field("east", "east gate") end,
   west = function() goto_field("west", "west gate") end,
   gate = function() goto_field("default_gate", "gate") end,
-  next = goto_next,
   qm = function() goto_or_act("qm", "quest master", "quest request 'rewarding'") end,
   rep = function() goto_or_act("rep", "town rep", "sayto representative yes") end,
   post = function() goto_field("post", "post office") end,
   bank = function() goto_field("bank", "bank") end,
   reagents = function() goto_field("reagents", "reagent shop") end,
   lockers = function() goto_field("locker", "lockers") end,
-  crystal = goto_crystal,
-  pursuer = goto_pursuer,
+  crystal = function() goto_crystal() end,
+  pursuer = function() goto_pursuer() end,
   cancel = function() say("You will stop when this leg completes."); stop_pursuer() end,
   on = function() set_enabled(true) end,
   off = function() set_enabled(false) end,
-  debug = function() DEBUG = not DEBUG; sset(KEY_DEBUG, DEBUG); say("debug " .. (DEBUG and style.green("on") or style.red("off"))) end,
-  ["custom"] = function(args) custom_send(type(args) == "string" and args or "") end,
-  ["custom clear"] = function() custom_send("clear") end,
+  debug = function(rest)
+    local v = (rest or ""):lower()
+    if v == "on" then set_debug(true) elseif v == "off" then set_debug(false) else set_debug(nil) end
+  end,
 }
+local SUB_ALIAS = { reagent = "reagents", locker = "lockers" }
+-- Actions that stay available while the plugin is off.
+local ALWAYS = { help = true, on = true, off = true, debug = true, where = true }
 
--- Subcommand -> action name (some words share an action).
-local SUBS = { "", "help", "list", "where", "north", "south", "east", "west", "gate", "next", "qm", "rep", "post", "bank",
-  "reagents", "reagent", "lockers", "locker", "crystal", "pursuer", "cancel", "on", "off", "debug", "custom", "custom clear" }
-local ALIASED = { reagent = "reagents", locker = "lockers", [""] = "help" }
+-- Find the typed text in whatever the alias callback hands over (a string, a capture list, or a context table).
+local function pick_text(v, depth)
+  if type(v) == "string" then return v end
+  depth = depth or 0
+  if type(v) ~= "table" or depth > 2 then return nil end
+  local best
+  for i = 1, 9 do if type(v[i]) == "string" then best = v[i] end end
+  if best then return best end
+  for _, k in ipairs({ "line", "input", "text", "match", "args" }) do
+    if type(v[k]) == "string" then return v[k] end
+  end
+  for _, k in ipairs({ "captures", "groups", "matches" }) do
+    local r = pick_text(v[k], depth + 1)
+    if r then return r end
+  end
+  return nil
+end
 
-local function guarded(action)
-  return function(args, ctx)
-    local fn = actions[action]
-    if not fn then return end
-    -- Pause mutating actions while the plugin is off (help, on/off, debug, where stay available).
-    if not enabled and action ~= "help" and action ~= "on" and action ~= "off" and action ~= "debug" and action ~= "where" then
-      say("Plugin is off (goto on to enable).")
-      return
+local function typed_text(a, b)
+  local t = pick_text(a) or pick_text(b)
+  return t or "", t ~= nil
+end
+
+local function shape(v)
+  if type(v) ~= "table" then return type(v) end
+  return "table{" .. names_of(v) .. "}"
+end
+
+local diagnosed = false
+local function diagnose(a, b)
+  if diagnosed then return end
+  diagnosed = true
+  say("alias callback gave no text (arg1=" .. shape(a) .. ", arg2=" .. shape(b) .. "); please report this line.")
+end
+
+-- Remove a leading command word ("goto north" -> "north"); text without it is returned unchanged.
+local function strip_word(s, word)
+  if s == word then return "" end
+  return s:match("^" .. word .. "%s+(.*)$") or s
+end
+
+function handle_goto(a, b)
+  local text, found = typed_text(a, b)
+  if not found then diagnose(a, b) end
+  text = text:match("^%s*(.-)%s*$")
+  local stripped = strip_word(text, "gotoAliases")
+  if stripped == text then stripped = strip_word(text, "goto") end
+  local sub, rest = stripped:match("^(%S*)%s*(.-)$")
+  sub = sub:lower()
+  if sub == "" then sub = "help" end
+  sub = SUB_ALIAS[sub] or sub
+  local fn = actions[sub]
+  if not fn then say("Unknown option '" .. sub .. "'. Type goto for help."); return end
+  if not enabled and not ALWAYS[sub] then say("Plugin is off (goto on to enable)."); return end
+  fn(rest)
+end
+
+-- ---------------------------------------------------------------- alias registration
+-- Fallback only: exact aliases cost ~0.8 ms each, so they are used just if the regex alias is unavailable.
+local FALLBACK_SUBS = { "", "help", "list", "where", "north", "south", "east", "west", "gate", "qm", "rep", "post",
+  "bank", "reagents", "reagent", "lockers", "locker", "crystal", "pursuer", "cancel", "on", "off", "debug", "debug on",
+  "debug off" }
+
+local function register_exact_goto()
+  for _, prefix in ipairs({ SHORT, PLUGIN_NAME }) do
+    for _, sub in ipairs(FALLBACK_SUBS) do
+      local command = prefix .. (sub ~= "" and (" " .. sub) or "")
+      pcall(rune.alias.exact, command, function() handle_goto(command) end)
     end
-    fn(args, ctx)
   end
-end
-
-local function register_aliases(prefix)
-  for _, sub in ipairs(SUBS) do
-    local action = ALIASED[sub] or sub
-    local command = prefix .. (sub ~= "" and (" " .. sub) or "")
-    local ok, err = pcall(function() rune.alias.exact(command, guarded(action)) end)
-    if not ok then say(style.red("could not register alias " .. command .. ": " .. tostring(err))) end
-  end
-end
-
--- "run <place>" shortcuts: one exact alias per known name, since exact aliases take no arguments.
-local function register_run_aliases()
-  local names, count = {}, 0
-  for _, group in ipairs({ alyria_destinations.sepharia, alyria_destinations.auryn, alyria_destinations.avros,
-    alyria_destinations.beltane, underground_destinations, sug_destinations }) do
-    for shortcut in pairs(group) do names[shortcut] = true end
-  end
-  for shortcut in pairs(names) do
-    local ok = pcall(function() rune.alias.exact("run " .. shortcut, function() try_run(shortcut) end) end)
-    if ok then count = count + 1 end
-  end
-  dbg("registered " .. count .. " run shortcuts")
 end
 
 -- ---------------------------------------------------------------- startup
-load_custom()
+timed("gmcp", function()
+  pcall(rune.gmcp.subscribe, "Room")
+  rune.gmcp.on("Room.Info", function(data)
+    if type(data) ~= "table" then return end
+    events_seen = events_seen + 1
+    cur.num = data.num ~= nil and tostring(data.num) or nil
+    cur.zone = data.zone
+    cur.plane = type(data.coord) == "table" and data.coord.name or nil
+    if running_to_pursuer then pursuer_step(false) end
+  end, { name = PLUGIN_NAME })
+end)
 
-pcall(rune.gmcp.subscribe, "Room")
-rune.gmcp.on("Room.Info", function(data)
-  if type(data) ~= "table" then return end
-  events_seen = events_seen + 1
-  cur.num = data.num ~= nil and tostring(data.num) or nil
-  cur.zone = data.zone
-  cur.plane = type(data.coord) == "table" and data.coord.name or nil
-  if running_to_pursuer then pursuer_step(false) end
-end, { name = PLUGIN_NAME })
+timed("goto alias", function()
+  local ok, res = pcall(rune.alias.regex, GOTO_PATTERN, handle_goto)
+  if ok and res ~= false then
+    alias_mode = "regex"
+  else
+    alias_mode = "exact"
+    register_exact_goto()
+  end
+end)
 
-register_aliases(PLUGIN_NAME)
-register_aliases(SHORT)
-register_run_aliases()
+-- Everything not timed above (data tables, function definitions) is reported as "other".
+local total_ms = (now() - T0) * 1000
+local timed_ms = 0
+for _, p in ipairs(parts) do timed_ms = timed_ms + p[2] end
+parts[#parts + 1] = { "other", math.max(total_ms - timed_ms, 0) }
+load_ms = math.floor(total_ms + 0.5)
 
 say("v" .. VERSION .. " loaded (gotoAliases or goto for help)")

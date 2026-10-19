@@ -8,7 +8,6 @@ This repository (https://github.com/eljay-mm/rune-mm) is a collection of Lua plu
 - Development terminal: Ghostty on Debian 13; plugins should also work on Windows and macOS (see [Cross-platform](#cross-platform))
 - Game: Materia Magica at materiamagica.com
 - Persistent settings: use `rune.store`, not separate config files, unless a plugin explicitly requires otherwise
-- `RUNE_CHARACTER` does not exist; do not rely on it. Use horstgs' `charname.lua` instead (see [Character name](#character-name))
 
 ## Reference plugins
 
@@ -137,7 +136,7 @@ say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))
 ### Character name
 
 - Wherever a plugin needs the character name, use horstgs' `charname.lua` rather than detecting it in the plugin
-- Do not read `RUNE_CHARACTER` and do not add per-plugin name detection (for example your own `Char.Base` handler or prompt parsing), so every plugin gets the name the same way
+- Do not  add per-plugin name detection (for example your own `Char.Base` handler or prompt parsing), so every plugin gets the name the same way
 - `charname.lua` already subscribes to the GMCP `Char` package and asks the game for `char.base` and `char.status` on login, so a plugin does not need its own `rune.gmcp.subscribe("Char")` just to get the name
 - `basicAliases.lua` still takes no per-character overrides or aliases
 

@@ -1,8 +1,40 @@
 -- Filename: eljayPlugins/missingAffects.lua
 -- Purpose: Compare listed affects with a wanted-affects list and report missing affects.
--- Version: 1.12
--- Date: 2026-Oct-16
+-- Version: 1.18
+-- Date: 2026-Oct-18
+--[[
+Todo:
+- insert planning notes here between revisions.
+]]
 -- Changelog:
+--   1.18 The name is requested from the game at load (silently, only when it is not
+--        already known and GMCP is enabled), so "missingAffects charname" is no
+--        longer needed after a /reload.
+--   1.17 "missingAffects charname" now reports the name itself when the game's
+--        reply arrives, so it only needs to be run once.
+--   1.16 Settings reload the moment the character name changes, through
+--        charname.on_change; the checks at each command and listing remain as a
+--        backstop.
+--   1.15 Character name now comes only from horstgs' charname.lua (get/key), so the
+--        own GMCP hooks, rune.connection.character and shape-guessing are removed;
+--        keys are charname.key("missingAffects.<setting>"). New command
+--        "missingAffects charname" asks the game for the name again and reports it.
+--        v1.13 keys (base:Name) and pre-1.13 global keys are adopted once.
+--   1.14 Brought to standard: load time shown in the help footer (load=Nms); faster
+--        load (one regex alias for missingAffects / ma / mac, one combined trigger,
+--        helpstyle and saved settings loaded on first use, GMCP hooked only when no
+--        name is available otherwise); the character name is read from horstgs'
+--        charname module when it can be required, then rune.connection.character,
+--        then GMCP.
+--   1.13 Settings are saved only under the character name (rule for this plugin).
+--        Before, a plugin loaded before the character name was known read and wrote
+--        one global key shared by every character, and rune.connection.character
+--        may never be set. Now the name comes from rune.connection.character or,
+--        failing that, from GMCP (Char.Name, Char.Base, Char.Status); settings are
+--        (re)loaded when it becomes known or changes, and
+--        nothing is written while it is unknown (a one-line notice says so). A
+--        pre-1.13 global value is adopted once into the character's own key. The
+--        footer shows char=<name>.
 --   1.12 Removed the druid-analogue concept. Spells such as shield or refresh are
 --        regular spells that share their name with a bard song: by default they are
 --        sent as cast '<spell>', and with "missingAffects class bard" they are
@@ -44,6 +76,9 @@
 --     The header starts a listing, each Spell/Affect/Racial/Skill row records its
 --     name (repeated rows for one affect are harmless), and the "Total of ..."
 --     line triggers the comparison.
+--   * Loads fast: one regex alias serves missingAffects, ma and mac, one trigger
+--     serves the header, rows and total, and helpstyle and saved settings are
+--     read on first use. The help footer shows the measured load time.
 --   * Compares affects in the current listing against the wanted-affects list.
 --   * Matching is case-insensitive and exact against candidate names derived from
 --     each listed line (see 1.9); configured similar-affect groups suppress
@@ -59,9 +94,12 @@
 --     as invoke <element>; every other name is a regular spell and is sent as
 --     cast '<name>'. With "missingAffects class bard", names that are also bard
 --     songs are sent as play '<song>' instead (class spell is the default).
---   * Settings (wanted list, on/off, debug, class) are stored in rune.store per
---     character when rune.connection.character is available, and globally
---     otherwise.
+--   * Settings (wanted list, on/off, debug, class) are stored in rune.store under
+--     keys made by charname.key("missingAffects.<setting>") (horstgs' charname.lua,
+--     which tracks the name from GMCP). They are never saved without a character
+--     name. Settings reload as soon as charname.lua reports a new name;
+--     until the name is known, changes last for the session only. Settings load
+--     when the name first becomes known and again if it changes.
 --   * A listing that never reaches its summary line is discarded when the next
 --     affect line arrives more than LISTING_TIMEOUT seconds later.
 --
@@ -76,6 +114,7 @@
 --   missingAffects remove <name>   remove an affect from the wanted list
 --   missingAffects list            show wanted affects
 --   missingAffects lines           show lines captured by the last affects listing
+--   missingAffects charname        ask the game for the character name again and show it
 --   missingAffects clear           clear wanted affects
 --   missingAffects cast            play/invoke/evoke/cast the last missing-affects list
 --   missingAffects cast all        cast every wanted affect, even if already present
@@ -84,13 +123,16 @@
 --
 -- Tweaks:
 --   Edit DEFAULT_WANTED and SIMILAR_AFFECT_GROUPS to suit your character.
+--   The character name needs charname.lua to be loadable with require("charname").
 --   Keep BARD_SONGS and DRUID_INVOCATIONS in step with bardSongTLAs and druidSpellTLAs.
 --   Song names with no regular spell of the same name need class bard to work.
 --   Command names are validated before being sent.
 
+local LOAD_START = os.clock()
+
 local NAME = "missingAffects"
 local SHORT = "ma"
-local VERSION = "1.12"
+local VERSION = "1.18"
 
 local KEY_WANTED = "missingAffects.wanted"
 local KEY_ENABLED = "missingAffects.enabled"
@@ -114,8 +156,7 @@ local BARD_SONGS = {
 }
 
 -- Druid invocations: { affect name, verb, element }, from druidSpellTLAs;
--- always sent as invoke/evoke <element>, whatever the class setting.
--- Sent as invoke/evoke <element>, element unquoted.
+-- always sent as invoke/evoke <element> (element unquoted), whatever the class setting.
 local DRUID_INVOCATIONS = {
   { "magma invocation",     "invoke", "magma" },
   { "minerals invocation",  "invoke", "minerals" },
@@ -147,14 +188,26 @@ local enabled = true
 local debug_enabled = false
 local class_mode = "spell" -- spell: cast regular spells; bard: play songs of the same name
 local wanted = {}
+local loaded_for = nil -- character name the settings were last loaded for
+local warned_no_char = false
+local report_pending = false -- "missingAffects charname" is waiting for the game's reply
+local load_ms = nil -- measured at the end of loading, shown in the help footer
 local listed = {}
 local last_lines = {} -- raw lines captured by the last listing, for diagnosis
 local missing_last = {}
 local listing_active = false
 local listing_stamp = 0
 
-local okH, H = pcall(require, "helpstyle")
-if not okH or type(H) ~= "table" then H = nil end
+-- helpstyle is loaded on first use of the help output (faster plugin load).
+local helpstyle_loaded, helpstyle_module = false, nil
+local function get_helpstyle()
+  if not helpstyle_loaded then
+    helpstyle_loaded = true
+    local ok, module = pcall(require, "helpstyle")
+    if ok and type(module) == "table" then helpstyle_module = module end
+  end
+  return helpstyle_module
+end
 
 -- ---------------------------------------------------------------------------
 -- Display (annwnQuestSearch method: paint/say via rune.echo, H.* rows via emit)
@@ -211,17 +264,6 @@ local function split_names(text)
   return out
 end
 
--- Alias handlers receive (args, ctx); args is normally the text after the command.
-local function arg_text(args)
-  if type(args) == "string" then return trim(args) end
-  if type(args) == "table" then
-    local parts = {}
-    for _, v in ipairs(args) do parts[#parts + 1] = tostring(v) end
-    return trim(table.concat(parts, " "))
-  end
-  return ""
-end
-
 local function strip_ansi(text)
   return (tostring(text or ""):gsub("\27%[[%d;]*[A-Za-z]", ""))
 end
@@ -261,16 +303,48 @@ end
 -- Settings
 -- ---------------------------------------------------------------------------
 
-local function character_scope()
-  local character = rune and rune.connection and rune.connection.character
-  if type(character) == "string" and character ~= "" then
-    return ":" .. character
+-- horstgs' charname.lua (get / key), required once on first use. It keeps the
+-- name from GMCP and is shared with other plugins.
+local charname_module = nil -- nil = not tried yet, false = unavailable
+
+local function get_charname_module()
+  if charname_module == nil then
+    local ok, module = pcall(require, "charname")
+    charname_module = (ok and type(module) == "table") and module or false
   end
-  return ""
+  return charname_module or nil
 end
 
+-- Character name; nil until the game has sent it.
+local function charname()
+  local module = get_charname_module()
+  if not (module and type(module.get) == "function") then return nil end
+
+  local ok, value = pcall(module.get)
+  if ok and type(value) == "string" then
+    value = trim(value)
+    if value ~= "" then return value end
+  end
+  return nil
+end
+
+-- Store key for the current character, e.g. "missingAffects.wanted.littlejester".
 local function store_key(base)
-  return base .. character_scope()
+  local module = get_charname_module()
+  if module and type(module.key) == "function" then
+    local ok, key = pcall(module.key, base)
+    if ok and type(key) == "string" then return key end
+  end
+  return nil
+end
+
+local function store_get(key)
+  if not (rune and rune.store and type(rune.store.get) == "function") then
+    return nil
+  end
+  local ok, value = pcall(rune.store.get, key)
+  if ok then return value end
+  return nil
 end
 
 local function default_wanted()
@@ -279,42 +353,135 @@ local function default_wanted()
   return out
 end
 
-local function load_settings()
-  wanted = default_wanted()
+local function is_boolean(v) return type(v) == "boolean" end
+local function is_table(v) return type(v) == "table" end
+local function is_class(v) return v == "bard" or v == "spell" end
 
-  if not (rune and rune.store and type(rune.store.get) == "function") then
-    return
+-- Save under the character name only; never write a global key.
+local function save_value(base, value)
+  local char = charname()
+  if not char then
+    if not warned_no_char then
+      warned_no_char = true
+      say("character name not known yet (see missingAffects charname); changes are kept for this session only")
+    end
+    return false
   end
 
-  local ok_wanted, saved_wanted = pcall(rune.store.get, store_key(KEY_WANTED))
-  if ok_wanted and type(saved_wanted) == "table" then
-    wanted = saved_wanted
+  if not (rune and rune.store and type(rune.store.set) == "function") then
+    dbg("rune.store.set unavailable; %s not saved", base)
+    return false
   end
 
-  local ok_enabled, saved_enabled = pcall(rune.store.get, store_key(KEY_ENABLED))
-  if ok_enabled and type(saved_enabled) == "boolean" then
-    enabled = saved_enabled
+  local key = store_key(base)
+  if not key then
+    dbg("no charname key for %s; not saved", base)
+    return false
   end
 
-  local ok_debug, saved_debug = pcall(rune.store.get, store_key(KEY_DEBUG))
-  if ok_debug and type(saved_debug) == "boolean" then
-    debug_enabled = saved_debug
+  local ok, err = pcall(rune.store.set, key, value)
+  if not ok then
+    dbg("save failed for %s: %s", key, tostring(err))
   end
-
-  local ok_class, saved_class = pcall(rune.store.get, store_key(KEY_CLASS))
-  if ok_class and (saved_class == "bard" or saved_class == "spell") then
-    class_mode = saved_class
-  end
+  return ok
 end
 
-local function save_value(key, value)
-  if rune and rune.store and type(rune.store.set) == "function" then
-    pcall(rune.store.set, store_key(key), value)
+-- Read one setting for a character; a pre-1.13 global value is adopted once.
+local function read_setting(base, char, valid)
+  local key = store_key(base)
+  local value = key and store_get(key)
+  if valid(value) then return value end
+
+  -- Older layouts: v1.13 "<base>:<Name>", then pre-1.13 global "<base>".
+  local legacy = store_get(base .. ":" .. char)
+  if not valid(legacy) then legacy = store_get(base) end
+  if valid(legacy) then
+    dbg("adopting legacy %s for %s", base, char)
+    save_value(base, legacy)
+    return legacy
   end
+  return nil
+end
+
+-- Load settings for the current character the first time its name is known and
+-- whenever it changes. Cheap enough to call before every command and trigger.
+local function ensure_settings(force)
+  if loaded_for and not force then return end
+
+  local char = charname()
+  if not char or char == loaded_for then return end
+
+  loaded_for = char
+  warned_no_char = false
+
+  enabled = true
+  debug_enabled = false
+  class_mode = "spell"
+  wanted = default_wanted()
+
+  local saved_wanted = read_setting(KEY_WANTED, char, is_table)
+  if saved_wanted then wanted = saved_wanted end
+
+  local saved_enabled = read_setting(KEY_ENABLED, char, is_boolean)
+  if saved_enabled ~= nil then enabled = saved_enabled end
+
+  local saved_debug = read_setting(KEY_DEBUG, char, is_boolean)
+  if saved_debug ~= nil then debug_enabled = saved_debug end
+
+  local saved_class = read_setting(KEY_CLASS, char, is_class)
+  if saved_class then class_mode = saved_class end
+
+  for _, key in ipairs(DRUID_DUPLICATES) do
+    dbg("duplicate druid affect name ignored: %s", key)
+  end
+  dbg("settings loaded for %s", char)
 end
 
 local function save_wanted()
-  save_value(KEY_WANTED, wanted)
+  return save_value(KEY_WANTED, wanted)
+end
+
+local function report_charname()
+  local char = charname()
+  if char then
+    say("character name: " .. char .. " (settings key: " .. tostring(store_key(KEY_WANTED)) .. ")")
+  end
+  return char ~= nil
+end
+
+-- Ask the game for the name (the same requests charname.lua sends on login).
+local function request_charname()
+  if rune and rune.gmcp and type(rune.gmcp.is_enabled) == "function"
+      and type(rune.gmcp.send) == "function" then
+    local ok, enabled_gmcp = pcall(rune.gmcp.is_enabled)
+    if ok and enabled_gmcp then
+      pcall(rune.gmcp.send, "char.base", { [""] = "" })
+      pcall(rune.gmcp.send, "char.status", { [""] = "" })
+      dbg("requested char.base and char.status")
+    else
+      dbg("GMCP is not enabled; nothing requested")
+    end
+  end
+end
+
+-- "missingAffects charname": request the name again, reload settings for it, and
+-- report it: now if it is known, otherwise when the game's reply arrives (see the
+-- charname.on_change hook at the end of the file).
+local function refresh_charname()
+  if not get_charname_module() then
+    say("charname.lua not found (require \"charname\" failed); cannot detect the character name")
+    return
+  end
+
+  request_charname()
+  ensure_settings(true)
+
+  if report_charname() then
+    report_pending = false
+  else
+    report_pending = true
+    say("character name requested; it will be shown when the game replies")
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -493,7 +660,10 @@ local function help_summary()
     .. " debug=" .. onoff(debug_enabled)
     .. " class=" .. class_mode
     .. " wanted=" .. #wanted
+    .. " char=" .. (charname() or "unknown")
+    .. " load=" .. (load_ms or 0) .. "ms"
 
+  local H = get_helpstyle()
   if H and H.title and H.section and H.line and H.foot then
     emit(H.title("Missing affects"))
     emit(H.section("Commands"))
@@ -505,6 +675,7 @@ local function help_summary()
     emit(H.line("missingAffects add|remove <name>", "edit wanted-affects list"))
     emit(H.line("missingAffects list|clear", "show or clear wanted list"))
     emit(H.line("missingAffects lines", "show lines captured by the last listing"))
+    emit(H.line("missingAffects charname", "refresh the character name from the game"))
     emit(H.line("missingAffects cast / mac", "play/invoke/evoke/cast the last missing result"))
     emit(H.line("missingAffects cast all / mac all", "cast every wanted affect, even if present"))
     emit(H.foot(status))
@@ -521,6 +692,7 @@ local function help_summary()
   say("  missingAffects remove <name>    remove an affect")
   say("  missingAffects list|clear       show or clear wanted list")
   say("  missingAffects lines            show lines captured by the last listing")
+  say("  missingAffects charname         refresh the character name from the game")
   say("  missingAffects cast / mac       play/invoke/evoke/cast the last missing result")
   say("  missingAffects cast all / mac all  cast every wanted affect, even if present")
   say(status)
@@ -571,6 +743,8 @@ local function handle_command(text)
     class_mode = setting
     save_value(KEY_CLASS, class_mode)
     say("class " .. class_mode)
+  elseif verb == "charname" then
+    refresh_charname()
   elseif verb == "lines" then
     show_lines()
   elseif verb == "list" then
@@ -624,56 +798,75 @@ end
 -- Triggers (regex syntax)
 -- ---------------------------------------------------------------------------
 
+-- One trigger for the whole listing (fewer registrations, one match per line):
+--   m[1] header "You are affected by the following:"
+--   m[2] row label, m[3] affect name from "Spell:      name   - Level N, modifies ..."
+--        (Racial rows have no Level part)
+--   m[4] total line "Total of N magical affects."
 if rune and rune.trigger and type(rune.trigger.regex) == "function" then
-  -- Header: start a fresh listing so a previous partial capture is discarded.
-  rune.trigger.regex("^\\s*[Yy]ou are affected by the following:?\\s*$", function()
-    if enabled then
-      begin_listing()
-    end
-  end)
+  rune.trigger.regex("^\\s*(?:([Yy]ou are affected by the following:?)|(Spell|Affect|Racial|Skill):\\s+(.+?)(?:\\s+-\\s+Level\\b.*)?|(Total of .+ affects?\\.?))\\s*$", function(m)
+    if not m then return end
 
-  -- Rows: "Spell:      name   - Level N, modifies ..." (Racial rows have no Level part).
-  rune.trigger.regex("^\\s*(Spell|Affect|Racial|Skill):\\s+(.+?)(?:\\s+-\\s+Level\\b.*)?$", function(m)
-    if enabled and m and m[2] then
-      record_affect(m[2])
+    if m[1] and m[1] ~= "" then
+      ensure_settings(true) -- re-check the character name once per listing
+      if enabled then begin_listing() end
+      return
     end
-  end)
 
-  rune.trigger.regex("^\\s*Total of .+ affects?\\.?\\s*$", function()
-    if enabled then
+    ensure_settings()
+    if not enabled then return end
+
+    if m[4] and m[4] ~= "" then
       finish_listing()
+    elseif m[3] and m[3] ~= "" then
+      record_affect(m[3])
     end
   end)
 end
 
 -- ---------------------------------------------------------------------------
--- Aliases (bare commands; rune.alias.exact does not create slash commands)
+-- Alias (one regex alias for missingAffects, ma and mac; bare commands, no / prefix)
 -- ---------------------------------------------------------------------------
 
-if rune and rune.alias and type(rune.alias.exact) == "function" then
-  rune.alias.exact(NAME, function(args, ctx)
-    handle_command(arg_text(args))
-  end)
-
-  rune.alias.exact(SHORT, function(args, ctx)
-    handle_command(arg_text(args))
-  end)
-end
-
--- "mac" takes an optional "all" argument, so it is a regex alias (as in the TLA plugins).
 if rune and rune.alias and type(rune.alias.regex) == "function" then
-  rune.alias.regex("^mac(?:[ ]+(.+))?$", function(m)
-    local arg = trim((m and m[1]) or ""):lower()
-    if arg == "all" then
-      cast_all()
+  rune.alias.regex("^(missingAffects|ma|mac)(?:[ ]+(.+))?$", function(m)
+    local command = (m and m[1]) or ""
+    local rest = trim((m and m[2]) or "")
+
+    ensure_settings(true) -- re-check the character name before any command
+
+    if command == "mac" then
+      if rest:lower() == "all" then
+        cast_all()
+      else
+        cast_missing()
+      end
     else
-      cast_missing()
+      handle_command(rest)
     end
   end)
 end
 
-load_settings()
-for _, key in ipairs(DRUID_DUPLICATES) do
-  dbg("duplicate druid affect name ignored: %s", key)
+-- Reload settings as soon as charname.lua reports a new name (a backstop check also
+-- runs at each command and each affects listing).
+do
+  local module = get_charname_module()
+  if module and type(module.on_change) == "function" then
+    local ok, err = pcall(module.on_change, function(old_name, new_name)
+      ensure_settings(true)
+      dbg("character name changed: %s -> %s", tostring(old_name), tostring(new_name))
+      if report_pending and report_charname() then
+        report_pending = false
+      end
+    end)
+    if not ok then dbg("charname.on_change failed: %s", tostring(err)) end
+  end
+
+  -- After a /reload the name is lost but the game is still connected: ask for it now.
+  if module and not charname() then
+    request_charname()
+  end
 end
+
+load_ms = math.floor((os.clock() - LOAD_START) * 1000 + 0.5)
 say("v" .. VERSION .. " loaded (" .. NAME .. " or " .. SHORT .. " for help)")

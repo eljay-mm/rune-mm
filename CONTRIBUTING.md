@@ -4,7 +4,7 @@ This repository (https://github.com/eljay-mm/rune-mm) is a collection of Lua plu
 
 ## Project context
 
-- Target environment: Rune client with horstgs' MM configuration
+- Target environment: Rune client (https://runemud.com and https://github.com/mmcdole/rune) with horstgs' MM configuration (https://github.com/horstgs/rune-materiamagica-public)
 - Development terminal: Ghostty on Debian 13; plugins should also work on Windows and macOS (see [Cross-platform](#cross-platform))
 - Game: Materia Magica at materiamagica.com
 - Persistent settings: use `rune.store`, not separate config files, unless a plugin explicitly requires otherwise

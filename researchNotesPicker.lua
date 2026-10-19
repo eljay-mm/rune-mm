@@ -1,8 +1,15 @@
 -- Filename: eljayPlugins/researchNotesPicker.lua
--- Purpose: Turns the output of the research list into a searchable picker that stays open for repeat thesis purchases, handling the notes around the session.
--- Version: 1.10
--- Date: 2026-Oct-16
+-- Purpose: Turns research-list output into a searchable picker for repeat thesis purchases and handles the notes around the session.
+-- Version: 1.13
+-- Date: 2026-Oct-19
+--[[
+TODO:
+- insert planning notes here between revisions.
+]]
 -- Changelog:
+--   1.13 Standardized help and command handling; clarified trigger and debug toggles.
+--   1.12 Measure load time once after initialization and show the fixed value in help.
+--   1.11 Brought help, persistent toggles, load timing and footer in line with repo conventions.
 --   1.10 Persisted settings, fixed debounce races, and made pick safe during an active session.
 --   1.9  Brought to standard: researchNotesPicker command with rnp short alias, bare help,
 --        trigger on/off toggle, debug toggle, loader line and version footer.
@@ -10,34 +17,34 @@
 --   1.7  Original implementation.
 --
 -- How it works:
---   * A trigger watches for thesis rows in the research list output, e.g.
---       "     1) A thesis pertaining to Armor      75    No limit     [        253 gold]"
---     and collects number, subject, level, amount and cost. The row must contain
---     "A thesis pertaining to", so ordinary shop lists never open the picker.
+--   * A trigger watches for thesis rows in research-list output and collects the number,
+--     subject, level, amount and cost. Rows must contain "A thesis pertaining to", so
+--     ordinary shop lists do not open the picker.
 --   * A debounce timer opens the picker 0.4 seconds after the last captured row.
---   * When a new picker session opens, "rem notes" is sent (inventory must be free of held notes).
---   * Each selection (Enter/Tab) sends "read research buy <n>;bind thesis notes" while the
---     notes are still in inventory, then reopens the picker for the next purchase.
---   * Esc cannot be trapped: Rune's modal picker handles all keys itself and has no cancel
---     callback. While a session is active, an input hook sends "hold notes" before the next
---     line you type or send. "done" sends "hold notes" immediately.
---   * Typing in the picker fuzzy-filters on subject name, number or cost.
---   * "pick" reopens the picker with the last list without asking the server again.
---   * The rrl and rrr aliases are NOT defined here; they come from an external definition.
---   * Nothing is gagged: the normal research list output still shows in the main window.
+--   * A new picker session sends "rem notes". Selecting a thesis sends
+--     "read research buy <n>;bind thesis notes", then reopens the picker for repeat purchases.
+--   * The picker filters by subject, number or cost. "pick" reopens the last list;
+--     "done" sends "hold notes". If the picker is dismissed, the next submitted input
+--     sends "hold notes".
+--   * The rrl and rrr aliases are not defined here; they come from an external definition.
+--   * Nothing is gagged: the normal research-list output remains visible.
 --
--- Commands (typed bare, no / prefix; rnp is the short alias for researchNotesPicker):
+-- Commands (typed bare, no "/"; rnp is the short alias for researchNotesPicker):
 --   researchNotesPicker                 show this help
---   researchNotesPicker on|off          enable or disable the thesis list trigger
---   researchNotesPicker debug on|off    enable or disable debug messages (default off)
---   researchNotesPicker pick            reopen the last research picker (alias: rrpick)
---   researchNotesPicker done            put the notes back (alias: rrdone)
+--   rnp                                 show this help
+--   researchNotesPicker on|off          enable or disable the thesis-list trigger
+--   researchNotesPicker debug on|off    enable or disable debug messages
+--   researchNotesPicker pick            reopen the last research picker
+--   researchNotesPicker done            put the notes back now
 --
 -- Tweaks (top of file):
 --   * DEBOUNCE   seconds of silence after the last row before the picker opens
 
+local LOAD_STARTED = os.clock()
+
 local NAME     = "researchNotesPicker"
-local VERSION  = "1.10"
+local VERSION  = "1.13"
+local SHORT    = "rnp"
 local DEBOUNCE = 0.4 -- seconds of silence after the last row before the picker opens
 
 local STORE_ENABLED = NAME .. ".enabled"
@@ -57,17 +64,17 @@ local finished       = true
 local active         = false
 local reopening      = false
 local debounce_token = 0
+local LOAD_MS
 
 local open_picker
 
--- Display helpers (cyan "[name] " prefix, help rows via helpstyle) -----------------------
 local okH, H = pcall(require, "helpstyle")
 if not okH or type(H) ~= "table" then
   H = {
-    title   = function(t) return t end,
-    section = function(t) return t end,
-    line    = function(a, b) return "  " .. a .. "  " .. (b or "") end,
-    foot    = function(t) return t end,
+    title   = function(text) return text end,
+    section = function(text) return text end,
+    line    = function(label, text) return "  " .. label .. "  " .. (text or "") end,
+    foot    = function(text) return text end,
   }
 end
 
@@ -77,29 +84,41 @@ local function paint(text)
   return text
 end
 
-local function say(msg) rune.echo(paint("[" .. NAME .. "] ") .. msg) end
-local function emit(row) rune.echo(row) end
-local function dbg(msg) if DEBUG then say("debug: " .. msg) end end
-local function onoff(v) return v and "on" or "off" end
-
-local function show_help()
-  emit(H.title(NAME .. " (rnp)"))
-  emit(H.section("Commands"))
-  emit(H.line(NAME .. " | rnp", "show this help"))
-  emit(H.line("rnp on|off", "enable or disable the thesis list trigger"))
-  emit(H.line("rnp debug on|off", "enable or disable debug messages"))
-  emit(H.line("rnp pick | rrpick", "reopen the last research picker"))
-  emit(H.line("rnp done | rrdone", "put the notes back now"))
-  emit(H.foot(string.format("v%s  trigger=%s debug=%s", VERSION, onoff(enabled), onoff(DEBUG))))
+local function say(message)
+  rune.echo(paint("[" .. NAME .. "] ") .. message)
 end
 
--- Session logic ----------------------------------------------------------------------------
--- Single purchase: buy, then bind the thesis to the notes (notes must be in inventory).
+local function emit(row)
+  rune.echo(row)
+end
+
+local function dbg(message)
+  if DEBUG then say("debug: " .. message) end
+end
+
+local function show_help()
+  emit(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
+  emit(H.section("Commands"))
+  emit(H.line(NAME, "show this help"))
+  emit(H.line(NAME .. " on|off", "enable or disable the thesis-list trigger"))
+  emit(H.line(NAME .. " debug on|off", "enable or disable debug messages"))
+  emit(H.line(NAME .. " pick", "reopen the last research picker"))
+  emit(H.line(NAME .. " done", "put the notes back now"))
+  emit(H.line(SHORT, "short alias for " .. NAME))  
+  emit(H.foot(string.format(
+    "v%s  enabled=%s debug=%s triggers=1  load=%dms",
+    VERSION, tostring(enabled), tostring(DEBUG), LOAD_MS or 0
+  )))
+end
+
+-- Send only a numeric research-list selection to the game.
 local function buy(num)
-  if not tostring(num):match("^%d+$") then
-    dbg("refused non-numeric selection: " .. tostring(num))
+  num = tostring(num)
+  if not num:match("^%d+$") then
+    dbg("refused non-numeric selection")
     return
   end
+
   dbg("buy " .. num)
   rune.send("read research buy " .. num .. ";bind thesis notes")
 end
@@ -113,7 +132,6 @@ local function finish()
   rune.send("hold notes")
 end
 
--- fresh = true starts a session only if one is not already active.
 open_picker = function(fresh)
   if #items == 0 then
     say("No theses captured yet - run rrl first.")
@@ -176,22 +194,27 @@ rune.trigger.regex(
   { name = NAME .. "-row" }
 )
 
--- Esc safety net: if the picker was cancelled, the next submitted input returns the notes.
-rune.hooks.on("input", function(text)
+-- If the picker was dismissed, return notes on the next submitted input.
+rune.hooks.on("input", function()
   if active and not reopening then finish() end
   return nil
 end, { name = NAME .. "-esc", priority = 10 })
 
--- Commands (no / prefix) -----------------------------------------------------------------
 local function set_trigger(on)
   enabled = on
   pcall(rune.store.set, STORE_ENABLED, enabled)
-  if not on then finish() end
-  say("trigger " .. onoff(on))
+
+  if not on then
+    -- Prevent a previously scheduled debounce callback from opening the picker.
+    debounce_token = debounce_token + 1
+    finish()
+  end
+
+  say("trigger " .. (on and "on" or "off"))
 end
 
 local function run(sub, rest)
-  sub  = (sub or ""):lower()
+  sub = (sub or ""):lower()
   rest = (rest or ""):lower()
 
   if sub == "" or sub == "help" then
@@ -207,7 +230,7 @@ local function run(sub, rest)
       DEBUG = false
     end
     pcall(rune.store.set, STORE_DEBUG, DEBUG)
-    say("debug " .. onoff(DEBUG))
+    say("debug " .. (DEBUG and "on" or "off"))
   elseif sub == "pick" then
     open_picker(true)
   elseif sub == "done" then
@@ -217,12 +240,14 @@ local function run(sub, rest)
   end
 end
 
-rune.alias.exact(NAME, function(args, ctx) show_help() end)
-rune.alias.exact("rnp", function(args, ctx) show_help() end)
-rune.alias.regex("^(?:" .. NAME .. "|rnp)\\s+(\\S+)(?:\\s+(.*))?$", function(m)
-  run(m[1], m[2])
-end)
-rune.alias.exact("rrpick", function(args, ctx) open_picker(true) end)
-rune.alias.exact("rrdone", function(args, ctx) finish() end)
+local function handle_command(args)
+  local text = type(args) == "string" and args or ""
+  local sub, rest = text:match("^%s*(%S*)%s*(.-)%s*$")
+  run(sub, rest)
+end
 
-say(string.format("v%s loaded (%s or rnp for help)", VERSION, NAME))
+rune.alias.exact(NAME, handle_command)
+rune.alias.exact(SHORT, handle_command)
+
+LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
+say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))

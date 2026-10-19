@@ -1,14 +1,18 @@
 -- Filename: eljayPlugins/crystalLocator.lua
 -- Purpose: Finds the coordinates of a guild crystal from the scroll map via the MMAtlas crystal finder and shows them in the status bar.
--- Version: 3.17
--- Date: 2026-Oct-16
+-- Version: 3.19
+-- Date: 2026-Oct-19
+--[[ Todo
+- insert planning notes here between revisions.
+]]
 -- Changelog:
+--   3.19 Command names defined once as NAME / SHORT and used everywhere (help, messages, aliases,
+--        loader line); help ends with a `crystal  short alias for crystalLocator` row before the footer.
+--   3.18 Help footer reports load time (`load=Nms`); helpstyle is required lazily, on first help, so it no
+--        longer costs load time; Todo block added to the header.
 --   3.17 Help output copied from annwnQuestSearch: H.line(command, description) rows in Commands and
 --        Usage sections, sentence-case title, aligned plain fallback, and the same cyan prefix
 --        handling (rune.style.cyan, then rune.style("cyan", ...), then a plain ANSI escape).
---   3.16 Brought to standard: bare `crystalLocator`, `crystal` and `cs` are rune.alias.exact handlers
---        taking (args, ctx), so the command typed alone always shows help; help rows go through emit().
---   3.15 Clipboard tool lookup cached, tolerant statusTray lookup, restored the Inspired-by line.
 -- How it works:
 --   * Inspired by the MUSHclient plugin by Elbereth.
 --   * Receiving the scroll from Tadamir arms the locator (`crystalLocator on` arms it manually).
@@ -18,6 +22,7 @@
 --   * When coordinates come back, the plugin echoes them, prints "Walk there with: spdxy x, y" and runs `spdxy nearby x, y`.
 --   * The found coordinates are placed in the CRYSTAL slot of the statusTray bar ("x y"); the slot is cleared when a new map is submitted, on `crystalLocator off` and when you run `cc`.
 --   * Settings (and the enabled flag) are saved with rune.store; debug is never saved and is always off at load.
+--   * Load is kept light: helpstyle and the clipboard tool lookup are lazy, and the help footer shows the load time.
 --
 -- Commands (`crystal` is a short alias for `crystalLocator`):
 --   crystalLocator                show help
@@ -40,7 +45,14 @@
 --   * Clipboard writes are sanitized so the server cannot inject control codes.
 --   * Server text echoed to the screen has control characters removed.
 
-local VERSION  = "3.17"
+local LOAD_START = (os and type(os.clock) == "function") and os.clock() or nil
+local load_ms = nil   -- set once everything is registered (shown in the help footer)
+
+local VERSION  = "3.19"
+
+-- Command names: full command and short alias.
+local NAME  = "crystalLocator"
+local SHORT = "crystal"
 local ENDPOINT = "https://ooc.dune.net/mm/find-crystal-guild-vi.pl"
 local STORE_KEY = "crystallocator.settings"
 local MAX_BODY  = 200000   -- bytes of a reply that are ever parsed
@@ -167,7 +179,7 @@ local function paint(color, text)
   return (ANSI[color] or "") .. text .. ANSI_RESET
 end
 
-local PREFIX = "[crystalLocator] "
+local PREFIX = "[" .. NAME .. "] "
 
 local function say(msg)
   local line = paint("cyan", PREFIX) .. tostring(msg)
@@ -183,7 +195,7 @@ end
 
 local function dbg(msg)
   if cfg.debug then
-    rune.echo(paint("blue", "[crystalLocator:debug] ") .. msg)
+    rune.echo(paint("blue", "[" .. NAME .. ":debug] ") .. msg)
   end
 end
 
@@ -259,7 +271,7 @@ local function copyToClipboard(text)
   local cmd = EXTERNAL[method]
   local okp, p = pcall(io.popen, cmd .. " 2>/dev/null", "w")
   if not okp or not p then
-    return false, method, "io.popen is not available (try: crystalLocator set clip osc)"
+    return false, method, "io.popen is not available (try: " .. NAME .. " set clip osc)"
   end
   p:write(text)
   p:close()
@@ -355,8 +367,8 @@ local function onFound(x, y, attemptNo, attempt, how)
 
   if attemptNo > 1 then
     say(string.format(
-      "Attempt %d worked (method=%s, trim=%s). Make it the default with: crystalLocator set method %s  /  crystalLocator set trim %s",
-      attemptNo, attempt.method, tostring(attempt.trim), attempt.method, attempt.trim and "on" or "off"
+      "Attempt %d worked (method=%s, trim=%s). Make it the default with: %s set method %s  /  %s set trim %s",
+      attemptNo, attempt.method, tostring(attempt.trim), NAME, attempt.method, NAME, attempt.trim and "on" or "off"
     ))
   end
 
@@ -367,7 +379,7 @@ end
 local function onNotFound()
   state.busy = false
   say(paint("red", "MMAtlas could not find that location."))
-  say("Run " .. paint("yellow", "crystalLocator debug") .. " to inspect the submitted lines and the raw reply (" .. paint("yellow", "crystalLocator debug on") .. " for step-by-step messages next time).")
+  say("Run " .. paint("yellow", NAME .. " debug") .. " to inspect the submitted lines and the raw reply (" .. paint("yellow", NAME .. " debug on") .. " for step-by-step messages next time).")
 end
 
 -- Submit a block (list of lines), trying fallbacks if enabled
@@ -485,7 +497,7 @@ local function onCapture(_, ctx)
 
   if #lines == 0 then
     say(paint("red", "Capture came back empty."))
-    say("Try: crystalLocator set lines <n>  and  crystalLocator set mode count   (ends capture by line count instead of at a blank line)")
+    say("Try: " .. NAME .. " set lines <n>  and  " .. NAME .. " set mode count   (ends capture by line count instead of at a blank line)")
     return
   end
 
@@ -525,43 +537,55 @@ end, { name = "crystal-scroll" })
 registerCapture()
 
 -- Commands & help
-local okH, H = pcall(require, "helpstyle")
-if not okH or type(H) ~= "table" then H = nil end
+-- helpstyle is required lazily (first help only), so it costs nothing at load.
+local H_module, H_tried = nil, false
+local function get_helpstyle()
+  if not H_tried then
+    H_tried = true
+    local ok, mod = pcall(require, "helpstyle")
+    if ok and type(mod) == "table" then H_module = mod end
+  end
+  return H_module
+end
 
 local function onoff(flag) return flag and "on" or "off" end
 
 -- Version first, no plugin name, one footer row.
 local function status_line()
-  return string.format("v%s  enabled=%s armed=%s debug=%s",
-    VERSION, onoff(state.enabled), onoff(state.armed), onoff(cfg.debug))
+  return string.format("v%s  enabled=%s armed=%s debug=%s%s",
+    VERSION, onoff(state.enabled), onoff(state.armed), onoff(cfg.debug),
+    load_ms and (" load=" .. load_ms .. "ms") or "")
 end
 
 local HELP_COMMANDS = {
-  { "crystalLocator",                "show this summary (short alias: crystal)" },
-  { "crystalLocator on",             "enable and arm the locator" },
-  { "crystalLocator off",            "disable the locator and clear the statusTray CRYSTAL slot" },
-  { "crystalLocator last",           "display the last crystal location" },
-  { "crystalLocator debug",          "show the submitted lines (with markers) and the raw reply" },
-  { "crystalLocator debug on|off",   "toggle debug messages while processing (default off)" },
-  { "crystalLocator copy",           "copy the last submitted map block to the clipboard" },
-  { "crystalLocator copytest",       "copy a 3-line test text to check the clipboard path" },
-  { "crystalLocator resend",         "resubmit the last captured block" },
-  { "crystalLocator log",            "save block and reply to crystal_debug.txt in the temp folder" },
-  { "crystalLocator set",            "list settings" },
-  { "crystalLocator set <key> <v>",  "change a setting (saved)" },
+  { NAME,                          "show this summary" },
+  { NAME .. " on",                 "enable and arm the locator" },
+  { NAME .. " off",                "disable the locator and clear the statusTray CRYSTAL slot" },
+  { NAME .. " last",               "display the last crystal location" },
+  { NAME .. " debug",              "show the submitted lines (with markers) and the raw reply" },
+  { NAME .. " debug on|off",       "toggle debug messages while processing (default off)" },
+  { NAME .. " copy",               "copy the last submitted map block to the clipboard" },
+  { NAME .. " copytest",           "copy a 3-line test text to check the clipboard path" },
+  { NAME .. " resend",             "resubmit the last captured block" },
+  { NAME .. " log",                "save block and reply to crystal_debug.txt in the temp folder" },
+  { NAME .. " set",                "list settings" },
+  { NAME .. " set <key> <v>",      "change a setting (saved)" },
 }
 
+-- The short-alias row comes last, just before the footer.
 local HELP_USAGE = {
   { "settings keys", "debug, method(post|get), lines, mode(blank|count), trim, fallback, copy, clip, timeout" },
-  { "cs",            "shorthand for crystalLocator last" },
+  { "cs",            "shorthand for " .. NAME .. " last" },
   { "cl",            "look crystalQuest" },
   { "cc",            "give tadamir Tadamir;drop crystalQuest;sac crystalQuest, and clear the statusTray CRYSTAL slot" },
   { "tc",            "take crystal" },
+  { SHORT,           "short alias for " .. NAME },
 }
 
 local function showHelp()
   -- One status row, starting with the version, as the footer.
   local status = status_line()
+  local H = get_helpstyle()
 
   local styled = H and pcall(function()
     emit(H.title("Crystal locator"))
@@ -614,7 +638,7 @@ end
 local function setSetting(key, val)
   local spec = SETTINGS[key]
   if not spec then
-    say("Unknown setting '" .. key .. "'. Type 'crystalLocator set' to list them.")
+    say("Unknown setting '" .. key .. "'. Type '" .. NAME .. " set' to list them.")
     return
   end
   if spec == "bool" then
@@ -703,7 +727,7 @@ local commands = {
     arg = (arg or ""):lower()
     if arg == "" then showDebug(); return end
     local b = parseBool(arg)
-    if b == nil then say("Usage: crystalLocator debug on|off   (no argument shows the last submitted block)"); return end
+    if b == nil then say("Usage: " .. NAME .. " debug on|off   (no argument shows the last submitted block)"); return end
     cfg.debug = b
     say("Debug messages " .. (b and "on" or "off"))
   end,
@@ -755,8 +779,8 @@ local function dispatch(args, ctx)
   end
 end
 
-rune.alias.exact("crystalLocator", dispatch)
-rune.alias.exact("crystal", dispatch)
+rune.alias.exact(NAME, dispatch)
+rune.alias.exact(SHORT, dispatch)
 
 -- Crystal quest item aliases (map keyword: crystalQuest)
 -- cc: hand in the crystal, then clear the statusTray CRYSTAL slot. The commands are
@@ -771,4 +795,8 @@ rune.alias.exact("tc", "take crystal")
 rune.alias.exact("CrystalLocator:help", function() showHelp() end)
 rune.alias.exact("cs", function() commands.last() end)
 
-say("v" .. VERSION .. " loaded (crystalLocator or crystal for help)")
+if LOAD_START then
+  load_ms = math.floor((os.clock() - LOAD_START) * 1000 + 0.5)
+end
+
+say("v" .. VERSION .. " loaded (" .. NAME .. " or " .. SHORT .. " for help)")

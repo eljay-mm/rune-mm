@@ -1,8 +1,14 @@
 -- Filename: eljayPlugins/highlights.lua
 -- Purpose: Highlights notable items and mobs in game output for easy recognition.
--- Version: 2.5
--- Date: 2026-Oct-16
+-- Version: 2.6
+-- Date: 2026-Oct-19
+--[[
+Todo:
+- insert planning notes here between revisions.
+]]
 -- Changelog:
+--   2.6  Help footer now reports load time (enabled/debug/load). Faster load: the per-item lookup tables
+--        are built on the first match (or `highlights list`) instead of at startup. Behaviour unchanged.
 --   2.5  Display aligned with annwnQuestSearch: paint/say helpers, help rows through emit(),
 --        bare commands as exact aliases taking (args, ctx). Highlight behaviour is unchanged.
 --   2.4  Fixed help not showing (helpstyle text is now echoed). Commands are single exact aliases.
@@ -15,12 +21,14 @@
 -- How it works:
 --   * All category lists are joined into a single named regex trigger, so each line is scanned once.
 --   * Only when a line matches is the category found (first in list order wins) with plain-text lookups.
+--   * Those lookup tables are built lazily on the first match, which keeps load time low.
 --   * The matching line is re-emitted in the category colour using rune.style.<color>().
 --   * If a colour is unavailable the line is passed through unstyled.
 --   * Turning highlights off disables the trigger handle, so there is no per-line cost while off.
 --   * Debug (default off) echoes the category that matched each line.
 --   * Output uses paint/say helpers, and help rows from helpstyle go through emit() (rune.echo).
 --   * on/off and debug are saved with rune.store and restored on load.
+--   * The help footer shows version, enabled, debug and load time in milliseconds.
 --
 -- Commands:
 --   highlights              - show this command summary
@@ -29,8 +37,12 @@
 --   highlights list         - list categories, colours and entry counts
 --   hl                      - short alias for highlights
 
+local clock   = os.clock or function() return 0 end
+local T0      = clock()
+
 local NAME    = "highlights"
-local VERSION = "2.5"
+local VERSION = "2.6"
+local load_ms = 0
 
 local state = { enabled = true, debug = false }
 
@@ -100,22 +112,31 @@ local HIGHLIGHTS = {
   },
 }
 
--- Build lookup tables once at load (needles keep each pattern's trailing-space rule) ------
+-- Join the category patterns for the single trigger; needle tables are built lazily ------------
 
 local patterns = {}
-for _, entry in ipairs(HIGHLIGHTS) do
-  local body = entry.pattern:match("^%((.*)%)%s*$")
-  local suffix = entry.pattern:sub(-1) == " " and " " or ""
-  entry.needles = {}
-  for item in body:gmatch("[^|]+") do entry.needles[#entry.needles + 1] = item .. suffix end
-  patterns[#patterns + 1] = entry.pattern
-end
+for i, entry in ipairs(HIGHLIGHTS) do patterns[i] = entry.pattern end
 
 local COMBINED = table.concat(patterns, "|")
+
+local needles_ready = false
+
+-- Needles keep each pattern's trailing-space rule; built on the first match or `highlights list`
+local function build_needles()
+  if needles_ready then return end
+  for _, entry in ipairs(HIGHLIGHTS) do
+    local body = entry.pattern:match("^%((.*)%)%s*$")
+    local suffix = entry.pattern:sub(-1) == " " and " " or ""
+    entry.needles = {}
+    for item in body:gmatch("[^|]+") do entry.needles[#entry.needles + 1] = item .. suffix end
+  end
+  needles_ready = true
+end
 
 -- Category lookup runs only on lines the combined trigger already matched ------------------
 
 local function classify(line)
+  build_needles()
   for _, entry in ipairs(HIGHLIGHTS) do
     for _, needle in ipairs(entry.needles) do
       if line:find(needle, 1, true) then return entry end
@@ -147,10 +168,8 @@ end
 
 -- Help -------------------------------------------------------------------------
 
-local function onoff(flag) return flag and "on" or "off" end
-
 local function status_text()
-  return "v" .. VERSION .. "  highlights=" .. onoff(state.enabled) .. " debug=" .. onoff(state.debug)
+  return "v" .. VERSION .. "  enabled=" .. tostring(state.enabled) .. " debug=" .. tostring(state.debug) .. " load=" .. load_ms .. "ms"
 end
 
 -- emit: helpstyle rows are returned as text, so echo whatever comes back (string or array of strings)
@@ -185,6 +204,7 @@ local function show_help()
 end
 
 local function show_list()
+  build_needles()
   for _, entry in ipairs(HIGHLIGHTS) do
     rune.echo(paint(entry.color, string.format("  %-18s %-8s %d entries", entry.name, entry.color, #entry.needles)))
   end
@@ -227,5 +247,7 @@ for _, cmd in ipairs({ "highlights", "hl" }) do
   local ok, err = pcall(rune.alias.exact, cmd, guarded(function(args, ctx) handle_command(args) end))
   if not ok then say("alias '" .. cmd .. "' failed: " .. tostring(err)) end
 end
+
+load_ms = math.floor((clock() - T0) * 1000 + 0.5)
 
 say("v" .. VERSION .. " loaded (highlights or hl for help)")

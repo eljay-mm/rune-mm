@@ -1,12 +1,15 @@
 -- Filename: eljayPlugins/bardSongTLAs.lua
 -- Purpose: Provide three-letter aliases for bard songs.
--- Version: 2.6
+-- Version: 2.9
 -- Date: 2026-Oct-19
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
+--   2.9  Removed the Song aliases section from help.
+--   2.8  Moved the short alias after the debug command in help and removed the redundant list-help wording.
+--   2.7  Standardized command help, footer, alias documentation, and registered-binding count.
 --   2.6  Added a list subcommand to show all configured TLAs and their songs.
 --   2.5  Standardized header, help, persistent toggles, command aliases, and load-time reporting.
 --   2.4  Cyan prefix and loader line; all song TLAs share a single alias; commands use one regex.
@@ -23,7 +26,7 @@ TODO:
 --
 -- Commands (type without "/"; short alias: bard):
 --   bardSongTLAs                 show this help
---   bard                          show this help
+--   bard                          short alias for bardSongTLAs
 --   bardSongTLAs list            show all configured TLAs
 --   bard list                    show all configured TLAs
 --   bardSongTLAs on|off          enable / disable the song aliases
@@ -39,7 +42,7 @@ local LOAD_STARTED = os.clock()
 
 local NAME = "bardSongTLAs"
 local SHORT = "bard"
-local VERSION = "2.6"
+local VERSION = "2.9"
 local SETTINGS_KEY = "bardSongTLAs.settings"
 
 local enabled = true
@@ -163,7 +166,7 @@ end
 
 local function help()
   local footer = string.format(
-    "v%s  enabled=%s debug=%s  load=%dms",
+    "v%s  enabled=%s debug=%s bindings=3  load=%dms",
     VERSION,
     bool_text(enabled),
     bool_text(debug_enabled),
@@ -176,11 +179,8 @@ local function help()
     rune.echo(H.line(NAME, "show this help"))
     rune.echo(H.line(NAME .. " list", "show all configured TLAs"))
     rune.echo(H.line(NAME .. " on|off", "enable / disable the song aliases"))
-    rune.echo(H.line(NAME .. " debug on|off", "toggle debug messages"))
-    rune.echo(H.section("Song aliases"))
-    rune.echo(H.line("bfi", "play 'fireball'"))
-    rune.echo(H.line("bcl", "play 'cure light'"))
-    rune.echo(H.line("See " .. NAME .. " list", "show every configured TLA"))
+    rune.echo(H.line(NAME .. " debug on|off", "enable / disable debug messages"))
+    rune.echo(H.line(SHORT, "short alias for " .. NAME))
     rune.echo(H.foot(footer))
     return
   end
@@ -189,10 +189,8 @@ local function help()
   rune.echo("  " .. NAME .. "              show this help")
   rune.echo("  " .. NAME .. " list         show all configured TLAs")
   rune.echo("  " .. NAME .. " on|off       enable / disable the song aliases")
-  rune.echo("  " .. NAME .. " debug on|off toggle debug messages")
-  rune.echo("  bfi                       play 'fireball'")
-  rune.echo("  bcl                       play 'cure light'")
-  rune.echo("  See " .. NAME .. " list     show every configured TLA")
+  rune.echo("  " .. NAME .. " debug on|off enable / disable debug messages")
+  rune.echo("  " .. SHORT .. "                   short alias for " .. NAME)
   rune.echo(footer)
 end
 
@@ -254,6 +252,8 @@ local function handle_command(args)
   help()
 end
 
+load_settings()
+
 -- Bare commands are exact aliases (not slash commands).
 rune.alias.exact(NAME, function(args, ctx)
   handle_command(args)
@@ -282,10 +282,9 @@ rune.alias.regex("^(" .. table.concat(names, "|") .. ")$", function(matches, ctx
   rune.send(command)
 end)
 
-load_settings()
 load_ms = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
 
 say("v" .. VERSION .. " loaded (" .. NAME .. " or " .. SHORT .. " for help)")
 
--- Performance: builds the TLA lookup and regex once at load; no runtime file or network I/O.
--- Security: only curated song names are sent; command input is used only to select fixed toggles.
+-- Performance: Builds the TLA lookup and regex once at load; no runtime file or network I/O.
+-- Security: Only curated song names are sent; command input is used only to select fixed toggles.

@@ -1,43 +1,48 @@
 -- Filename: eljayPlugins/characterLog.lua
 -- Purpose: Per-character, per-day session logging via rune.log (GMCP name)
--- Version: 2.5
--- Date: 2026-Oct-14
+-- Version: 2.8
+-- Date: 2026-Oct-19
+--[[
+- insert planning notes here between revisions.
+]]
 --
 -- Changelog:
---   2.5  Main command renamed to `characterLog`, with `charlog` kept as the
---        short alias (one alias row handles both). Message prefix is now
---        "[characterLog]". Saved settings and store keys are unchanged.
---   2.4  Output style copied from jmcSolver: the "[charlog]" plugin name is
---        coloured (cyan; blue for debug) via rune.style. Help fixed to echo
---        the strings returned by helpstyle (H.title / H.section / H.line /
---        H.foot), as jmcSolver does. Load stays a single row.
---   2.3  Removed log pruning (`charlog keep`) entirely. Load output reduced
---        to a single row: the full log path including the character name.
---   2.2  Cross-platform (Linux/macOS/Windows): no POSIX-only shell tools.
---        Directory creation picks mkdir for the OS; log retention now lists
---        the directory and deletes with os.remove (date taken from the file
---        name) instead of `find`; path comparison ignores \ vs /.
---   2.1  Added `charlog on|off` plugin toggle (persisted) and a general
---        `charlog debug` toggle (default off). Help now uses helpstyle
---        with the version in the status footer. Shell paths are quoted
---        safely, log directories are created private (umask 077). Removed
---        the RUNE_CHARACTER dependency; renamed leftover y_ references.
---   2.0  Daily files, reload-safe session marker, timestamps, retention.
+--   2.8  Help footer row now shows the detected character name (char=).
+--   2.7  Help output fixed: the alias row used undefined SHORT / NAME (a
+--        runtime error); both are now defined once and used for the alias
+--        row, the help rows and the alias pattern. Help follows the jmcSolver layout:
+--        "Commands:" section, command rows, short-alias row, then the
+--        footer row (no blank row).
+--   2.6  Faster load: helpstyle is loaded on first help, the housekeeping
+--        timer starts when the character is first known, and the log
+--        directory is only created if rune.log.start fails (no shell spawn
+--        in the common case). Character name now comes from horstgs'
+--        charname.lua (GMCP Char.Base kept as fallback and as the re-login
+--        nudge). Load time is reported in the help footer. `characterLog on`
+--        now starts logging immediately if the name is already known.
+--        Fixed VERSION constant (said 2.4).
+--   2.5  Main command renamed to `characterLog`, `charlog` kept as the short
+--        alias (one alias row). Message prefix is "[characterLog]".
+--   2.0-2.4  Daily files, reload-safe session marker, timestamps, on/off and
+--        debug toggles, jmc-style coloured output, cross-platform paths,
+--        single-row load output, log pruning removed.
 --
 -- How it works:
---   * The character name comes from GMCP (see PACKAGES / NAME_FIELDS below),
---     lowercased for file and directory names. One log file per character
---     per day; logon/logoff within the same day appends to that day's file:
+--   * The character name comes from charname.lua (charname.get() and
+--     charname.on_change()), lowercased for file and directory names. If
+--     that module is missing, GMCP Char.Base is used directly. One log file
+--     per character per day; logon/logoff within the same day appends:
 --         <config_dir>/logs/<character>/<character>_<YYYY-MM-DD>.log
 --     A session that runs past midnight rolls over to the next day's file.
 --   * On load/login the plugin prints one row, with the coloured plugin
 --     name: the full log path, which includes the character name.
---   * Logging starts when the character name arrives via GMCP. Server lines
+--   * Logging starts when the character name is known. Server lines
 --     received before that are buffered and written once the log starts.
 --   * Reload-safe: while a character is known, a session marker (name +
 --     time) is refreshed in the store every 30s. If the plugin loads and
 --     finds a fresh marker, it resumes immediately instead of waiting for
---     GMCP, and takes over a log that is already running for that character.
+--     the name, and takes over a log that is already running for that
+--     character.
 --   * Settings (auto, raw, time) are saved per character in rune.store.
 --     The plugin on/off state is saved globally in rune.store.
 --
@@ -45,7 +50,7 @@
 --     characterLog on|off          enable / disable the plugin (default on)
 --     characterLog start | stop    start / stop logging now
 --     characterLog status          show whether/where logging is active
---     characterLog name            show the character name received via GMCP
+--     characterLog name            show the current character name
 --     characterLog debug [on|off]  toggle debug messages (default off)
 --     characterLog auto on|off     start logging automatically on login (default on)
 --     characterLog raw on|off      keep ANSI colours in the log (default on;
@@ -61,10 +66,16 @@
 --     is still written by Rune's default "log-echo" hook, without a timestamp.
 --   * Saved per-character settings override the defaults below.
 
-local VERSION = "2.4"
+local T0 = os.clock()
 
--- GMCP packages that might carry the character name, and the fields to try.
-local PACKAGES = { "Char.Info", "Char.Base", "Char.Status", "Char.Name" }
+local VERSION = "2.8"
+
+-- Command names: full command and short alias.
+local NAME = "characterLog"
+local SHORT = "charlog"
+
+-- Fallback name source if charname.lua is unavailable.
+local GMCP_PACKAGE = "Char.Base"
 local NAME_FIELDS = { "name", "charname", "character", "char" }
 
 local TIME_FORMAT = "[%H:%M:%S] "
@@ -79,18 +90,30 @@ local SESSION_MAX_AGE = 90
 -- the command rename.
 local SESSION_KEY = "charlog.session"
 local ENABLED_KEY = "charlog.enabled"
+local SETTINGS_PREFIX = "charlog.settings."
 
--- Help styling (copied from autopouch.lua / jmcSolver.lua): the helpstyle
--- functions return strings that are printed with rune.echo. Plain fallback
--- if the module is unavailable.
-local okH, H = pcall(require, "helpstyle")
-if not okH or type(H) ~= "table" then
-    H = {
-        title   = function(t) return t end,
-        section = function(t) return t end,
-        line    = function(c, d) return "  " .. c .. "  " .. (d or "") end,
-        foot    = function(t) return t end,
-    }
+-- charname.lua (horstgs): optional, loaded once at load (already cached by
+-- Rune if another plugin required it).
+local okCN, CN = pcall(require, "charname")
+if not okCN or type(CN) ~= "table" then CN = nil end
+
+-- helpstyle is loaded on first use (keeps load time down).
+local H
+local function helpstyle()
+    if H == nil then
+        local ok, mod = pcall(require, "helpstyle")
+        if ok and type(mod) == "table" then
+            H = mod
+        else
+            H = {
+                title   = function(t) return t end,
+                section = function(t) return t end,
+                line    = function(c, d) return "  " .. c .. "  " .. (d or "") end,
+                foot    = function(t) return t end,
+            }
+        end
+    end
+    return H
 end
 
 -- Colour helpers (as in jmcSolver): rune.style.<colour>, plain if missing.
@@ -103,8 +126,10 @@ local function paint(color, text)
     return text
 end
 
+local say_prefix
 local function say(msg)
-    rune.echo(paint("cyan", "[characterLog] ") .. msg)
+    say_prefix = say_prefix or paint("cyan", "[characterLog] ")
+    rune.echo(say_prefix .. msg)
 end
 
 local function sanitize(name)
@@ -130,7 +155,7 @@ local function qpath(p)
     return "'" .. (p:gsub("'", "'\\''")) .. "'"
 end
 
--- Identity (set from GMCP)
+-- Identity (set from charname.lua / GMCP)
 local charname = nil
 local settings_key = nil
 local log_dir = nil
@@ -148,9 +173,14 @@ local log_day = nil                -- YYYY-MM-DD of the file currently being wri
 local pending = {}                 -- lines received before the name is known
 local dir_ready = {}               -- directories we already created
 local tick_count = 0
+local tick_started = false
+local load_ms = 0
 
+local dbg_prefix
 local function dbg(msg)
-    if debug_on then rune.echo(paint("blue", "[characterLog:debug] ") .. msg) end
+    if not debug_on then return end
+    dbg_prefix = dbg_prefix or paint("blue", "[characterLog:debug] ")
+    rune.echo(dbg_prefix .. msg)
 end
 
 -----------------------------------------------------------------------
@@ -270,6 +300,7 @@ local function log_path_for(day)
     return string.format("%s/%s_%s.log", log_dir, charname, day)
 end
 
+-- Create the log directory (only called when rune.log.start failed).
 local function ensure_dir()
     if dir_ready[log_dir] then return true end
     local q = qpath(log_dir)
@@ -295,7 +326,7 @@ local function start_log()
         return
     end
     if not charname then
-        say("character name not yet received via GMCP; try again shortly")
+        say("character name not yet known; try again shortly")
         return
     end
 
@@ -306,10 +337,18 @@ local function start_log()
         return
     end
 
-    if not ensure_dir() then return end
-
     local day = today()
-    local path, err = rune.log.start(log_path_for(day), { raw = raw_mode })
+    local target = log_path_for(day)
+
+    -- Try first (directory usually exists); only spawn a shell to create
+    -- the directory if the start fails, then retry once.
+    local path, err = rune.log.start(target, { raw = raw_mode })
+    if not path then
+        dbg("log start failed (" .. tostring(err) .. "); creating directory")
+        if not ensure_dir() then return end
+        path, err = rune.log.start(target, { raw = raw_mode })
+    end
+
     if path then
         started_by_us = true
         writing = true
@@ -355,66 +394,9 @@ local function stop_log(quiet)
     end
 end
 
-local function status_line()
-    local active = rune.log.status()
-    return string.format("v%s  on=%s auto=%s raw=%s time=%s debug=%s log=%s",
-        VERSION, tostring(enabled), tostring(auto_start), tostring(raw_mode),
-        tostring(timestamps), tostring(debug_on), active and "active" or "idle")
-end
-
-local function show_status()
-    local active = rune.log.status()
-    say("character: " .. (charname or "(not yet received via GMCP)"))
-    say((active and ("logging to " .. active) or "not logging"))
-    if log_dir then
-        say("log directory: " .. log_dir)
-    end
-    say(status_line())
-end
-
-local function show_help()
-    rune.echo(H.title("characterLog - per-character daily session logging (name via GMCP)"))
-    rune.echo(H.section("Commands (short alias: charlog)"))
-    rune.echo(H.line("characterLog on|off", "enable or disable the plugin (default on)"))
-    rune.echo(H.line("characterLog start | stop", "start or stop logging now"))
-    rune.echo(H.line("characterLog status | name", "show log state / GMCP character name"))
-    rune.echo(H.line("characterLog debug [on|off]", "toggle debug messages (default off)"))
-    rune.echo(H.line("characterLog auto on|off", "start logging on login (default on)"))
-    rune.echo(H.line("characterLog raw on|off", "keep ANSI colours (default on; less -R)"))
-    rune.echo(H.line("characterLog time on|off", "timestamp each logged line (default on)"))
-    rune.echo("")
-    rune.echo(H.foot(status_line()))
-end
-
 -----------------------------------------------------------------------
--- Character identity (GMCP, or session marker after a reload)
+-- Character identity (charname.lua, GMCP fallback, or session marker)
 -----------------------------------------------------------------------
-
-local function adopt_name(raw_name)
-    local name = sanitize(raw_name)
-    if name == "" or name == charname then return end
-
-    -- Switched characters: close the previous character's log.
-    if charname and started_by_us and rune.log.status() then
-        rune.log.stop()
-        started_by_us = false
-        writing = false
-        log_day = nil
-    end
-
-    charname = name
-    settings_key = "charlog.settings." .. name
-    log_dir = (rune.config_dir or ".") .. "/logs/" .. name
-    load_settings()
-    write_marker()
-
-    dbg("character " .. name .. ", log directory " .. log_dir)
-
-    if not auto_start then
-        pending = {}
-    end
-    claim_or_start()
-end
 
 local function name_from(data)
     if type(data) == "string" then
@@ -431,6 +413,15 @@ local function name_from(data)
     return nil
 end
 
+-- Current name: charname.lua first, otherwise whatever the data carries.
+local function current_name(data)
+    if CN and CN.get then
+        local ok, n = pcall(CN.get)
+        if ok and type(n) == "string" and n ~= "" then return n end
+    end
+    return name_from(data)
+end
+
 local function describe(data)
     if type(data) ~= "table" then return tostring(data) end
     local parts = {}
@@ -443,27 +434,9 @@ local function describe(data)
     return table.concat(parts, " ")
 end
 
-load_enabled()
-
-if rune.gmcp and rune.gmcp.on then
-    for _, package in ipairs(PACKAGES) do
-        pcall(rune.gmcp.on, package, function(data)
-            if not enabled then return end
-            if debug_on then
-                dbg(package .. ": " .. describe(data))
-            end
-            local n = name_from(data)
-            if n then adopt_name(n) end
-        end)
-    end
-end
-
------------------------------------------------------------------------
--- Single housekeeping timer: status sync, midnight rollover, heartbeat
------------------------------------------------------------------------
-
-rune.timer.every(TICK_SECONDS, function()
-    if not enabled then return end
+-- Housekeeping tick: status sync, midnight rollover, marker heartbeat.
+local function tick()
+    if not enabled or not charname then return end
 
     -- Pick up logs started or stopped outside this plugin (e.g. `log`).
     sync_writing()
@@ -484,7 +457,107 @@ rune.timer.every(TICK_SECONDS, function()
         tick_count = 0
         write_marker()
     end
-end, { name = "charlog-tick" })
+end
+
+-- The timer is only registered once a character is known.
+local function ensure_tick()
+    if tick_started then return end
+    tick_started = true
+    rune.timer.every(TICK_SECONDS, tick, { name = "charlog-tick" })
+end
+
+local function adopt_name(raw_name)
+    local name = sanitize(raw_name)
+    if name == "" or name == charname then return end
+
+    -- Switched characters: close the previous character's log.
+    if charname and started_by_us and rune.log.status() then
+        rune.log.stop()
+        started_by_us = false
+        writing = false
+        log_day = nil
+    end
+
+    charname = name
+    settings_key = SETTINGS_PREFIX .. name
+    log_dir = (rune.config_dir or ".") .. "/logs/" .. name
+    load_settings()
+    write_marker()
+    ensure_tick()
+
+    dbg("character " .. name .. ", log directory " .. log_dir)
+
+    if not auto_start then
+        pending = {}
+    end
+    claim_or_start()
+end
+
+-----------------------------------------------------------------------
+-- Status and help
+-----------------------------------------------------------------------
+
+local function status_line()
+    local active = rune.log.status()
+    return string.format("v%s  char=%s on=%s auto=%s raw=%s time=%s debug=%s log=%s load=%dms",
+        VERSION, charname or current_name() or "none", tostring(enabled), tostring(auto_start), tostring(raw_mode),
+        tostring(timestamps), tostring(debug_on), active and "active" or "idle",
+        load_ms)
+end
+
+local function show_status()
+    local active = rune.log.status()
+    say("character: " .. (charname or current_name() or "(not yet known)"))
+    say(active and ("logging to " .. active) or "not logging")
+    if log_dir then
+        say("log directory: " .. log_dir)
+    end
+    say(status_line())
+end
+
+local function show_help()
+    local h = helpstyle()
+    rune.echo(h.title(NAME .. " - per-character daily session logging"))
+    rune.echo(h.section("Commands:"))
+    rune.echo(h.line(NAME .. " on|off", "enable or disable the plugin (default on)"))
+    rune.echo(h.line(NAME .. " start | stop", "start or stop logging now"))
+    rune.echo(h.line(NAME .. " status | name", "show log state / character name"))
+    rune.echo(h.line(NAME .. " debug [on|off]", "toggle debug messages (default off)"))
+    rune.echo(h.line(NAME .. " auto on|off", "start logging on login (default on)"))
+    rune.echo(h.line(NAME .. " raw on|off", "keep ANSI colours (default on; less -R)"))
+    rune.echo(h.line(NAME .. " time on|off", "timestamp each logged line (default on)"))
+    rune.echo(h.line(SHORT, "short alias for " .. NAME))
+    rune.echo(h.foot(status_line()))
+end
+
+-----------------------------------------------------------------------
+-- Name sources
+-----------------------------------------------------------------------
+
+load_enabled()
+
+-- charname.lua tells us when the name changes (login, character switch).
+if CN and CN.on_change then
+    pcall(CN.on_change, function(new)
+        if not enabled then return end
+        local n = (type(new) == "string" and new ~= "") and new or current_name()
+        if n then adopt_name(n) end
+    end)
+end
+
+-- One GMCP listener: the only source when charname.lua is missing, and the
+-- nudge that restarts logging when the same character logs back in (the
+-- name is unchanged, so on_change does not fire).
+if rune.gmcp and rune.gmcp.on then
+    pcall(rune.gmcp.on, GMCP_PACKAGE, function(data)
+        if not enabled then return end
+        if debug_on then
+            dbg(GMCP_PACKAGE .. ": " .. describe(data))
+        end
+        local n = name_from(data) or current_name()
+        if n then adopt_name(n) end
+    end)
+end
 
 -----------------------------------------------------------------------
 -- Output logging policy
@@ -532,7 +605,7 @@ local function on_off(word, current)
 end
 
 -- One alias row: `characterLog` (main command) and `charlog` (short alias).
-rune.alias.regex("^(?:characterLog|charlog)(\\s.*)?$", function(m)
+rune.alias.regex("^(?:" .. NAME .. "|" .. SHORT .. ")(\\s.*)?$", function(m)
     local words = {}
     for word in tostring(m[1] or ""):gmatch("%S+") do
         words[#words + 1] = word:lower()
@@ -545,7 +618,12 @@ rune.alias.regex("^(?:characterLog|charlog)(\\s.*)?$", function(m)
         save_enabled()
         if enabled then
             say("plugin ON")
-            if charname then claim_or_start() end
+            if charname then
+                claim_or_start()
+            else
+                local n = current_name()
+                if n then adopt_name(n) end
+            end
         else
             if started_by_us and rune.log.status() then stop_log(true) end
             pending = {}
@@ -558,7 +636,7 @@ rune.alias.regex("^(?:characterLog|charlog)(\\s.*)?$", function(m)
     elseif action == "status" then
         show_status()
     elseif action == "name" then
-        say("character: " .. (charname or "(not yet received via GMCP)"))
+        say("character: " .. (charname or current_name() or "(not yet known)"))
     elseif action == "debug" then
         debug_on = on_off(words[2], not debug_on)
         say("debug " .. (debug_on and "ON" or "OFF"))
@@ -613,3 +691,5 @@ if resumed then
 elseif not enabled then
     say("plugin OFF; type 'characterLog on'")
 end
+
+load_ms = math.floor((os.clock() - T0) * 1000 + 0.5)

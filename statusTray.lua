@@ -72,7 +72,7 @@ local MAX_TEXT = 24  -- longest stored quest/tell text (bytes)
 
 -- Speakers whose tells must NOT turn TELL on. Edit this list: names are
 -- compared case-insensitively against the whole speaker, one- or multi-word.
-local IGNORED_SPEAKERS = { "The imp" }
+local IGNORED_SPEAKERS = { "The imp", "Wrinkled Leccinum" }
 
 local okH, H = pcall(require, "helpstyle")
 if not okH or type(H) ~= "table" then H = nil end

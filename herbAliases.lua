@@ -1,8 +1,14 @@
 -- Filename: eljayPlugins/herbAliases.lua
 -- Purpose: Provides short aliases for Herbalism mixing, throwing and eating.
--- Version: 1.5
--- Date: 2026-Oct-17
+-- Version: 1.7
+-- Date: 2026-Oct-19
+--[[
+- insert planning notes here between revisions.
+- ensure all newer m* aliases have matching h* aliases to eat/throw
+]]
 -- Changelog:
+--   1.7  Add all common mixes with their power ranges and optional quantities.
+--   1.6  Add standard help footer, persistent debug toggle and load-time reporting.
 --   1.5  Replace the numbered pick command with a searchable picker that reopens after each choice.
 --   1.4  Separate alias names and mix commands with a tab in the list and picker.
 --   1.3  Add a numbered picker for the m* aliases and their mix commands.
@@ -12,24 +18,26 @@
 --
 -- How it works:
 --   * Registers short aliases for mixing and using herbal mixtures.
---   * Optional target text is passed to the matching throw or eat command.
---   * The list and picker use the same set of m* aliases and mix commands.
+--   * Optional numeric quantities are passed to mix commands; target text is passed to use commands.
+--   * The list and picker show each common mix alias, command, and power range.
 --   * Selecting an item in the picker sends its mix command and reopens the picker.
 --   * Press Esc to close the picker.
 --
 -- Commands (type without "/"; "herb" is a short alias for "herbAliases"):
---   herbAliases / herb       show this help
---   herbAliases list         list m* aliases and their mix commands
---   herbAliases pick         open the searchable mix picker
---   herbAliases on|off       enable / disable the aliases
---   herbAliases debug        toggle debug messages
+--   herbAliases / herb          show this help
+--   herbAliases list            list common mixes, aliases, commands and power ranges
+--   herbAliases pick            open the searchable mix picker
+--   herbAliases on|off          enable / disable the aliases
+--   herbAliases debug [on|off]  toggle or set debug messages
 --
 -- Tweaks:
---   * Edit mixAliases below to change the entries shown by list and pick.
+--   * mixAliases  entries shown by list and pick.
+
+local LOAD_STARTED = os.clock()
 
 local NAME = "herbAliases"
 local SHORT = "herb"
-local VERSION = "1.5"
+local VERSION = "1.7"
 
 local STORE_ENABLED = "eljayPlugins." .. NAME .. ".enabled"
 local STORE_DEBUG = "eljayPlugins." .. NAME .. ".debug"
@@ -48,16 +56,27 @@ local debugEnabled = storedBool(STORE_DEBUG, false)
 local H = require("helpstyle")
 
 local mixAliases = {
-  { alias = "mbl", command = "mix 'blindness'" },
-  { alias = "mbp", command = "mix 'battle prowess'" },
-  { alias = "mca", command = "mix 'calm'" },
-  { alias = "mcl", command = "mix 'cure light'" },
-  { alias = "mhh", command = "mix 'halflings herb'" },
-  { alias = "mre", command = "mix 'refresh'" },
-  { alias = "mfa", command = "mix 'fatigue'" },
-  { alias = "mbb", command = "mix 'beast of burden'" },
-  { alias = "meo", command = "mix 'elemental overload'" },
+  { alias = "maw",  spell = "Awaken",                  power = "5-10" },
+  { alias = "mclt", spell = "Cause Light",             power = "11-20" },
+  { alias = "mdi",  spell = "Detect Invisibility",     power = "21-30" },
+  { alias = "mey",  spell = "Essence of Youth",        power = "31-40" },
+  { alias = "mcl",  spell = "Cure Light",              power = "41-50" },
+  { alias = "mre",  spell = "Refresh",                 power = "51-60" },
+  { alias = "maa",  spell = "Alchemical Attunement",   power = "61-70" },
+  { alias = "mfv",  spell = "Foster Vine",              power = "71-85" },
+  { alias = "mca",  spell = "Calm",                    power = "86-105" },
+  { alias = "mhh",  spell = "Halflings Herb",           power = "106-115" },
+  { alias = "mdt",  spell = "Detect Truth",             power = "116-135" },
+  { alias = "mge",  spell = "Golem Empathy",            power = "136-145" },
+  { alias = "mfa",  spell = "Fatigue",                  power = "146-155" },
+  { alias = "mpd",  spell = "Prophylactic Draught",     power = "156-170" },
+  { alias = "mbp",  spell = "Battle Prowess",           power = "171-185" },
+  { alias = "meo",  spell = "Elemental Overload",       power = "186-200" },
+  { alias = "mbb",  spell = "Beast of Burden",          power = "201-220" },
+  { alias = "mbl",  spell = "Blindness",                power = "221-240" },
 }
+
+local LOAD_MS
 
 local function onoff(value)
   return value and "on" or "off"
@@ -91,27 +110,31 @@ local function showHelp()
   rune.echo(H.title(NAME .. " (alias: " .. SHORT .. ")"))
   rune.echo(H.section("Commands"))
   rune.echo(H.line(NAME .. " | " .. SHORT, "show this help"))
-  rune.echo(H.line(NAME .. " list", "list m* aliases and their mix commands"))
+  rune.echo(H.line(NAME .. " list", "list common mixes, aliases, commands and power ranges"))
   rune.echo(H.line(NAME .. " pick", "open the searchable mix picker"))
   rune.echo(H.line(NAME .. " on|off", "enable / disable the aliases"))
-  rune.echo(H.line(NAME .. " debug", "toggle debug messages"))
-  rune.echo(H.section("Herbalism"))
-  rune.echo(H.line("mbl / mbp / mca / mcl / mhh", "mix a herbal mixture"))
-  rune.echo(H.line("mre / mfa / mbb / meo", "mix a herbal mixture"))
+  rune.echo(H.line(NAME .. " debug [on|off]", "toggle or set debug messages"))
+  rune.echo(H.section("Use aliases"))
   rune.echo(H.line("hbl / hbp / hca / hcl / hhh", "use a matching herbal mixture"))
   rune.echo(H.line("hre / hfa / hbb / heo", "use a matching herbal mixture"))
   rune.echo(H.foot(string.format(
-    "v%s  enabled=%s debug=%s",
+    "v%s  enabled=%s debug=%s bindings=39  load=%dms",
     VERSION,
     onoff(enabled),
-    onoff(debugEnabled)
+    onoff(debugEnabled),
+    LOAD_MS
   )))
 end
 
+local function mixCommand(item)
+  return "mix '" .. item.spell .. "'"
+end
+
 local function listMixAliases()
-  rune.echo(H.title("Herbalism mix aliases"))
+  rune.echo(H.title("Herbalism common mixes"))
+  rune.echo(H.line("Alias", "Mix command and power range"))
   for _, item in ipairs(mixAliases) do
-    rune.echo(item.alias .. "\t" .. item.command)
+    rune.echo(item.alias .. "\t" .. mixCommand(item) .. "  power " .. item.power)
   end
 end
 
@@ -122,8 +145,8 @@ showPicker = function()
 
   for _, item in ipairs(mixAliases) do
     items[#items + 1] = {
-      text = item.alias .. "\t" .. item.command,
-      value = item.command,
+      text = item.alias .. "\t" .. mixCommand(item) .. "  power " .. item.power,
+      value = mixCommand(item),
     }
   end
 
@@ -192,8 +215,18 @@ local function registerCommandAlias(name)
   end)
 end
 
-local function registerFixedAlias(name, command)
-  rune.alias.exact(name, function()
+local function registerMixAlias(item)
+  rune.alias.exact(item.alias, function(args)
+    local quantity = trim(args)
+    if quantity ~= "" and not quantity:match("^%d+$") then
+      say("Quantity must be a positive whole number.")
+      return
+    end
+
+    local command = mixCommand(item)
+    if quantity ~= "" then
+      command = command .. " " .. quantity
+    end
     send(command)
   end)
 end
@@ -212,31 +245,20 @@ end
 registerCommandAlias(NAME)
 registerCommandAlias(SHORT)
 
-registerFixedAlias("mbl", "mix 'blindness'")
+for _, item in ipairs(mixAliases) do
+  registerMixAlias(item)
+end
+
 registerUseAlias("hbl", "throw", "a temporarily charred herbal mixture")
-
-registerFixedAlias("mbp", "mix 'battle prowess'")
 registerUseAlias("hbp", "eat", "a flourescing magenta herbal mixture")
-
-registerFixedAlias("mca", "mix 'calm'")
 registerUseAlias("hca", "eat", "a faint yellow herbal mixture")
-
-registerFixedAlias("mcl", "mix 'cure light'")
 registerUseAlias("hcl", "eat", "a glimmering white herbal mixture")
-
-registerFixedAlias("mhh", "mix 'halflings herb'")
 registerUseAlias("hhh", "eat", "a bright green herbal mixture")
-
-registerFixedAlias("mre", "mix 'refresh'")
 registerUseAlias("hre", "eat", "a warm brown herbal mixture")
-
-registerFixedAlias("mfa", "mix 'fatigue'")
 registerUseAlias("hfa", "throw", "a sparkling gold herbal mixture")
-
-registerFixedAlias("mbb", "mix 'beast of burden'")
 registerUseAlias("hbb", "eat", "a tawny herbal mixture")
-
-registerFixedAlias("meo", "mix 'elemental overload'")
 registerUseAlias("heo", "throw", "a malevolent magenta herbal mixture")
+
+LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
 
 say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))

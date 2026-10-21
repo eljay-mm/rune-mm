@@ -1,8 +1,13 @@
 -- Filename: eljayPlugins/spellTLAs.lua
 -- Purpose: General spell Three Letter Aliases, optionally targettable.
--- Version: 3.7
--- Date: 2026-Oct-16
+-- Version: 3.8
+-- Date: 2026-Oct-20
+--[[
+TODO:
+- insert planning notes here between revisions.
+]]
 -- Changelog:
+--   3.8  Standard pass: NAME/SHORT constants, help footer, load-time reporting, and cyan loader prefix.
 --   3.7  Standard pass: spellTLAs command (short alias spell), on/off and debug persisted, loader line, version footer.
 --   3.6  Repo-style header and command summary cleanup; behavior preserved.
 --   3.5  cwo = word of recall (replaces wor); clre removed; header and help brought in line.
@@ -13,39 +18,44 @@
 --   3.0  merged ySpells.xml + ySpells2.xml.
 --
 -- How it works:
---   * cast("cXX", "spell name") adds a spell to a lookup table:  cXX [target] -> cast 'spell name' [target]
+--   * cast("cXX", "spell name") adds a spell to a lookup table: cXX [target] -> cast 'spell name' [target]
 --   * every key starting with "c" also gets an n-alias: nXX -> aff clear 'spell name'
---       e.g. cdm = cast 'dispel magic', ndm = aff clear 'dispel magic'  (n-aliases take no target)
 --   * keys not starting with "c" (ill, bbm, ssh, ssw) only get the cast alias
---   * after the table is built, ONE regex alias handles all cast keys and ONE handles all n-keys
---     (instead of ~260 separate aliases), so each input line costs at most two regex checks
---   * targets are validated: only letters, digits, spaces and . ' - _ (max 60 chars) are sent;
---     anything else (such as ";" or control characters) is refused and nothing is sent
---   * spells are grouped (buffs, cures, offense, ...) and sorted by spell name within each group
---   * "spellTLAs off" disables the cast and n-aliases (typing one only shows a notice);
---     on/off and debug are saved in rune.store and survive a reload (debug defaults to off)
---   * typing spellTLAs (or spell) alone shows a command summary; the last row shows the version
+--   * one regex alias handles all cast keys and one handles all n-keys
+--   * targets are validated before being sent; unsafe or overlong targets are refused
+--   * spells are grouped and sorted by spell name within each group
+--   * on/off and debug states are stored in rune.store; debug defaults to off
+--   * typing spellTLAs or spell alone shows this command summary
 --
--- Commands:
---   spellTLAs                 show the command summary (short alias: spell)
+-- Commands (type without "/"; "spell" is a short alias for "spellTLAs"):
+--   spellTLAs                 show this help
 --   spellTLAs on|off          enable or disable the cast and n-aliases
 --   spellTLAs list [text]     list aliases, optionally filtered by key or spell
---   spellTLAs debug on|off    toggle debug output (default off)
+--   spellTLAs debug on|off    enable or disable debug output
+--   spell                      short alias for spellTLAs
 --   cXX [target]              cast 'spell' [target]
---   nXX                       aff clear 'spell'  (for c-keys only)
+--   nXX                       aff clear 'spell' (c-keys only)
+--
+-- Tweaks (top of file):
+--   * MAX_TARGET   maximum target length accepted by cast aliases
 
-local NAME    = "spellTLAs"
-local VERSION = "3.7"
+local LOAD_STARTED = os.clock()
+
+-- Command names: full command and short alias.
+local NAME  = "spellTLAs"
+local SHORT = "spell"
+
+local VERSION = "3.8"
 local MAX_TARGET = 60
 
-local casts    = {}   -- key  -> spell name   (cXX, ill, bbm, ...)
-local clears   = {}   -- nkey -> spell name   (nXX)
-local registry = {}   -- ordered { {key, spell}, ... } used by "spellTLAs list"
+local casts    = {}   -- key -> spell name (cXX, ill, bbm, ...)
+local clears   = {}   -- nkey -> spell name (nXX)
+local registry = {}   -- ordered { {key, spell}, ... } used by the list command
 
 -- Output helpers: cyan "[name] " prefix, one row per message.
 local function paint(text)
-  local ok, s = pcall(function() return rune.style.cyan(text) end)
-  if ok and type(s) == "string" then return s end
+  local ok, styled = pcall(function() return rune.style.cyan(text) end)
+  if ok and type(styled) == "string" then return styled end
   return text
 end
 
@@ -53,17 +63,17 @@ local function say(msg)
   rune.echo(paint("[" .. NAME .. "] ") .. msg)
 end
 
--- Persisted settings (rune.store); any failure falls back to the default.
+-- Persisted settings; failures fall back to the default.
 local function load_flag(key, default)
-  local ok, v = pcall(function() return rune.store.get(key) end)
-  if not ok or v == nil then return default end
-  if v == true or v == "true" or v == "on" or v == 1 then return true end
-  if v == false or v == "false" or v == "off" or v == 0 then return false end
+  local ok, value = pcall(function() return rune.store.get(key) end)
+  if not ok or value == nil then return default end
+  if value == true or value == "true" or value == "on" or value == 1 then return true end
+  if value == false or value == "false" or value == "off" or value == 0 then return false end
   return default
 end
 
-local function save_flag(key, val)
-  pcall(function() rune.store.set(key, val and "on" or "off") end)
+local function save_flag(key, value)
+  pcall(function() rune.store.set(key, value and "on" or "off") end)
 end
 
 local ENABLED = load_flag(NAME .. ".enabled", true)
@@ -73,41 +83,42 @@ local function dbg(msg)
   if DEBUG then say("debug: " .. msg) end
 end
 
--- Validate a user-supplied target before it is placed in a command.
--- Returns "" for no target, the cleaned target, or nil (refused).
+-- Returns an empty string for no target, a validated target, or nil if refused.
 local function safe_target(raw)
   if raw == nil then return "" end
   raw = raw:match("^%s*(.-)%s*$")
   if raw == "" then return "" end
+
   if #raw > MAX_TARGET or not raw:match("^[%w %.'_%-]+$") then
-    say("target refused (allowed: letters, digits, space, . ' - _ ; max " .. MAX_TARGET .. " chars)")
+    say("target refused (allowed: letters, digits, space, . ' - _; max "
+      .. MAX_TARGET .. " chars)")
     return nil
   end
+
   return raw
 end
 
 local function send_cast(spell, target)
-  local t = safe_target(target)
-  if t == nil then return end
-  local cmd = "cast '" .. spell .. "'"
-  if t ~= "" then cmd = cmd .. " " .. t end
-  dbg("send: " .. cmd)
-  rune.send(cmd)
+  local safe = safe_target(target)
+  if safe == nil then return end
+
+  local command = "cast '" .. spell .. "'"
+  if safe ~= "" then command = command .. " " .. safe end
+
+  dbg("send: " .. command)
+  rune.send(command)
 end
 
--- Helper (must be defined before use)
---   cast("cXX", "spell name") records:
---     cXX [target]  ->  cast 'spell name' [target]
---     nXX           ->  aff clear 'spell name'   (only for keys starting with "c")
---   e.g. cast("cla", "portal to the laser dimension") also gives "nla".
---   Aliases are registered once, after the table below (see "Dispatcher aliases").
+-- Records a cast alias and, for c-keys, its corresponding n-key.
 local function cast(key, spell)
   if casts[key] then
     say("duplicate key ignored: " .. key)
     return
   end
+
   casts[key] = spell
   registry[#registry + 1] = { key, spell }
+
   if key:sub(1, 1) == "c" then
     local nkey = "n" .. key:sub(2)
     if clears[nkey] or casts[nkey] then
@@ -117,8 +128,6 @@ local function cast(key, spell)
     end
   end
 end
-
--- Cast Spells (with optional targets), grouped, then sorted by spell name
 
 -- Protection & Buffs
 cast("cae", "aegis")
@@ -259,18 +268,17 @@ cast("cfo", "fountain")
 cast("cgt", "gate travel")
 cast("cilu", "illumination")
 cast("cmu", "magic unlock")
-cast("cla", "portal to the laser dimension")   -- also gives "nla"
+cast("cla", "portal to the laser dimension")
 cast("crp", "radiant prayer")
 cast("creq", "requiem")
 cast("crv", "revert catastrophe")
 cast("cso", "soul sacrifice")
 cast("cwo", "word of recall")
 
-
--- Dispatcher aliases: one regex for all cast keys, one for all n-keys
+-- Build each dispatcher pattern once after the lookup tables are populated.
 local function key_pattern(tbl)
   local keys = {}
-  for k in pairs(tbl) do keys[#keys + 1] = k end
+  for key in pairs(tbl) do keys[#keys + 1] = key end
   table.sort(keys)
   return table.concat(keys, "|")
 end
@@ -279,98 +287,133 @@ local function off_notice()
   say("aliases are off (" .. NAME .. " on to enable)")
 end
 
-rune.alias.regex("^(" .. key_pattern(casts) .. ")(?:[ ]+(.+))?$", function(m)
+rune.alias.regex("^(" .. key_pattern(casts) .. ")(?:[ ]+(.+))?$", function(match)
   if not ENABLED then off_notice() return end
-  local spell = casts[m[1]]
-  if spell then send_cast(spell, m[2]) end
+  local spell = casts[match[1]]
+  if spell then send_cast(spell, match[2]) end
 end)
 
-rune.alias.regex("^(" .. key_pattern(clears) .. ")$", function(m)
+rune.alias.regex("^(" .. key_pattern(clears) .. ")$", function(match)
   if not ENABLED then off_notice() return end
-  local spell = clears[m[1]]
+
+  local spell = clears[match[1]]
   if spell then
-    local cmd = "aff clear '" .. spell .. "'"
-    dbg("send: " .. cmd)
-    rune.send(cmd)
+    local command = "aff clear '" .. spell .. "'"
+    dbg("send: " .. command)
+    rune.send(command)
   end
 end)
 
--- Help / list / on-off / debug command
-local okH, H = pcall(require, "helpstyle")
-if not okH or type(H) ~= "table" then
-  H = {
-    title   = function(t) return "== " .. t .. " ==" end,
-    section = function(t) return "-- " .. t end,
-    line    = function(a, b) return string.format("  %-24s %s", a, b or "") end,
-    foot    = function(t) return t end,
-  }
+local H = require("helpstyle")
+
+local function emit(row)
+  rune.echo(row)
 end
 
-local function emit(row) rune.echo(row) end
+local LOAD_MS
 
 local function status_row()
-  return string.format("v%s  on=%s debug=%s aliases=%d", VERSION,
-    ENABLED and "on" or "off", DEBUG and "on" or "off", #registry)
+  return string.format("v%s  enabled=%s debug=%s aliases=%d load=%dms",
+    VERSION, tostring(ENABLED), tostring(DEBUG), #registry, LOAD_MS)
 end
 
 local function show_help()
-  emit(H.title(NAME))
+  emit(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
   emit(H.section("Commands"))
-  emit(H.line("spellTLAs", "this summary (short alias: spell)"))
-  emit(H.line("spellTLAs on|off", "enable or disable the aliases"))
-  emit(H.line("spellTLAs list [text]", "list aliases, optionally filtered"))
-  emit(H.line("spellTLAs debug on|off", "echo every command sent"))
+  emit(H.line(NAME, "show this help"))
+  emit(H.line(NAME .. " on|off", "enable or disable the aliases"))
+  emit(H.line(NAME .. " list [text]", "list aliases, optionally filtered"))
+  emit(H.line(NAME .. " debug on|off", "enable or disable debug output"))
+  emit(H.line(SHORT, "short alias for " .. NAME))
   emit(H.section("Aliases"))
   emit(H.line("cXX [target]", "cast 'spell' [target]"))
-  emit(H.line("nXX", "aff clear 'spell'  (c-keys only)"))
+  emit(H.line("nXX", "aff clear 'spell' (c-keys only)"))
   emit(H.foot(status_row()))
 end
 
 local function show_list(filter)
   filter = filter and filter:lower() or ""
-  local n = 0
+  local shown = 0
+
   emit(H.title(NAME .. " list"))
-  for _, e in ipairs(registry) do
-    if filter == "" or e[1]:find(filter, 1, true) or e[2]:find(filter, 1, true) then
-      local nk = e[1]:sub(1, 1) == "c" and ("n" .. e[1]:sub(2)) or "-"
-      emit(H.line(e[1] .. " / " .. nk, e[2]))
-      n = n + 1
+  for _, entry in ipairs(registry) do
+    if filter == ""
+      or entry[1]:find(filter, 1, true)
+      or entry[2]:find(filter, 1, true) then
+      local nkey = entry[1]:sub(1, 1) == "c"
+        and ("n" .. entry[1]:sub(2))
+        or "-"
+      emit(H.line(entry[1] .. " / " .. nkey, entry[2]))
+      shown = shown + 1
     end
   end
-  emit(H.foot(status_row() .. " shown=" .. n))
+
+  emit(H.foot(status_row() .. " shown=" .. shown))
 end
 
-local function set_flag(which, arg)
-  arg = arg:lower()
+local function set_flag(which, argument)
+  argument = (argument or ""):lower()
+
   if which == "enabled" then
-    if arg == "on" then ENABLED = true elseif arg == "off" then ENABLED = false else ENABLED = not ENABLED end
+    if argument == "on" then
+      ENABLED = true
+    elseif argument == "off" then
+      ENABLED = false
+    else
+      ENABLED = not ENABLED
+    end
     save_flag(NAME .. ".enabled", ENABLED)
     say("aliases " .. (ENABLED and "on" or "off"))
   else
-    if arg == "on" then DEBUG = true elseif arg == "off" then DEBUG = false else DEBUG = not DEBUG end
+    if argument == "on" then
+      DEBUG = true
+    elseif argument == "off" then
+      DEBUG = false
+    else
+      DEBUG = not DEBUG
+    end
     save_flag(NAME .. ".debug", DEBUG)
     say("debug " .. (DEBUG and "on" or "off"))
   end
 end
 
 local function handle(line)
-  local arg = (line or ""):match("^%s*(.-)%s*$")
-  local cmd, rest = arg:match("^(%S*)%s*(.-)$")
-  cmd = (cmd or ""):lower()
-  if cmd == "on" or cmd == "off" then
-    set_flag("enabled", cmd)
-  elseif cmd == "list" then
+  local argument = (line or ""):match("^%s*(.-)%s*$")
+  local command, rest = argument:match("^(%S*)%s*(.-)$")
+  command = (command or ""):lower()
+
+  if command == "on" or command == "off" then
+    set_flag("enabled", command)
+  elseif command == "list" then
     show_list(rest)
-  elseif cmd == "debug" then
-    set_flag("debug", rest or "")
+  elseif command == "debug" then
+    set_flag("debug", rest)
   else
     show_help()
   end
 end
 
--- Bare commands are exact aliases; commands with arguments are regex aliases.
-rune.alias.exact("spellTLAs", function(args, ctx) show_help() end)
-rune.alias.exact("spell", function(args, ctx) show_help() end)
-rune.alias.regex("^(?:spellTLAs|spell)[ ]+(.+)$", function(m) handle(m[1]) end)
+-- Bare commands are exact aliases; commands with arguments use one regex alias.
+rune.alias.exact(NAME, function(args, ctx)
+  show_help()
+end)
 
-say(string.format("v%s loaded (%s or spell for help)", VERSION, NAME))
+rune.alias.exact(SHORT, function(args, ctx)
+  show_help()
+end)
+
+rune.alias.regex("^(" .. NAME .. "|" .. SHORT .. ")[ ]+(.+)$", function(match)
+  handle(match[2])
+end)
+
+LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
+
+local style = rune.style
+local function say_loaded(message)
+  local prefix = "[" .. NAME .. "] "
+  local ok, styled = pcall(function() return style.cyan(prefix) end)
+  if ok and type(styled) == "string" then prefix = styled end
+  rune.echo(prefix .. message)
+end
+
+say_loaded(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))

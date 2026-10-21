@@ -125,7 +125,7 @@ local songs = {
 
   -- Martial songs (in combat)
   { "bbl", "blindness" },
-  { "bcac", "cacophony" },
+  { "bcy", "cacophony" },
   { "bfi", "fireball" },
   { "bea", "earworm" },
   { "bhw", "hands of wind" },
@@ -134,9 +134,9 @@ local songs = {
   { "bpd", "pensive dirge" },
   { "bpf", "plodding fugue" },
   { "bsn", "soothing nocturne" },
-  { "btro", "tremolo" },
+  { "bto", "tremolo" },
   { "bom", "ode to the moon" },
-  { "btrr", "tempus rigor" },
+  { "bte", "tempus rigor" },
 
   -- Versatile songs (any time)
   { "bca", "calm" },

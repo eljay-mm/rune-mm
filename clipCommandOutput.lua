@@ -1,69 +1,76 @@
 -- Filename: eljayPlugins/clipCommandOutput.lua
 -- Purpose: Copy the output of a command to the clipboard.
--- Version: 2.3
--- Date: 2026-Oct-16
+-- Version: 2.4
+-- Date: 2026-Oct-20
+--[[
+TODO:
+- insert planning notes here between revisions.
+]]
 -- Changelog:
+--   2.4    Align command names, help, toggles, loader and load-time reporting with repo conventions.
 --   2.3    Persist settings; enforce the byte cap during capture; bound idle wait; expand a leading ~ in file paths.
 --   2.2    Full command is clipCommandOutput (clip stays as the short alias); added on/off toggle; coloured loader line; status footer starts with the version.
 --   2.1.2  Added the repo-standard command summary in the header and cleaned the help/footer format.
--- How it works:
---   * `clip <command>` is an alias: it starts a capture, then sends `<command>` to the MUD with rune.send.
---   * `clip next` arms a capture for the next command you send instead.
---   * The capture hooks (output, prompt, input) stay disabled until needed, so the plugin costs nothing while you play normally.
---   * While capturing, the output hook records complete server lines with line:clean() (without ANSI colour codes), subject to line and byte caps.
---   * A capture ends when a GA/EOR-confirmed prompt arrives after at least one line was captured, when no new line has arrived for the idle time, or when a safety cap is reached.
---   * The text is sanitized (control characters and ESC are removed) and copied with rune.clipboard.set.
---   * Optional fallback: set CONFIG.FILE_COPY to a path to also write each capture to a file (off by default).
---   * `clip on|off` enables or disables the plugin; `clip debug on|off` toggles debug messages (default off).
---   * Typing `clip` or `clipCommandOutput` alone shows the command summary.
---   * Hooks and timers are registered with names, so /reload never stacks duplicates.
 --
--- Commands (clip is the short alias of clipCommandOutput):
---   clip                 show this command summary
---   clip <command>       send <command> and copy its output
---   clip next            copy the output of the next command you send
---   clip last            copy the previous capture again
---   clip show            echo the last capture locally
---   clip cancel          abort a capture in progress
---   clip idle <secs>     change the "output finished" wait
---   clip on|off          enable or disable the plugin
---   clip debug on|off    toggle debug messages
+-- How it works:
+--   * `clip <command>` starts a capture and sends `<command>` to the MUD with rune.send.
+--   * `clip next` arms a capture for the next command you send instead.
+--   * Output, prompt, and input hooks are enabled only when needed.
+--   * Captured lines are cleaned, bounded by line and byte limits, and copied with rune.clipboard.set.
+--   * A capture ends on a confirmed prompt, an idle timeout, a first-output timeout, or a safety limit.
+--   * Optional file copy is available by setting CONFIG.FILE_COPY; it is off by default.
+--   * Typing `clip` or `clipCommandOutput` alone shows help.
+--
+-- Commands (type without "/"; "clip" is the short alias for "clipCommandOutput"):
+--   clipCommandOutput       show this help
+--   clip <command>          send <command> and copy its output
+--   clip next               copy the output of the next command you send
+--   clip last               copy the previous capture again
+--   clip show               echo the last capture locally
+--   clip cancel             abort a capture in progress
+--   clip idle <secs>        change the output-finished wait
+--   clip on|off             enable / disable the plugin
+--   clip debug on|off       enable / disable debug messages
 --
 -- Tweaks (top of file):
---   IDLE       seconds without new output before the capture ends (0.2–30)
---   FIRST_WAIT seconds to wait for the first line of output
---   MAX_LINES  maximum captured lines
---   MAX_BYTES  maximum captured bytes
---   FILE_COPY  optional path for an additional file copy; nil = off
---   TRIM_BLANK drop leading/trailing blank lines from the copied text
+--   IDLE        seconds without new output before the capture ends (0.2–30)
+--   FIRST_WAIT  seconds to wait for the first line of output
+--   MAX_LINES   maximum captured lines
+--   MAX_BYTES   maximum captured bytes
+--   FILE_COPY   optional path for an additional file copy; nil = off
+--   TRIM_BLANK  drop leading/trailing blank lines from copied text
 
-local NAME    = "clipCommandOutput"
-local VERSION = "2.3"
+local LOAD_STARTED = os.clock()
 
+-- Command names: full command and short alias.
+local NAME  = "clipCommandOutput"
+local SHORT = "clip"
+
+local VERSION = "2.4"
 local STORE_KEY = "eljay.clipCommandOutput."
 local MIN_IDLE = 0.2
 local MAX_IDLE = 30
 
 local CONFIG = {
-    ENABLED     = true,
-    DEBUG       = false,
-    IDLE        = 1.0,
-    FIRST_WAIT  = 3.0,
-    MAX_LINES   = 1000,
-    MAX_BYTES   = 100000,
-    FILE_COPY   = nil,
-    TRIM_BLANK  = true,
+    ENABLED    = true,
+    DEBUG      = false,
+    IDLE       = 1.0,
+    FIRST_WAIT = 3.0,
+    MAX_LINES  = 1000,
+    MAX_BYTES  = 100000,
+    FILE_COPY  = nil,
+    TRIM_BLANK = true,
 }
 
 local TIMER_NAME = "clip_idle"
 
 local state = {
     capturing = false,
-    armed     = false,
-    lines     = {},
-    bytes     = 0,
-    last      = "",
-    command   = nil,
+    armed = false,
+    lines = {},
+    bytes = 0,
+    last = "",
+    command = nil,
 }
 
 local function store_get(key)
@@ -74,29 +81,27 @@ end
 
 local function store_set(key, value)
     local ok, err = pcall(rune.store.set, STORE_KEY .. key, value)
-    if not ok then
-        return false, err
-    end
+    if not ok then return false, err end
     return true
 end
 
 local function load_settings()
     local enabled = store_get("enabled")
-    local debug = store_get("debug")
+    local debug_on = store_get("debug")
     local idle = tonumber(store_get("idle"))
 
     if type(enabled) == "boolean" then CONFIG.ENABLED = enabled end
-    if type(debug) == "boolean" then CONFIG.DEBUG = debug end
+    if type(debug_on) == "boolean" then CONFIG.DEBUG = debug_on end
     if idle and idle >= MIN_IDLE and idle <= MAX_IDLE then CONFIG.IDLE = idle end
 end
 
 load_settings()
 
--- ------------------------------------------------------------- messages ---
+local LOAD_MS
 
 local function paint(text)
-    local ok, s = pcall(function() return rune.style.cyan(text) end)
-    if ok and type(s) == "string" then return s end
+    local ok, styled = pcall(function() return rune.style.cyan(text) end)
+    if ok and type(styled) == "string" then return styled end
     return text
 end
 
@@ -112,40 +117,37 @@ end
 
 local function persist(key, value)
     local ok, err = store_set(key, value)
-    if not ok then
-        dbg("could not persist " .. key .. ": " .. tostring(err))
-    end
+    if not ok then dbg("could not persist " .. key .. ": " .. tostring(err)) end
 end
-
--- ----------------------------------------------------------------- help ---
 
 local okH, H = pcall(require, "helpstyle")
-if not okH or type(H) ~= "table" then
-    H = nil
-end
+if not okH or type(H) ~= "table" then H = nil end
+
+local h_output, h_prompt, h_input
 
 local function status_line()
     return string.format(
-        "v%s  enabled=%s capturing=%s armed=%s idle=%.1fs debug=%s last=%d bytes",
+        "v%s  enabled=%s debug=%s capturing=%s armed=%s idle=%.1fs last=%d bytes load=%dms",
         VERSION,
-        CONFIG.ENABLED and "on" or "off",
-        state.capturing and "yes" or "no",
-        state.armed and "yes" or "no",
+        tostring(CONFIG.ENABLED),
+        tostring(CONFIG.DEBUG),
+        tostring(state.capturing),
+        tostring(state.armed),
         CONFIG.IDLE,
-        CONFIG.DEBUG and "on" or "off",
-        #state.last
+        #state.last,
+        LOAD_MS or 0
     )
 end
 
 local HELP = {
-    { "clip <command>",    "send <command> and copy its output" },
-    { "clip next",         "copy the output of the next command you send" },
-    { "clip last",         "copy the previous capture again" },
-    { "clip show",         "echo the last capture locally" },
-    { "clip cancel",       "abort a capture in progress" },
-    { "clip idle <secs>",  "change the 'output finished' wait (0.2–30)" },
-    { "clip on|off",       "enable or disable the plugin" },
-    { "clip debug on|off", "toggle debug messages" },
+    { NAME .. " <command>", "send <command> and copy its output" },
+    { NAME .. " next", "copy the output of the next command you send" },
+    { NAME .. " last", "copy the previous capture again" },
+    { NAME .. " show", "echo the last capture locally" },
+    { NAME .. " cancel", "abort a capture in progress" },
+    { NAME .. " idle <secs>", "change the output-finished wait (0.2–30)" },
+    { NAME .. " on|off", "enable / disable the plugin" },
+    { NAME .. " debug on|off", "enable / disable debug messages" },
 }
 
 local function emit_help_value(value)
@@ -161,26 +163,24 @@ end
 local function show_help()
     if H then
         local ok = pcall(function()
-            emit_help_value(H.title(NAME .. "  (alias: clip)"))
+            emit_help_value(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
             emit_help_value(H.section("Commands"))
             for _, row in ipairs(HELP) do
                 emit_help_value(H.line(row[1], row[2]))
             end
+            emit_help_value(H.line(SHORT, "short alias for " .. NAME))
             emit_help_value(H.foot(status_line()))
         end)
         if ok then return end
     end
 
-    rune.echo(NAME .. " - copy command output to the clipboard (short alias: clip)")
+    rune.echo(NAME .. "  (alias: " .. SHORT .. ")")
     for _, row in ipairs(HELP) do
-        rune.echo(string.format("  %-18s %s", row[1], row[2]))
+        rune.echo(string.format("  %-24s %s", row[1], row[2]))
     end
+    rune.echo(string.format("  %-24s %s", SHORT, "short alias for " .. NAME))
     rune.echo(status_line())
 end
-
--- --------------------------------------------------------------- capture ---
-
-local h_output, h_prompt, h_input
 
 local function kill_timer()
     pcall(rune.timer.remove, TIMER_NAME)
@@ -195,15 +195,10 @@ local function set_hooks(capture_on, input_on)
         h_prompt:disable()
     end
 
-    if input_on then
-        h_input:enable()
-    else
-        h_input:disable()
-    end
+    if input_on then h_input:enable() else h_input:disable() end
 end
 
 local function clean_line(text)
-    -- Remove CR and all control characters (including ESC and BEL); keep tab.
     return (text:gsub("[%z\1-\8\11-\31\127]", ""))
 end
 
@@ -215,9 +210,7 @@ local function build_text(lines)
     end
 
     local out = {}
-    for i = first, last do
-        out[#out + 1] = lines[i]
-    end
+    for i = first, last do out[#out + 1] = lines[i] end
     return table.concat(out, "\n")
 end
 
@@ -242,14 +235,14 @@ local function copy_text(text)
             path = path:gsub("^~\\", home .. "\\")
         end
 
-        local f, open_err = io.open(path, "w")
-        if f then
+        local file, open_err = io.open(path, "w")
+        if file then
             local write_ok, write_err = pcall(function()
-                f:write(text, "\n")
-                f:close()
+                file:write(text, "\n")
+                file:close()
             end)
             if not write_ok then
-                pcall(function() f:close() end)
+                pcall(function() file:close() end)
                 dbg("file copy failed: " .. tostring(write_err))
             else
                 dbg("also wrote " .. path)
@@ -282,20 +275,19 @@ local function finish(reason)
 
     state.last = text
     if copy_text(text) then
-        local _, nl = text:gsub("\n", "")
+        local _, newlines = text:gsub("\n", "")
         say(string.format("copied %d line(s), %d bytes%s",
-            nl + 1, #text, state.command and (" from '" .. state.command .. "'") or ""))
+            newlines + 1, #text, state.command and (" from '" .. state.command .. "'") or ""))
     end
 
     if reason == "limit" or reason == "byte_limit" then
-        say("note: capture stopped at the " .. CONFIG.MAX_LINES .. " line / " .. CONFIG.MAX_BYTES .. " byte safety limit")
+        say("note: capture stopped at the " .. CONFIG.MAX_LINES
+            .. " line / " .. CONFIG.MAX_BYTES .. " byte safety limit")
     end
 end
 
 local function arm_timer(seconds)
-    rune.timer.after(seconds, function()
-        finish("timeout")
-    end, { name = TIMER_NAME })
+    rune.timer.after(seconds, function() finish("timeout") end, { name = TIMER_NAME })
 end
 
 local function start_capture(command)
@@ -308,8 +300,6 @@ local function start_capture(command)
     arm_timer(CONFIG.FIRST_WAIT)
     dbg("capture started for '" .. tostring(command) .. "'")
 end
-
--- ----------------------------------------------------------------- hooks ---
 
 h_output = rune.hooks.on("output", function(line)
     if not state.capturing then return end
@@ -345,30 +335,24 @@ h_output = rune.hooks.on("output", function(line)
     else
         arm_timer(CONFIG.IDLE)
     end
-    -- Return nothing: the line is displayed as usual.
 end, { name = "clip_output", priority = 10 }):disable()
 
 h_prompt = rune.hooks.on("prompt", function(_, confirmed)
-    if confirmed and state.capturing and #state.lines > 0 then
-        finish("prompt")
-    end
+    if confirmed and state.capturing and #state.lines > 0 then finish("prompt") end
 end, { name = "clip_prompt", priority = 10 }):disable()
 
 h_input = rune.hooks.on("input", function(text)
     if CONFIG.ENABLED and state.armed
-        and not text:match("^%s*clip%f[%W]")
-        and not text:match("^%s*clipCommandOutput%f[%W]")
+        and not text:match("^%s*" .. SHORT .. "%f[%W]")
+        and not text:match("^%s*" .. NAME .. "%f[%W]")
         and not text:match("^%s*$") then
         start_capture(text)
     end
-    -- Return nothing: input passes through unchanged.
 end, { name = "clip_input", priority = 5 }):disable()
-
--- -------------------------------------------------------------- commands ---
 
 local function need_enabled()
     if CONFIG.ENABLED then return true end
-    say("disabled (clip on to enable)")
+    say("disabled (" .. SHORT .. " on to enable)")
     return false
 end
 
@@ -394,9 +378,7 @@ local function cmd_show()
         return
     end
     say("last capture:")
-    for line in (state.last .. "\n"):gmatch("(.-)\n") do
-        rune.echo("  " .. line)
-    end
+    for line in (state.last .. "\n"):gmatch("(.-)\n") do rune.echo("  " .. line) end
 end
 
 local function cmd_cancel(quiet)
@@ -408,13 +390,14 @@ local function cmd_cancel(quiet)
 end
 
 local function cmd_idle(rest)
-    local n = tonumber(rest)
-    if n and n >= MIN_IDLE and n <= MAX_IDLE then
-        CONFIG.IDLE = n
-        persist("idle", n)
-        say(string.format("idle wait set to %.1fs", n))
+    local value = tonumber(rest)
+    if value and value >= MIN_IDLE and value <= MAX_IDLE then
+        CONFIG.IDLE = value
+        persist("idle", value)
+        say(string.format("idle wait set to %.1fs", value))
     else
-        say(string.format("idle wait is %.1fs  (usage: clip idle %.1f–%.0f)", CONFIG.IDLE, MIN_IDLE, MAX_IDLE))
+        say(string.format("idle wait is %.1fs  (usage: %s idle %.1f–%.0f)",
+            CONFIG.IDLE, SHORT, MIN_IDLE, MAX_IDLE))
     end
 end
 
@@ -425,7 +408,8 @@ local function cmd_debug(rest)
     elseif rest == "off" then
         CONFIG.DEBUG = false
     else
-        say("debug is " .. (CONFIG.DEBUG and "on" or "off") .. "  (usage: clip debug on|off)")
+        say("debug is " .. (CONFIG.DEBUG and "on" or "off")
+            .. "  (usage: " .. SHORT .. " debug on|off)")
         return
     end
     persist("debug", CONFIG.DEBUG)
@@ -464,14 +448,13 @@ local function handle(args)
     end
 
     local word, rest = args:match("^(%S+)%s*(.*)$")
-    local sub = SUBCOMMANDS[word:lower()]
-    if sub then
-        sub(rest)
+    local subcommand = SUBCOMMANDS[word:lower()]
+    if subcommand then
+        subcommand(rest)
         return
     end
 
     if not need_enabled() then return end
-
     if state.capturing then finish("restart") end
 
     start_capture(args)
@@ -479,6 +462,8 @@ local function handle(args)
 end
 
 rune.alias.exact(NAME, handle)
-rune.alias.exact("clip", handle)
+rune.alias.exact(SHORT, handle)
 
-say("v" .. VERSION .. " loaded (clipCommandOutput or clip for help)")
+LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
+
+say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))

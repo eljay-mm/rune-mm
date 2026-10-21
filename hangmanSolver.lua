@@ -1,8 +1,13 @@
 -- Filename: eljayPlugins/hangmanSolver.lua
 -- Purpose: Solves hangman puzzles using an online solver (needs curl).
--- Version: 2.5
--- Date: 2026-Oct-15
+-- Version: 2.6
+-- Date: 2026-Oct-20
+--[[
+TODO:
+- insert planning notes here between revisions.
+]]
 -- Changelog:
+--   2.6  Brought commands, help, load-time reporting, and output in line with repo conventions.
 --   2.5  Brought to standard: Purpose aligned with the README, short alias hms,
 --        cyan-prefixed single-row output, standard loader line.
 --   2.4  Added repo-standard command summary and persisted settings; kept the original solver logic.
@@ -14,54 +19,57 @@
 --   * Solves hangman puzzles using an online solver (hangman-solver.com), reached with curl.
 --   * When MM says "You hold a game of hangman ...", the plugin sends "hangman start" and "hangman e" (the best opening letter).
 --   * "Progress thus far: <pattern>" lines are remembered as the current pattern.
---   * "Failed letters: <letters>" lines trigger a lookup: the pattern and the wrong guesses are sent to the solver.
+--   * "Failed letters: <letters>" lines trigger a lookup: the pattern and wrong guesses are sent to the solver.
 --   * The returned words are echoed as possible guesses.
 --   * A few well-known "emp" patterns (e____, em___, emp__, empt_) are solved locally without any lookup.
 --   * Lookups are cached per game, use short curl timeouts, and after a failed lookup the solver pauses briefly to avoid repeated dead network stalls.
 --   * Works on Linux/macOS (curl, sh) and Windows (curl.exe, cmd.exe); the pattern/guesses are sanitized to letters and underscores before they reach the shell.
 --   * Settings (on/off, debug) are saved with rune.store.
 --
--- Commands (full command hangmanSolver, short alias hms):
---   hangmanSolver               show the command summary
---   hangmanSolver on|off        enable or disable the solver triggers
---   hangmanSolver debug on|off  toggle debug output (default off)
---   hangmanSolver help          show the command summary
+-- Commands (type without "/"; "hms" is a short alias for "hangmanSolver"):
+--   hangmanSolver               show this help
+--   hangmanSolver on|off        enable / disable the solver triggers
+--   hangmanSolver debug on|off  enable / disable debug messages
+--   hangmanSolver help          show this help
+--   hms                        short alias for hangmanSolver
 
+local LOAD_STARTED = os.clock()
+local LOAD_MS = 0
+
+-- Command names: full command and short alias.
 local NAME = "hangmanSolver"
-local VERSION = "2.5"
-local SETTINGS_KEY = "hangmanSolver.settings"
+local SHORT = "hms"
 
-local enabled = true
-local debug_enabled = false
+local VERSION = "2.6"
+local SETTINGS_KEY = NAME .. ".settings"
 
-local okH, H = pcall(require, "helpstyle")
-if not okH or type(H) ~= "table" then
-  H = nil
-end
-
+local H = require("helpstyle")
 local IS_WINDOWS = package.config:sub(1, 1) == "\\"
 local BASE_URL = "https://www.hangman-solver.com/.netlify/functions/answers?word="
 local BACKOFF_SECONDS = 20
 
--- State variables
+local enabled = true
+local debug_enabled = false
+
+-- State variables.
 local hangman_word = ""
 local possible_guesses = {}
 local cache = {}
 local last_key = nil
 local fail_until = 0
 
--- Output helpers: single-row output with a cyan "[name] " prefix
-local function paint(text)
-  local cyan = rune.style and rune.style.cyan
-  if type(cyan) == "function" then
-    local ok, styled = pcall(cyan, text)
-    if ok and styled then return styled end
-  end
-  return text
-end
-
 local function say(msg)
-  rune.echo(paint("[" .. NAME .. "] ") .. tostring(msg))
+  local prefix = "[" .. NAME .. "] "
+  local style = rune.style
+
+  if style and type(style.cyan) == "function" then
+    local ok, colored = pcall(style.cyan, prefix)
+    if ok and colored then
+      prefix = colored
+    end
+  end
+
+  rune.echo(prefix .. tostring(msg))
 end
 
 local function dbg(msg)
@@ -75,7 +83,7 @@ local function onoff(flag)
 end
 
 local function load_settings()
-  if not (rune and rune.store and type(rune.store.get) == "function") then
+  if not (rune.store and type(rune.store.get) == "function") then
     return
   end
 
@@ -91,14 +99,12 @@ local function load_settings()
 end
 
 local function save_settings()
-  if not (rune and rune.store and type(rune.store.set) == "function") then
-    return
+  if rune.store and type(rune.store.set) == "function" then
+    pcall(rune.store.set, SETTINGS_KEY, {
+      enabled = enabled,
+      debug = debug_enabled,
+    })
   end
-
-  pcall(rune.store.set, SETTINGS_KEY, {
-    enabled = enabled,
-    debug = debug_enabled,
-  })
 end
 
 local function extractWords(json_string)
@@ -113,41 +119,42 @@ local function curlCommand(url)
   if IS_WINDOWS then
     return 'curl.exe -s -L --connect-timeout 2 --max-time 3 "' .. url .. '" 2>NUL'
   end
+
   return "curl -s -L --connect-timeout 2 --max-time 3 '" .. url .. "' 2>/dev/null"
 end
 
 local function runCommand(cmd)
-  if io.popen then
-    local ok, pipe = pcall(io.popen, cmd, "r")
-    if ok and pipe then
-      local out = pipe:read("*a") or ""
-      pipe:close()
-      return out
-    end
+  if type(io.popen) ~= "function" then
+    return nil
   end
 
-  -- Fallback for Lua builds without io.popen: temp file in the OS temp folder
-  local tmpdir = os.getenv("TEMP") or os.getenv("TMP") or os.getenv("TMPDIR") or "/tmp"
-  local sep = IS_WINDOWS and "\\" or "/"
-  local tmp = tmpdir .. sep .. "hangman_" .. os.time() .. ".txt"
-  local quote = IS_WINDOWS and '"' or "'"
-  os.execute(cmd .. " > " .. quote .. tmp .. quote)
-  local f = io.open(tmp, "r")
-  if not f then return "" end
-  local out = f:read("*a") or ""
-  f:close()
-  os.remove(tmp)
-  return out
+  local ok, pipe = pcall(io.popen, cmd, "r")
+  if not ok or not pipe then
+    return nil
+  end
+
+  local read_ok, output = pcall(function()
+    return pipe:read("*a")
+  end)
+  pcall(function()
+    pipe:close()
+  end)
+
+  if not read_ok then
+    return nil
+  end
+
+  return output or ""
 end
 
 local function solveHangman(wrong_guesses)
-  if hangman_word == nil or hangman_word == "" then
+  if hangman_word == "" then
     say("Unknown starting length?")
     return
   elseif #possible_guesses == 1 then
     say("Possible guesses: " .. table.concat(possible_guesses, ", "))
     return
-  elseif string.find(hangman_word, "_", 1, true) == nil then
+  elseif not hangman_word:find("_", 1, true) then
     return
   elseif hangman_word == "e____" then
     rune.send("hangman m")
@@ -163,19 +170,19 @@ local function solveHangman(wrong_guesses)
     return
   end
 
-  -- Sanitize everything that ends up in the shell command
+  -- Restrict shell-bound values to the expected characters.
   local word = hangman_word:gsub("[^%a_]", "")
   local guesses = (wrong_guesses or ""):gsub("[^%a]", "")
   local key = word .. "|" .. guesses
 
   if key == last_key then
-    dbg("Skipping repeat lookup for " .. key)
+    dbg("Skipping repeat lookup")
     return
   end
 
   local cached = cache[key]
   if cached then
-    dbg("Cache hit for " .. key)
+    dbg("Cache hit")
     possible_guesses = cached
     last_key = key
     say("Possible guesses: " .. table.concat(possible_guesses, ", "))
@@ -189,12 +196,11 @@ local function solveHangman(wrong_guesses)
   end
 
   local url = BASE_URL .. word .. "&guesses=" .. guesses
-  dbg("Fetching " .. url)
+  dbg("Fetching solver results")
 
   local response = runCommand(curlCommand(url))
-  if #response == 0 then
+  if not response or #response == 0 then
     fail_until = os.time() + BACKOFF_SECONDS
-    dbg("Empty response from solver")
     say("Solver unavailable - manual guessing needed (retry in " .. BACKOFF_SECONDS .. "s)")
     return
   end
@@ -218,98 +224,78 @@ local function startHangman()
   possible_guesses = {}
   cache = {}
   last_key = nil
+  fail_until = 0
+
   rune.send("hangman start")
   rune.send("hangman e")
 end
 
-local function setWord(word)
-  hangman_word = word
-end
-
 local function show_help()
-  local status = "v" .. VERSION .. "  solver=" .. onoff(enabled) .. " debug=" .. onoff(debug_enabled)
-    .. " os=" .. (IS_WINDOWS and "windows" or "unix")
-
-  if H and H.title and H.section and H.line and H.foot then
-    rune.echo(H.title("Hangman Solver"))
-    rune.echo(H.section("Commands"))
-    rune.echo(H.line("hangmanSolver", "show this summary (short alias: hms)"))
-    rune.echo(H.line("hangmanSolver on|off", "enable or disable the solver triggers"))
-    rune.echo(H.line("hangmanSolver debug on|off", "toggle debug output"))
-    rune.echo(H.foot(status))
-    return
-  end
-
-  rune.echo("Hangman Solver")
-  rune.echo("  hangmanSolver                 show this summary (short alias: hms)")
-  rune.echo("  hangmanSolver on|off          enable or disable the solver triggers")
-  rune.echo("  hangmanSolver debug on|off    toggle debug output")
-  rune.echo(status)
+  rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
+  rune.echo(H.section("Commands"))
+  rune.echo(H.line(NAME, "show this help"))
+  rune.echo(H.line(NAME .. " on|off", "enable / disable the solver triggers"))
+  rune.echo(H.line(NAME .. " debug on|off", "enable / disable debug messages"))
+  rune.echo(H.line(NAME .. " help", "show this help"))
+  rune.echo(H.line(SHORT, "short alias for " .. NAME))
+  rune.echo(H.foot(string.format(
+    "v%s  enabled=%s debug=%s bindings=5  load=%dms",
+    VERSION,
+    tostring(enabled),
+    tostring(debug_enabled),
+    LOAD_MS
+  )))
 end
 
--- Commands (no / prefix): hangmanSolver or hms [on|off | debug on|off | help]
-rune.alias.regex("^(?:hangmanSolver|hms)(?:\\s+(.*))?$", function(m)
-  local text = (m[1] or ""):lower()
-  local cmd = text:match("^(%S*)") or ""
-  local value = text:match("^%S+%s*(.*)$") or ""
+local function handle_command(args, _ctx)
+  local text = (args or ""):match("^%s*(.-)%s*$"):lower()
 
-  if cmd == "" or cmd == "help" then
+  if text == "" or text == "help" then
     show_help()
-    return
-  end
-
-  if cmd == "on" then
+  elseif text == "on" then
     enabled = true
     save_settings()
     say("Solver " .. onoff(enabled))
-    return
-  end
-
-  if cmd == "off" then
+  elseif text == "off" then
     enabled = false
     save_settings()
     say("Solver " .. onoff(enabled))
-    return
-  end
-
-  if cmd == "debug" then
-    if value == "on" then
-      debug_enabled = true
-    elseif value == "off" then
-      debug_enabled = false
-    else
-      show_help()
-      return
-    end
-
+  elseif text == "debug on" then
+    debug_enabled = true
     save_settings()
     say("Debug " .. onoff(debug_enabled))
-    return
+  elseif text == "debug off" then
+    debug_enabled = false
+    save_settings()
+    say("Debug " .. onoff(debug_enabled))
+  else
+    show_help()
   end
+end
 
-  show_help()
-end, { name = "hangmanSolver" })
+load_settings()
 
-rune.trigger.regex("^You hold a game of hangman (.*?)$", function(m)
+rune.alias.exact(NAME, handle_command)
+rune.alias.exact(SHORT, handle_command)
+
+rune.trigger.regex("^You hold a game of hangman (.*?)$", function(_m)
   if enabled then
     startHangman()
   end
-end, { name = "hangmanSolver-start" })
+end, { name = NAME .. "-start" })
 
 rune.trigger.regex("^Progress thus far: (.*?)$", function(m)
   if enabled then
-    setWord(m[1] or "")
+    hangman_word = m[1] or ""
   end
-end, { name = "hangmanSolver-pattern" })
+end, { name = NAME .. "-pattern" })
 
 rune.trigger.regex("^Failed letters: (.*?)$", function(m)
   if enabled then
     solveHangman(m[1] or "")
   end
-end, { name = "hangmanSolver-failed" })
+end, { name = NAME .. "-failed" })
 
-load_settings()
+LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
 save_settings()
-
--- Loader line (single row)
-say("v" .. VERSION .. " loaded (" .. NAME .. " or hms for help)")
+say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))

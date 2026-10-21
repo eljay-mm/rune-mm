@@ -1,5 +1,5 @@
 -- Filename: eljayPlugins/highlights.lua
--- Purpose: Highlights notable items and mobs in game output for easy recognition.
+-- Purpose: Highlights notable items and mobs in game output for easy recognition based on static configuration for all characters.
 -- Version: 2.6
 -- Date: 2026-Oct-19
 --[[

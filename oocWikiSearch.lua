@@ -1,13 +1,17 @@
 -- Filename: eljayPlugins/oocWikiSearch.lua
 -- Purpose: Search and open pages on the OOC wiki (Order of Chaos).
--- Version: 2.5
--- Date: 2026-Oct-17
+-- Version: 2.6
+-- Date: 2026-Oct-20
 --
 --[[ Todo:
 - insert planning notes here between revisions.
 --]]
 --
 -- Changelog:
+--   2.6  Faster load: helpstyle and saved settings load on first use, and
+--        registration is cut to three aliases (two exact bare commands plus
+--        one regex alias for both names); load time is shown in the help
+--        footer; NAME/SHORT command-name locals and a short-alias help row.
 --   2.5  Clipboard copy now uses rune.clipboard.set first, as annwnQuestSearch
 --        does (external tools stay as a fallback); paint/say, help and saved
 --        settings follow annwnQuestSearch v2.7 (only on/off is saved, debug
@@ -44,6 +48,10 @@
 --     pbcopy or clip if that is unavailable.
 --   * The on/off setting is saved with rune.store; the debug toggle always
 --     starts off.
+--   * Loading is kept light: helpstyle and the saved on/off setting are read
+--     the first time they are needed, and the help footer shows the load time.
+--   * Commands are typed without a / prefix. oocWikiSearch is the full
+--     command and ooc is the short alias; typing either alone shows help.
 --   * Requests use curl (included with Windows 10+, Linux and macOS) with
 --     short timeouts; no shell-special characters reach the command line.
 --
@@ -57,8 +65,14 @@
 --   oocWikiSearch on|off             enable or disable searching
 --   oocWikiSearch debug on|off       toggle debug messages (default off)
 
+local LOAD_START = os.clock()
+local load_ms = nil
+
+-- Command names: full command and short alias.
 local NAME = "oocWikiSearch"
-local VERSION = "2.5"
+local SHORT = "ooc"
+
+local VERSION = "2.6"
 
 local BASE_URL = "https://ooc.dune.net"
 local USER_AGENT = "Rune-oocWikiSearch/" .. VERSION
@@ -93,10 +107,23 @@ local SETTINGS_KEY = NAME .. ".settings"
 local ANSI_CYAN = "\27[36m"
 local ANSI_RESET = "\27[0m"
 
--- Optional shared help styling (same module autopouch.lua uses).
-local helpstyle_ok, H = pcall(require, "helpstyle")
-if not helpstyle_ok then
-  H = nil
+-- Optional shared help styling (same module autopouch.lua uses), loaded on
+-- the first help request so it does not slow the plugin load.
+local helpstyle_module = nil
+local helpstyle_tried = false
+
+local function get_helpstyle()
+  if not helpstyle_tried then
+    helpstyle_tried = true
+
+    local ok, module = pcall(require, "helpstyle")
+
+    if ok and type(module) == "table" then
+      helpstyle_module = module
+    end
+  end
+
+  return helpstyle_module
 end
 
 local function emit(text)
@@ -169,28 +196,49 @@ local function save_settings()
   pcall(rune.store.set, SETTINGS_KEY, { enabled = ENABLED })
 end
 
-load_settings()
+-- Settings are read on first use, not at load.
+local settings_loaded = false
+
+local function ensure_settings()
+  if not settings_loaded then
+    settings_loaded = true
+    load_settings()
+  end
+end
+
+local function load_text()
+  if load_ms then
+    return string.format("%dms", math.floor(load_ms + 0.5))
+  end
+
+  return "n/a"
+end
 
 ---------------------------------------------------------------------------
 -- Help (helpstyle rows passed to emit)
 ---------------------------------------------------------------------------
 
 local function usage()
+  ensure_settings()
+
   -- One status row, starting with the version, as the footer.
   local status = string.format(
-    "v%s  state=%s debug=%s results=%d",
-    VERSION, onoff(ENABLED), onoff(DEBUG), #last_results
+    "v%s  enabled=%s debug=%s results=%d load=%s",
+    VERSION, onoff(ENABLED), onoff(DEBUG), #last_results, load_text()
   )
+
+  local H = get_helpstyle()
 
   local styled = H and pcall(function()
     emit(H.title("OOC wiki search"))
     emit(H.section("Commands"))
-    emit(H.line("oocWikiSearch <term>", "search the Order of Chaos wiki (short alias: ooc)"))
-    emit(H.line("oocWikiSearch <number>", "open a result and copy its URL"))
-    emit(H.line("oocWikiSearch list", "show the previous result list"))
-    emit(H.line("oocWikiSearch search <term>", "search for a term that is also a command"))
-    emit(H.line("oocWikiSearch on|off", "enable or disable searching"))
-    emit(H.line("oocWikiSearch debug on|off", "toggle debug messages (default off)"))
+    emit(H.line(NAME .. " <term>", "search the Order of Chaos wiki"))
+    emit(H.line(NAME .. " <number>", "open a result and copy its URL"))
+    emit(H.line(NAME .. " list", "show the previous result list"))
+    emit(H.line(NAME .. " search <term>", "search for a term that is also a command"))
+    emit(H.line(NAME .. " on|off", "enable or disable searching"))
+    emit(H.line(NAME .. " debug on|off", "toggle debug messages (default off)"))
+    emit(H.line(SHORT, "short alias for " .. NAME))
     emit(H.foot(status))
   end)
 
@@ -200,12 +248,13 @@ local function usage()
 
   -- Plain fallback when helpstyle is missing or its API differs.
   emit("OOC wiki search")
-  emit("  oocWikiSearch <term>           search the Order of Chaos wiki (short alias: ooc)")
-  emit("  oocWikiSearch <number>         open a result and copy its URL")
-  emit("  oocWikiSearch list             show the previous result list")
-  emit("  oocWikiSearch search <term>    search for a term that is also a command")
-  emit("  oocWikiSearch on|off           enable or disable searching")
-  emit("  oocWikiSearch debug on|off     toggle debug messages (default off)")
+  emit("  " .. NAME .. " <term>           search the Order of Chaos wiki")
+  emit("  " .. NAME .. " <number>         open a result and copy its URL")
+  emit("  " .. NAME .. " list             show the previous result list")
+  emit("  " .. NAME .. " search <term>    search for a term that is also a command")
+  emit("  " .. NAME .. " on|off           enable or disable searching")
+  emit("  " .. NAME .. " debug on|off     toggle debug messages (default off)")
+  emit("  " .. SHORT .. "                short alias for " .. NAME)
   emit(status)
 end
 
@@ -717,7 +766,7 @@ local function require_enabled()
     return true
   end
 
-  say("Searching is off. Use: oocWikiSearch on")
+  say("Searching is off. Use: " .. NAME .. " on")
   return false
 end
 
@@ -741,6 +790,8 @@ local function open_result(number)
 end
 
 local function dispatch(argument)
+  ensure_settings()
+
   argument = trim(argument)
 
   if argument == "" or argument:lower() == "help" then
@@ -794,7 +845,7 @@ local function dispatch(argument)
 end
 
 ---------------------------------------------------------------------------
--- Rune aliases (no / prefix; ooc is the short alias)
+-- Rune aliases (no / prefix; the short alias works in place of the full name)
 ---------------------------------------------------------------------------
 
 -- Bare command: exact alias handler taking (args, ctx); always shows help.
@@ -807,7 +858,8 @@ local function bare_command(args, ctx)
   usage()
 end
 
--- Command with arguments: regex alias, capture 1 is the argument text.
+-- Command with arguments: one regex alias for both names, capture 1 is the
+-- argument text.
 local function term_command(matches)
   local argument = ""
 
@@ -832,7 +884,7 @@ end
 
 local has_exact = type(rune.alias.exact) == "function"
 
-for _, command in ipairs({ "oocWikiSearch", "ooc" }) do
+for _, command in ipairs({ NAME, SHORT }) do
   local options = { name = command, group = NAME, priority = 10 }
 
   if has_exact then
@@ -840,13 +892,15 @@ for _, command in ipairs({ "oocWikiSearch", "ooc" }) do
   else
     register("regex", "^" .. command .. "\\s*$", bare_command, options)
   end
-
-  register(
-    "regex",
-    "^" .. command .. "\\s+(.+)$",
-    term_command,
-    { name = command .. "_args", group = NAME, priority = 10 }
-  )
 end
 
-say(string.format("v%s loaded (oocWikiSearch or ooc for help)", VERSION))
+register(
+  "regex",
+  "^(?:" .. NAME .. "|" .. SHORT .. ")\\s+(.+)$",
+  term_command,
+  { name = NAME .. "_args", group = NAME, priority = 10 }
+)
+
+load_ms = (os.clock() - LOAD_START) * 1000
+
+say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))

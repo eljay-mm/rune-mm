@@ -1,8 +1,12 @@
 -- Filename: eljayPlugins/jmcSolver.lua
 -- Purpose: Joint Magical Consortium (JMC) projectile puzzle - standalone solver (no website, no network).
--- Version: 1.7
--- Date: 2026-Oct-15
+-- Version: 1.8
+-- Date: 2026-Oct-20
+--[[
+- insert planning notes here between revisions.
+]]
 -- Changelog:
+--   1.8  Brought to standard: NAME/SHORT command-name locals and a short-alias row in the help; load time in the help footer; faster load (helpstyle, settings and the on/off state are read on first use); bare commands are rune.alias.exact handlers; Todo block in the header.
 --   1.7  Auto-drop: choosing a solution arms it, and each mirror is dropped when you reach its grid square (arrival line "Grid X, N of the Projectile Testing Range"; `drop 90clock` / `45clock` / `90counter` / `45counter`); new `arm`, `plan` and `stop` commands, `autodrop` and `dropcmd` settings.
 --   1.6  Brought to standard: full command jmcSolver with jmc as the short alias; on/off toggle for the capture trigger (kept in rune.store, as are the settings); Windows clipboard support (clip.exe); loader line and [jmcSolver] prefix; no block-comment markers.
 --   1.5  Repo-style header pass; command summary aligned to current formatting and still preserves the original solver logic.
@@ -38,7 +42,8 @@
 --     (90clock, 45clock, 90counter, 45counter), confirms it from the game's "You drop an angled mirror rotated ..." reply
 --     and tells you how many are left. It never moves you; `look` on a planned square drops its mirror if you armed while standing there.
 --   * `jmcSolver selftest` solves two built-in puzzles whose website answers are known and checks them.
---   * Typing `jmcSolver` (or `jmc`) alone shows the command summary; `jmcSolver debug on|off` toggles debug messages (default off).
+--   * Typing `jmcSolver` (or `jmc`) alone shows the command summary, with the version, state and load time in the footer;
+--     `jmcSolver debug on|off` toggles debug messages (default off).
 --
 -- Commands (jmc is the short alias):
 --   jmcSolver                    show the command summary
@@ -57,8 +62,14 @@
 --   jmcSolver set <key> <value>  change one setting
 --   jmcSolver debug on | off     toggle debug messages
 
-local VERSION = "1.7"
-local NAME    = "jmcSolver"
+local T0 = os.clock()      -- load timer, reported in the help footer
+local LOAD_MS = 0
+
+local VERSION = "1.8"
+
+-- Command names: full command and short alias.
+local NAME  = "jmcSolver"
+local SHORT = "jmc"
 
 -- Lines (Lua patterns) that frame the captures
 local LOOK_HEADER = "^%s*You focus your powers of observation on the ignition console"
@@ -119,7 +130,7 @@ local function storeSet(key, value)
   pcall(rune.store.set, key, value)
 end
 
-local enabled = (storeGet("jmcSolver.enabled") ~= false)
+local enabled = true      -- read from rune.store on first use (ensureLoaded)
 
 local function saveSettings()
   local out = {}
@@ -148,7 +159,14 @@ local function loadSettings()
   end
 end
 
-loadSettings()
+-- The on/off state and the settings are read from rune.store on first use, which keeps the load fast
+local loaded = false
+local function ensureLoaded()
+  if loaded then return end
+  loaded = true
+  enabled = (storeGet("jmcSolver.enabled") ~= false)
+  loadSettings()
+end
 
 -- Output helpers ----
 local function paint(color, text)
@@ -649,39 +667,59 @@ local function mirrorCounts(invLines)
   return owned
 end
 
--- Help (helpstyle, as in autopouch.lua) ----
-local H = require("helpstyle")
+-- Help (helpstyle, loaded on first use) ----
+local H     -- helpstyle module (nil = not tried yet, false = unavailable)
 
--- Status line for the help footer, key=value like autopouch
+-- Echo a helpstyle row (H[fn](...)), or the plain text when helpstyle is unavailable
+local function emit(fn, plain, ...)
+  if H == nil then
+    local ok, mod = pcall(require, "helpstyle")
+    H = (ok and type(mod) == "table") and mod or false
+  end
+  if H and type(H[fn]) == "function" then
+    local ok, out = pcall(H[fn], ...)
+    if ok and type(out) == "string" then rune.echo(out); return end
+  end
+  rune.echo(plain)
+end
+
+local function row(cmd, desc)
+  emit("line", string.format("  %-28s %s", cmd, desc), cmd, desc)
+end
+
+-- Status line for the help footer: version first, key=value, load time last
 local function statusLine()
-  return string.format("v%s  trigger=%s  debug=%s  gates=%s  maxm=%d  more=%d  alts=%d  copy=%s  autodrop=%s",
-    VERSION, enabled and "on" or "off", cfg.debug and "on" or "off", tostring(cfg.gates), cfg.maxm, cfg.more,
-    cfg.alts, cfg.copy and "on" or "off", cfg.autodrop and "on" or "off")
+  return string.format("v%s  enabled=%s  debug=%s  gates=%s  maxm=%d  more=%d  alts=%d  copy=%s  autodrop=%s  load=%dms",
+    VERSION, tostring(enabled), cfg.debug and "on" or "off", tostring(cfg.gates), cfg.maxm, cfg.more,
+    cfg.alts, cfg.copy and "on" or "off", cfg.autodrop and "on" or "off", LOAD_MS)
 end
 
 local function showHelp()
-  rune.echo(H.title("jmcSolver (alias jmc) - Joint Magical Consortium puzzle solver, standalone"))
-  rune.echo(H.section("Run:"))
-  rune.echo(H.line("jmcSolver solve (jms)", "look at the console + inventory and solve the puzzle"))
-  rune.echo(H.line("jmcSolver again", "solve the last captured look + mirrors again"))
-  rune.echo(H.line("jmcSolver last", "show the last result again"))
-  rune.echo(H.line("jmcSolver on | off", "turn the console/inventory capture trigger on or off"))
-  rune.echo(H.section("Choose:"))
-  rune.echo(H.line("jmcSolver pick <n>", "show, copy and arm solution n (* = only your own mirrors)"))
-  rune.echo(H.line("jmcSolver copy [n|all]", "copy the picked solution, solution n, or all of them"))
-  rune.echo(H.section("Place:"))
-  rune.echo(H.line("jmcSolver arm [n]", "drop the solution's mirrors as you reach each grid square"))
-  rune.echo(H.line("jmcSolver plan", "show which mirrors are placed and which are still to place"))
-  rune.echo(H.line("jmcSolver stop", "cancel auto-drop"))
-  rune.echo(H.section("Info:"))
-  rune.echo(H.line("jmcSolver rules", "show the rules the solver assumes"))
-  rune.echo(H.line("jmcSolver selftest", "solve two built-in puzzles with known answers"))
-  rune.echo(H.section("Settings:"))
-  rune.echo(H.line("jmcSolver set", "list the settings"))
-  rune.echo(H.line("jmcSolver set <key> <value>", "change one (gates place maxm more maxtotal alts copy clip autodrop dropcmd budget lookcmd invcmd maxlines)"))
-  rune.echo(H.line("jmcSolver debug on | off", "toggle debug messages (default off)"))
-  rune.echo("")
-  rune.echo(H.foot(statusLine()))
+  ensureLoaded()
+  local title = NAME .. " (alias " .. SHORT .. ") - Joint Magical Consortium puzzle solver, standalone"
+  emit("title", title, title)
+  emit("section", "Run:", "Run:")
+  row(NAME .. " solve (jms)", "look at the console + inventory and solve the puzzle")
+  row(NAME .. " again", "solve the last captured look + mirrors again")
+  row(NAME .. " last", "show the last result again")
+  row(NAME .. " on | off", "turn the console/inventory capture trigger on or off")
+  emit("section", "Choose:", "Choose:")
+  row(NAME .. " pick <n>", "show, copy and arm solution n (* = only your own mirrors)")
+  row(NAME .. " copy [n|all]", "copy the picked solution, solution n, or all of them")
+  emit("section", "Place:", "Place:")
+  row(NAME .. " arm [n]", "drop the solution's mirrors as you reach each grid square")
+  row(NAME .. " plan", "show which mirrors are placed and which are still to place")
+  row(NAME .. " stop", "cancel auto-drop")
+  emit("section", "Info:", "Info:")
+  row(NAME .. " rules", "show the rules the solver assumes")
+  row(NAME .. " selftest", "solve two built-in puzzles with known answers")
+  emit("section", "Settings:", "Settings:")
+  row(NAME .. " set", "list the settings")
+  row(NAME .. " set <key> <value>", "change one (gates place maxm more maxtotal alts copy clip autodrop dropcmd budget lookcmd invcmd maxlines)")
+  row(NAME .. " debug on | off", "toggle debug messages (default off)")
+  row(SHORT, "short alias for " .. NAME)
+  local status = statusLine()
+  emit("foot", status, status)
 end
 
 local function showRules()
@@ -1110,6 +1148,7 @@ end
 
 -- Runs for every line; stays cheap while no capture is active
 local function onLine(_, ctx)
+  if not loaded then ensureLoaded() end
   if not enabled then return end
   local ln = ctx and ctx.line
   if ln == nil then return end
@@ -1226,6 +1265,7 @@ local commands = {
 }
 
 local function dispatch(m, ctx)
+  ensureLoaded()
   m = m or (ctx and ctx.matches) or {}
   local sub  = (m[1] or ""):lower()
   local rest = m[2] or ""
@@ -1245,7 +1285,12 @@ local function dispatch(m, ctx)
   end
 end
 
-rune.alias.regex("^(?:jmcSolver|jmc)(?:\\s+(\\S+))?(?:\\s+(.*))?$", dispatch, { name = "jmcSolver-cmd" })
-rune.alias.exact("jms", "jmcSolver solve")
+-- Bare command and short alias show the help; subcommands go through one regex alias
+local function helpHandler(args, ctx) showHelp() end
+rune.alias.exact(NAME, helpHandler)
+rune.alias.exact(SHORT, helpHandler)
+rune.alias.regex("^(?:" .. NAME .. "|" .. SHORT .. ")\\s+(\\S+)(?:\\s+(.*))?$", dispatch, { name = NAME .. "-cmd" })
+rune.alias.exact("jms", NAME .. " solve")
 
-say("v" .. VERSION .. " loaded (" .. NAME .. " or jmc for help)")
+LOAD_MS = math.floor((os.clock() - T0) * 1000 + 0.5)
+say("v" .. VERSION .. " loaded (" .. NAME .. " or " .. SHORT .. " for help)")

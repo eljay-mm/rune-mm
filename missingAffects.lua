@@ -1,70 +1,25 @@
 -- Filename: eljayPlugins/missingAffects.lua
 -- Purpose: Compare listed affects with a wanted-affects list and report missing affects.
--- Version: 1.18
--- Date: 2026-Oct-18
+-- Version: 1.21
+-- Date: 2026-Oct-20
 --[[
 Todo:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
---   1.18 The name is requested from the game at load (silently, only when it is not
---        already known and GMCP is enabled), so "missingAffects charname" is no
---        longer needed after a /reload.
---   1.17 "missingAffects charname" now reports the name itself when the game's
---        reply arrives, so it only needs to be run once.
---   1.16 Settings reload the moment the character name changes, through
---        charname.on_change; the checks at each command and listing remain as a
---        backstop.
---   1.15 Character name now comes only from horstgs' charname.lua (get/key), so the
---        own GMCP hooks, rune.connection.character and shape-guessing are removed;
---        keys are charname.key("missingAffects.<setting>"). New command
---        "missingAffects charname" asks the game for the name again and reports it.
---        v1.13 keys (base:Name) and pre-1.13 global keys are adopted once.
---   1.14 Brought to standard: load time shown in the help footer (load=Nms); faster
---        load (one regex alias for missingAffects / ma / mac, one combined trigger,
---        helpstyle and saved settings loaded on first use, GMCP hooked only when no
---        name is available otherwise); the character name is read from horstgs'
---        charname module when it can be required, then rune.connection.character,
---        then GMCP.
---   1.13 Settings are saved only under the character name (rule for this plugin).
---        Before, a plugin loaded before the character name was known read and wrote
---        one global key shared by every character, and rune.connection.character
---        may never be set. Now the name comes from rune.connection.character or,
---        failing that, from GMCP (Char.Name, Char.Base, Char.Status); settings are
---        (re)loaded when it becomes known or changes, and
---        nothing is written while it is unknown (a one-line notice says so). A
---        pre-1.13 global value is adopted once into the character's own key. The
---        footer shows char=<name>.
---   1.12 Removed the druid-analogue concept. Spells such as shield or refresh are
---        regular spells that share their name with a bard song: by default they are
---        sent as cast '<spell>', and with "missingAffects class bard" they are
---        played as songs instead. Druid invocations ("<element> invocation") are
---        unchanged and always sent as invoke <element>. Class values are now
---        spell (default) and bard.
---   1.11 Added "missingAffects cast all" and "mac all": cast every wanted affect,
---        present or not, to extend durations. "mac" is now a regex alias so it
---        accepts the "all" argument.
---   1.10 Root cause of false "missing" reports fixed: the real affects output has
---        rows such as "Spell:      shield   - Level 241, modifies ar ..." and
---        "Affect:     air invocation   - Level ...", which no trigger matched, so
---        nothing was ever recorded. One trigger now captures the name from
---        Spell/Affect/Racial/Skill rows; "You are affected by the following:"
---        starts a fresh listing; the unused "Affects:" trigger is removed.
---   1.9  Fixed false "missing" reports: each listed line is now reduced to several
---        candidate names (whole line, label removed, text before ":" "(" " - " or a
---        number) before matching, so decorated lines such as "Spell: shield : 5
---        hours" match the wanted name "shield"; trigger patterns tolerate leading
---        whitespace; "missingAffects lines" shows what the last listing captured.
---        DRUID_SPELLS fixed (duplicate "magma invocation" key lost minerals) and
---        rebuilt from rows so duplicates are detected.
---   1.8  Bard play and druid invoke/evoke reintegrated from bardSongTLAs 2.4 and
---        druidSpellTLAs 2.6: separate BARD_SONGS and DRUID_SPELLS tables, a class
---        setting picks the method for names both classes share (shield, light...),
---        and the druid analogues missing before (enhanced strength, shield,
---        levitation, refresh, blindness, fireball, haste) are added.
---   1.7  Brought to standard: annwnQuestSearch display method, bare commands as
---        rune.alias.exact handlers taking (args, ctx), loader line with short
---        alias, regex-syntax trigger patterns, stale-listing reset.
+--   1.21 Plan skills added: the 12 skills from 'skill tag physical-spell' (ascendance,
+--        beast of burden, ..., summon soldier) are applied with plan '<name>' instead
+--        of cast, whatever the class setting.
+--   1.20 Wanted-list changes (want, add, remove, clear) now read the latest list from
+--        rune.store inside the write, change that fresh copy, save it, then refresh
+--        the in-memory list; the cached list is never the basis for a write.
+--   1.19 Command names defined once (NAME, SHORT, CAST_SHORT) and used throughout the
+--        help output; help gains a "short alias for" row before the footer.
+--   1.15-1.18 Name from horstgs' charname.lua (charname.key, on_change, requested at
+--        load, "missingAffects charname"); older keys adopted once.
+--   1.7-1.14 Standard display, aliases and footer; parsing fitted to the real
+--        affects output; cast all; spell|bard class; faster load; charname-only
+--        saving.
 --
 -- How it works:
 --   * Affects output parsed (Materia Magica):
@@ -91,15 +46,18 @@ Todo:
 --   * "missingAffects cast" sends one command per item in the most recent
 --     missing-affects result.
 --   * Command per name: druid invocations ("magma invocation" and so on) are sent
---     as invoke <element>; every other name is a regular spell and is sent as
---     cast '<name>'. With "missingAffects class bard", names that are also bard
+--     as invoke <element>; the plan skills (PLAN_SKILLS, from 'skill tag
+--     physical-spell') are sent as plan '<name>'; every other name is a regular
+--     spell and is sent as cast '<name>'. With "missingAffects class bard", names that are also bard
 --     songs are sent as play '<song>' instead (class spell is the default).
 --   * Settings (wanted list, on/off, debug, class) are stored in rune.store under
 --     keys made by charname.key("missingAffects.<setting>") (horstgs' charname.lua,
 --     which tracks the name from GMCP). They are never saved without a character
---     name. Settings reload as soon as charname.lua reports a new name;
---     until the name is known, changes last for the session only. Settings load
---     when the name first becomes known and again if it changes.
+--     name: until it is known, changes last for the session only. Settings load
+--     when the name first becomes known and reload as soon as charname.lua
+--     reports a change.
+--   * Wanted-list edits are read-modify-write: the latest list is read from
+--     rune.store inside the edit, changed, saved, and only then copied into memory.
 --   * A listing that never reaches its summary line is discarded when the next
 --     affect line arrives more than LISTING_TIMEOUT seconds later.
 --
@@ -116,7 +74,7 @@ Todo:
 --   missingAffects lines           show lines captured by the last affects listing
 --   missingAffects charname        ask the game for the character name again and show it
 --   missingAffects clear           clear wanted affects
---   missingAffects cast            play/invoke/evoke/cast the last missing-affects list
+--   missingAffects cast            play/invoke/evoke/plan/cast the last missing-affects list
 --   missingAffects cast all        cast every wanted affect, even if already present
 --   mac                            alias for "missingAffects cast"
 --   mac all                        alias for "missingAffects cast all"
@@ -130,9 +88,11 @@ Todo:
 
 local LOAD_START = os.clock()
 
+-- Command names: full command and short alias.
 local NAME = "missingAffects"
 local SHORT = "ma"
-local VERSION = "1.18"
+local CAST_SHORT = "mac" -- alias for "missingAffects cast" / "cast all"
+local VERSION = "1.21"
 
 local KEY_WANTED = "missingAffects.wanted"
 local KEY_ENABLED = "missingAffects.enabled"
@@ -180,6 +140,18 @@ for _, row in ipairs(DRUID_INVOCATIONS) do
     INVOCATION_LOOKUP[key] = { row[2], row[3] }
   end
 end
+
+-- Plan skills, from the in-game 'skill tag physical-spell' list: applied with
+-- plan '<name>' instead of cast, whatever the class setting.
+local PLAN_SKILLS = {
+  "ascendance", "beast of burden", "blood in my mouth", "blood in your mouth",
+  "cover of darkness", "frothing rage", "headbutt", "home on the range",
+  "physical reinforcement", "renegade and steer clear", "rites of bloodshed",
+  "summon soldier",
+}
+
+local PLAN_LOOKUP = {}
+for _, skill in ipairs(PLAN_SKILLS) do PLAN_LOOKUP[skill] = true end
 
 local BARD_LOOKUP = {}
 for _, song in ipairs(BARD_SONGS) do BARD_LOOKUP[song] = true end
@@ -347,6 +319,12 @@ local function store_get(key)
   return nil
 end
 
+local function copy_list(list)
+  local out = {}
+  for _, item in ipairs(list) do out[#out + 1] = item end
+  return out
+end
+
 local function default_wanted()
   local out = {}
   for _, item in ipairs(DEFAULT_WANTED) do out[#out + 1] = item end
@@ -363,7 +341,7 @@ local function save_value(base, value)
   if not char then
     if not warned_no_char then
       warned_no_char = true
-      say("character name not known yet (see missingAffects charname); changes are kept for this session only")
+      say("character name not known yet (see " .. NAME .. " charname); changes are kept for this session only")
     end
     return false
   end
@@ -420,7 +398,7 @@ local function ensure_settings(force)
   wanted = default_wanted()
 
   local saved_wanted = read_setting(KEY_WANTED, char, is_table)
-  if saved_wanted then wanted = saved_wanted end
+  if saved_wanted then wanted = copy_list(saved_wanted) end
 
   local saved_enabled = read_setting(KEY_ENABLED, char, is_boolean)
   if saved_enabled ~= nil then enabled = saved_enabled end
@@ -437,8 +415,24 @@ local function ensure_settings(force)
   dbg("settings loaded for %s", char)
 end
 
-local function save_wanted()
-  return save_value(KEY_WANTED, wanted)
+-- Change the wanted list the safe way: read the latest list from rune.store, let
+-- modify(list) change that fresh copy, save it, then refresh the in-memory list.
+-- Without a character name nothing is read or saved; the in-memory list is changed
+-- for this session only (save_value prints the notice).
+local function update_wanted(modify)
+  local fresh
+  if charname() then
+    local key = store_key(KEY_WANTED)
+    local current = key and store_get(key)
+    fresh = copy_list(is_table(current) and current or default_wanted())
+  else
+    fresh = copy_list(wanted)
+  end
+
+  modify(fresh)
+  local saved = save_value(KEY_WANTED, fresh)
+  wanted = fresh
+  return saved
 end
 
 local function report_charname()
@@ -464,7 +458,7 @@ local function request_charname()
   end
 end
 
--- "missingAffects charname": request the name again, reload settings for it, and
+-- "<NAME> charname": request the name again, reload settings for it, and
 -- report it: now if it is known, otherwise when the game's reply arrives (see the
 -- charname.on_change hook at the end of the file).
 local function refresh_charname()
@@ -568,13 +562,14 @@ local function finish_listing()
 end
 
 -- Resolve an affect name to method, name. Druid invocations always use
--- invoke/evoke; with class bard, names that are bard songs are played; every
--- other name is a regular spell and is cast.
+-- invoke/evoke; plan skills always use plan; with class bard, names that are bard
+-- songs are played; every other name is a regular spell and is cast.
 local function resolve_ability(name)
   local key = normalize(name)
   local invocation = INVOCATION_LOOKUP[key]
 
   if invocation then return invocation[1], invocation[2] end
+  if PLAN_LOOKUP[key] then return "plan", key end
   if class_mode == "bard" and BARD_LOOKUP[key] then return "play", key end
   return "cast", name
 end
@@ -663,38 +658,36 @@ local function help_summary()
     .. " char=" .. (charname() or "unknown")
     .. " load=" .. (load_ms or 0) .. "ms"
 
+  local rows = {
+    { NAME, "show this help" },
+    { NAME .. " on|off", "enable or disable listing triggers" },
+    { NAME .. " debug on|off", "toggle debug output" },
+    { NAME .. " class spell|bard", "cast spells (default) or play bard songs" },
+    { NAME .. " want <names>", "replace wanted list; comma-separated" },
+    { NAME .. " add|remove <name>", "edit wanted-affects list" },
+    { NAME .. " list|clear", "show or clear wanted list" },
+    { NAME .. " lines", "show lines captured by the last listing" },
+    { NAME .. " charname", "refresh the character name from the game" },
+    { NAME .. " cast / " .. CAST_SHORT, "play/invoke/evoke/plan/cast the last missing result" },
+    { NAME .. " cast all / " .. CAST_SHORT .. " all", "cast every wanted affect, even if present" },
+    { SHORT, "short alias for " .. NAME },
+  }
+
   local H = get_helpstyle()
   if H and H.title and H.section and H.line and H.foot then
     emit(H.title("Missing affects"))
     emit(H.section("Commands"))
-    emit(H.line("missingAffects / ma", "show this help"))
-    emit(H.line("missingAffects on|off", "enable or disable listing triggers"))
-    emit(H.line("missingAffects debug on|off", "toggle debug output"))
-    emit(H.line("missingAffects class spell|bard", "cast spells (default) or play bard songs"))
-    emit(H.line("missingAffects want <names>", "replace wanted list; comma-separated"))
-    emit(H.line("missingAffects add|remove <name>", "edit wanted-affects list"))
-    emit(H.line("missingAffects list|clear", "show or clear wanted list"))
-    emit(H.line("missingAffects lines", "show lines captured by the last listing"))
-    emit(H.line("missingAffects charname", "refresh the character name from the game"))
-    emit(H.line("missingAffects cast / mac", "play/invoke/evoke/cast the last missing result"))
-    emit(H.line("missingAffects cast all / mac all", "cast every wanted affect, even if present"))
+    for _, row in ipairs(rows) do
+      emit(H.line(row[1], row[2]))
+    end
     emit(H.foot(status))
     return
   end
 
   say("Missing affects")
-  say("  missingAffects / ma            show this help")
-  say("  missingAffects on|off           enable or disable listing triggers")
-  say("  missingAffects debug on|off     toggle debug output")
-  say("  missingAffects class spell|bard cast spells (default) or play bard songs")
-  say("  missingAffects want <names>     replace wanted list; comma-separated")
-  say("  missingAffects add <name>       add an affect")
-  say("  missingAffects remove <name>    remove an affect")
-  say("  missingAffects list|clear       show or clear wanted list")
-  say("  missingAffects lines            show lines captured by the last listing")
-  say("  missingAffects charname         refresh the character name from the game")
-  say("  missingAffects cast / mac       play/invoke/evoke/cast the last missing result")
-  say("  missingAffects cast all / mac all  cast every wanted affect, even if present")
+  for _, row in ipairs(rows) do
+    say("  " .. row[1] .. "  " .. row[2])
+  end
   say(status)
 end
 
@@ -750,12 +743,16 @@ local function handle_command(text)
   elseif verb == "list" then
     show_list()
   elseif verb == "clear" then
-    wanted = {}
-    save_wanted()
+    update_wanted(function(list)
+      for i = #list, 1, -1 do list[i] = nil end
+    end)
     say("wanted-affects list cleared")
   elseif verb == "want" then
-    wanted = split_names(rest)
-    save_wanted()
+    local names = split_names(rest)
+    update_wanted(function(list)
+      for i = #list, 1, -1 do list[i] = nil end
+      for _, name in ipairs(names) do list[#list + 1] = name end
+    end)
     say("wanted-affects list replaced (" .. #wanted .. " items)")
   elseif verb == "add" then
     if rest == "" then
@@ -764,16 +761,17 @@ local function handle_command(text)
     end
 
     local key = normalize(rest)
-    for _, item in ipairs(wanted) do
-      if normalize(item) == key then
-        say("already wanted: " .. rest)
-        return
+    local exists = false
+    update_wanted(function(list)
+      for _, item in ipairs(list) do
+        if normalize(item) == key then
+          exists = true
+          return
+        end
       end
-    end
-
-    wanted[#wanted + 1] = rest
-    save_wanted()
-    say("added: " .. rest)
+      list[#list + 1] = rest
+    end)
+    say((exists and "already wanted: " or "added: ") .. rest)
   elseif verb == "remove" then
     if rest == "" then
       help_summary()
@@ -781,13 +779,13 @@ local function handle_command(text)
     end
 
     local key = normalize(rest)
-    for i = #wanted, 1, -1 do
-      if normalize(wanted[i]) == key then
-        table.remove(wanted, i)
+    update_wanted(function(list)
+      for i = #list, 1, -1 do
+        if normalize(list[i]) == key then
+          table.remove(list, i)
+        end
       end
-    end
-
-    save_wanted()
+    end)
     say("removed: " .. rest)
   else
     help_summary()
@@ -825,17 +823,17 @@ if rune and rune.trigger and type(rune.trigger.regex) == "function" then
 end
 
 -- ---------------------------------------------------------------------------
--- Alias (one regex alias for missingAffects, ma and mac; bare commands, no / prefix)
+-- Alias (one regex alias for NAME, SHORT and CAST_SHORT; bare commands, no / prefix)
 -- ---------------------------------------------------------------------------
 
 if rune and rune.alias and type(rune.alias.regex) == "function" then
-  rune.alias.regex("^(missingAffects|ma|mac)(?:[ ]+(.+))?$", function(m)
+  rune.alias.regex("^(" .. NAME .. "|" .. SHORT .. "|" .. CAST_SHORT .. ")(?:[ ]+(.+))?$", function(m)
     local command = (m and m[1]) or ""
     local rest = trim((m and m[2]) or "")
 
     ensure_settings(true) -- re-check the character name before any command
 
-    if command == "mac" then
+    if command == CAST_SHORT then
       if rest:lower() == "all" then
         cast_all()
       else

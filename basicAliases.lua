@@ -167,6 +167,8 @@ A("tt", "take all.tourm corpse")
 A("tg", "take gold corpse")
 A("fha", "take bernadette miner;eat bernadette")
 A("ir", "inventory reorder")
+A("tl19g", "take all community; take all princely")
+A("tl19r", "take all community; take all reclassing")
 
 -- Basics / utility
 

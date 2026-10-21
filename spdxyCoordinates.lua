@@ -1,11 +1,16 @@
 -- Filename: eljayPlugins/spdxyCoordinates.lua
 -- Purpose: Walks to sextant coordinates, towns and clan halls, including unmapped wilderness
--- Version: 3.5
--- Date: 2026-Oct-16
---   3.5  Bare spdxyCoordinates, spdxy and nearby are now rune.alias.exact handlers
---        (args, ctx), so each always shows help or runs; help rows go through
---        emit(); loader line `[spdxyCoordinates] v3.5 loaded (spdxyCoordinates for
---        help)`; waypoints capped at 100.
+-- Version: 3.6
+-- Date: 2026-Oct-20
+--[[
+- insert planning notes here between revisions.
+]]
+--   3.6  Faster load: helpstyle, mapper modules and saved data load on first use,
+--        the walk triggers are one trigger registered at the first walk, the
+--        argument aliases are one regex; load time shown in the help footer;
+--        NAME/SHORT command-name locals and a short-alias help row.
+--   3.5  Bare spdxyCoordinates, spdxy and nearby are rune.alias.exact handlers
+--        (args, ctx); help rows go through emit(); loader line; waypoint cap.
 --   3.4  Command renamed to spdxyCoordinates (spdxy kept as the short alias); new
 --        bare `nearby` alias; helpstyle help with a status footer; on/off and
 --        debug toggles (saved); waypoint names sanitised.
@@ -53,18 +58,13 @@
 ----------------------------------------------------------------------
 -- Plugin identity, helpers, settings
 ----------------------------------------------------------------------
-local PLUGIN  = "spdxyCoordinates"
-local VERSION = "3.5"
+local T0 = os.clock()   -- load timer; the result is reported in the help footer
+local load_ms = 0
 
-local ok_h, H = pcall(require, "helpstyle")
-if not ok_h or type(H) ~= "table" then
-  H = {   -- plain fallback if helpstyle is not installed
-    title   = function(t) return t end,
-    section = function(t) return t end,
-    line    = function(c, d) return string.format("  %-34s %s", c, d) end,
-    foot    = function(t) return t end,
-  }
-end
+-- Command names: full command and short alias.
+local NAME  = "spdxyCoordinates"
+local SHORT = "spdxy"
+local VERSION = "3.6"
 
 local function paint(color, text)
   local f = rune.style and rune.style[color]
@@ -72,7 +72,7 @@ local function paint(color, text)
   return text
 end
 
-local PREFIX = paint("cyan", "[" .. PLUGIN .. "] ")
+local PREFIX = paint("cyan", "[" .. NAME .. "] ")
 local function say(msg) rune.echo(PREFIX .. msg) end
 local function emit(s) rune.echo(s) end   -- helpstyle rows (H.*) go through here
 
@@ -84,16 +84,39 @@ local debug_on = rune.store.get(KEY_DEBUG) == true
 -- dbg(fmt, ...): formats only when debug is on.
 local function dbg(fmt, ...)
   if not debug_on then return end
-  rune.echo(paint("yellow", "[" .. PLUGIN .. " debug] ") .. string.format(fmt, ...))
+  rune.echo(paint("yellow", "[" .. NAME .. " debug] ") .. string.format(fmt, ...))
 end
 
-----------------------------------------------------------------------
--- Optional mapper modules (fallback outside the wilds only)
-----------------------------------------------------------------------
-local ok_s, store = pcall(require, "mapper_store")
-local ok_g, graph = pcall(require, "mapper_graph")
-local ok_w, mwalk = pcall(require, "mapper_walk")
-local have_mapper = ok_s and ok_g and ok_w
+-- helpstyle is only needed for the help screen, so it loads on first use.
+local H
+local function helpstyle()
+  if not H then
+    local ok, m = pcall(require, "helpstyle")
+    if ok and type(m) == "table" then
+      H = m
+    else
+      H = {   -- plain fallback if helpstyle is not installed
+        title   = function(t) return t end,
+        section = function(t) return t end,
+        line    = function(c, d) return string.format("  %-34s %s", c, d) end,
+        foot    = function(t) return t end,
+      }
+    end
+  end
+  return H
+end
+
+-- Optional mapper modules (fallback outside the wilds only), loaded on first use.
+local store, graph, mwalk
+local function mapper_modules()
+  if graph == nil then
+    local ok_s, s_ = pcall(require, "mapper_store")
+    local ok_g, g_ = pcall(require, "mapper_graph")
+    local ok_w, w_ = pcall(require, "mapper_walk")
+    if ok_s and ok_g and ok_w then store, graph, mwalk = s_, g_, w_ else graph = false end
+  end
+  return graph ~= false
+end
 
 ----------------------------------------------------------------------
 -- Configuration
@@ -488,13 +511,22 @@ local function save_table(k, t)
   pcall(rune.store.set, k, t)
 end
 
-local places = load_table(KEY_PLACES)      -- name -> { x =, y = }
-local last_target = load_table(KEY_LAST)   -- { x =, y = }
-local last_origin = load_table(KEY_ORIGIN) -- { x =, y =, plane = } start of last walk
+-- Saved data is read from rune.store on first use, not at load.
+local D
+local function data()
+  if not D then
+    D = {
+      places = load_table(KEY_PLACES),   -- waypoints: name -> { x =, y =, plane = }
+      target = load_table(KEY_LAST),     -- last destination { x =, y = }
+      origin = load_table(KEY_ORIGIN),   -- start of the last walk { x =, y =, plane = }
+    }
+  end
+  return D
+end
 
 local function count_places()
   local n = 0
-  for _ in pairs(places) do n = n + 1 end
+  for _ in pairs(data().places) do n = n + 1 end
   return n
 end
 
@@ -504,8 +536,18 @@ end
 local last = {}   -- latest Room.Info: x, y, zone, plane, exits, num
 local S = nil     -- active walk, or nil
 
--- Obstacle/water/combat triggers are only live while a walk is active.
+-- One combined trigger (obstacles, water, teleports, gusts, mount, combat). It is
+-- registered at the first walk, then its group is enabled only while walking.
+local on_walk_line   -- handler, defined in the Triggers section below
+local TRIG_NAME = "spdxy-walk-lines"
+local TRIG_PATTERN = [[^(?:You cannot move in that direction\.|You would surely need a grappling hook to move there\.|You can't go there while mounted\.|You need a sailing vessel to go there\.|The .+ (?:is|are) closed\.|The water current is too swift and turbulent for (?:you|your mount) to cross\.|You would need a sailing vessel or some form of levitation to go there\.|You would need a water-breathing mount to go there mounted\.|A swirling vortex of sound and energy envelops you|You hear a peal of thunder from afar\.\.|A sudden, strong gust of wind knocks you to the ground!|Your mount is sitting down\.|Not while you are in combat\.)]]
+local trig_ready = false
+
 local function set_triggers(on)
+  if on and not trig_ready then
+    rune.trigger.regex(TRIG_PATTERN, on_walk_line, { name = TRIG_NAME, group = GROUP })
+    trig_ready = true
+  end
   local fn = rune.group and (on and rune.group.enable or rune.group.disable)
   if fn then pcall(fn, GROUP) end
 end
@@ -526,7 +568,7 @@ local function pause(msg)
   S.paused = true
   S.pending = false
   say(msg)
-  say("'spdxy resume' to continue, 'spdxy stop' to cancel.")
+  say(string.format("'%s resume' to continue, '%s stop' to cancel.", SHORT, SHORT))
 end
 
 ----------------------------------------------------------------------
@@ -624,7 +666,7 @@ end
 -- stored coordinates match exactly.
 local function mapper_goto_xy(dx, dy)
   dbg("outside the wilds (zone=%s): mapper lookup for %d, %d", tostring(last.zone), dx, dy)
-  if not have_mapper then
+  if not mapper_modules() then
     say("you are not in the wilds, and the mapper modules are not available.")
     return
   end
@@ -700,12 +742,12 @@ end
 function speed_to_x_y(destx, desty)
   local tx, ty = tonumber(destx), tonumber(desty)
   if not tx or not ty then
-    say("Usage: spdxy <x> [,] <y>")
+    say("Usage: " .. SHORT .. " <x> [,] <y>")
     return
   end
 
   if not enabled then
-    say("disabled; type 'spdxyCoordinates on' to enable walking.")
+    say("disabled; type '" .. NAME .. " on' to enable walking.")
     return
   end
 
@@ -714,8 +756,8 @@ function speed_to_x_y(destx, desty)
     return
   end
 
-  last_target = { x = tx, y = ty }
-  save_table(KEY_LAST, last_target)
+  data().target = { x = tx, y = ty }
+  save_table(KEY_LAST, data().target)
 
   if not in_vmap(last.zone) then
     mapper_goto_xy(tx, ty)
@@ -742,8 +784,8 @@ function speed_to_x_y(destx, desty)
     started = os.time(),
     pending = false, paused = false,
   }
-  last_origin = { x = last.x, y = last.y, plane = plane_of_zone(last.zone) }
-  save_table(KEY_ORIGIN, last_origin)
+  data().origin = { x = last.x, y = last.y, plane = plane_of_zone(last.zone) }
+  save_table(KEY_ORIGIN, data().origin)
   dbg("start: zone=%s plane=%s from %d, %d to %d, %d", tostring(last.zone), tostring(plane_of_zone(last.zone)), last.x, last.y, tx, ty)
   set_triggers(true)
   say(string.format("walking from %d, %d to %d, %d (~%d steps)...",
@@ -811,26 +853,28 @@ rune.gmcp.on("Room.Info", function(data)
 end, { name = "spdxy-room-info" })
 
 ----------------------------------------------------------------------
--- Triggers (grouped; enabled only while a walk is active)
+-- Triggers (one combined trigger; enabled only while a walk is active)
 ----------------------------------------------------------------------
-local function trig(pattern, fn, name) rune.trigger.regex(pattern, function() fn() end, { name = name, group = GROUP }) end
-
-local function on_water()    if S and not S.paused then pause("water ahead.") end end
-local function on_teleport() if S then abort("teleported/recalled; walk aborted.") end end
-local function on_gust()     if S and S.pending then rune.send("stand"); S.sent_at = os.time() end end
-local function on_mount()    if S then rune.send("sayto mount stand") end end
-local function on_combat()   if S and not S.paused then pause("you are in combat.") end end
-
-trig([[^You cannot move in that direction\.$]], blocked, "spdxy-t-nomove")
-trig([[^(?:You would surely need a grappling hook to move there|You can't go there while mounted|You need a sailing vessel to go there|The .+ (?:is|are) closed)\.$]], blocked, "spdxy-t-blocked")
-trig([[^(?:The water current is too swift and turbulent for (?:you|your mount) to cross|You would need a sailing vessel or some form of levitation to go there|You would need a water-breathing mount to go there mounted)\.$]], on_water, "spdxy-t-water")
-trig([[^(?:A swirling vortex of sound and energy envelops you|You hear a peal of thunder from afar\.\.)]], on_teleport, "spdxy-t-teleport")
-trig([[^A sudden, strong gust of wind knocks you to the ground!$]], on_gust, "spdxy-t-gust")
-trig([[^Your mount is sitting down\.$]], on_mount, "spdxy-t-mount")
-trig([[^Not while you are in combat\.$]], on_combat, "spdxy-t-combat")
-
--- Idle until a walk starts (also resets the group after a /reload).
-set_triggers(false)
+on_walk_line = function(_, ctx)
+  if not S then return end
+  local ok, text = pcall(function() return ctx.line:clean() end)
+  if not ok or type(text) ~= "string" then return end
+  dbg("trigger: %s", text)
+  if text:find("water current", 1, true) or text:find("levitation", 1, true)
+     or text:find("water-breathing", 1, true) then
+    if not S.paused then pause("water ahead.") end
+  elseif text:find("swirling vortex", 1, true) or text:find("peal of thunder", 1, true) then
+    abort("teleported/recalled; walk aborted.")
+  elseif text:find("strong gust", 1, true) then
+    if S.pending then rune.send("stand"); S.sent_at = os.time() end
+  elseif text:find("mount is sitting", 1, true) then
+    rune.send("sayto mount stand")
+  elseif text:find("in combat", 1, true) then
+    if not S.paused then pause("you are in combat.") end
+  else
+    blocked()   -- cannot move / grappling hook / mounted / sailing vessel / closed
+  end
+end
 
 ----------------------------------------------------------------------
 -- Commands
@@ -838,30 +882,31 @@ set_triggers(false)
 local function status_row()
   local walk = "idle"
   if S then walk = string.format("%d,%d%s", S.tx, S.ty, S.paused and "(paused)" or "") end
-  return string.format("v%s  enabled=%s debug=%s places=%d clans=%d waypoints=%d walk=%s",
-    VERSION, enabled and "on" or "off", debug_on and "on" or "off",
-    #PLACES, #CLANS, count_places(), walk)
+  local load = load_ms < 0.5 and "<1ms" or string.format("%dms", math.floor(load_ms + 0.5))
+  return string.format("v%s  enabled=%s debug=%s places=%d clans=%d waypoints=%d walk=%s load=%s",
+    VERSION, tostring(enabled), tostring(debug_on), #PLACES, #CLANS, count_places(), walk, load)
 end
 
 local function help()
-  emit(H.title("spdxyCoordinates (alias: spdxy) - walk to sextant coordinates, towns and clan halls"))
+  local H = helpstyle()
+  emit(H.title(NAME .. " - walk to sextant coordinates, towns and clan halls"))
   emit(H.section("Walk:"))
-  emit(H.line("spdxy <x>, <y>", "walk to coordinates (comma optional)"))
-  emit(H.line("spdxy <town>", "town, landmark, worldgate or waypoint"))
-  emit(H.line("spdxy clan <name|#>", "walk to a clan hall"))
-  emit(H.line("spdxy again | back", "last destination | last start"))
-  emit(H.line("spdxy stop | pause | resume", "control the walk"))
+  emit(H.line(SHORT .. " <x>, <y>", "walk to coordinates (comma optional)"))
+  emit(H.line(SHORT .. " <town>", "town, landmark, worldgate or waypoint"))
+  emit(H.line(SHORT .. " clan <name|#>", "walk to a clan hall"))
+  emit(H.line(SHORT .. " again | back", "last destination | last start"))
+  emit(H.line(SHORT .. " stop | pause | resume", "control the walk"))
   emit(H.section("Look up:"))
-  emit(H.line("spdxy nearby [x, y]", "nearest known place (also: nearby)"))
-  emit(H.line("spdxy find <text>", "list matching places and clan halls"))
-  emit(H.line("spdxy here", "your coordinates, zone and exits"))
+  emit(H.line(SHORT .. " nearby [x, y]", "nearest known place (also: nearby)"))
+  emit(H.line(SHORT .. " find <text>", "list matching places and clan halls"))
+  emit(H.line(SHORT .. " here", "your coordinates, zone and exits"))
   emit(H.section("Waypoints:"))
-  emit(H.line("spdxy save <name> [x y]", "save this spot or given coordinates"))
-  emit(H.line("spdxy del <name> | list", "delete a waypoint | list them"))
+  emit(H.line(SHORT .. " save <name> [x y]", "save this spot or given coordinates"))
+  emit(H.line(SHORT .. " del <name> | list", "delete a waypoint | list them"))
   emit(H.section("Settings:"))
-  emit(H.line("spdxyCoordinates on | off", "enable or disable walking"))
-  emit(H.line("spdxyCoordinates debug on | off", "verbose walk and lookup messages"))
-  emit("")
+  emit(H.line(NAME .. " on | off", "enable or disable walking"))
+  emit(H.line(NAME .. " debug on | off", "verbose walk and lookup messages"))
+  emit(H.line(SHORT, "short alias for " .. NAME))
   emit(H.foot(status_row()))
 end
 
@@ -916,7 +961,7 @@ local function collect(q, with_places, with_clans, with_waypoints, loose)
   local list = {}
   if #words == 0 then return list end
   if with_waypoints then
-    for n, p in pairs(places) do
+    for n, p in pairs(data().places) do
       if name_matches(n, words, loose) then
         list[#list + 1] = { name = n, x = p.x, y = p.y, plane = p.plane, src = "waypoint" }
       end
@@ -1011,7 +1056,7 @@ local function goto_query(q, clans_only)
   end
   dbg("query '%s': %d candidate(s)", q, #list)
   if #list == 0 then
-    say("nothing matches '" .. q .. "'. Try 'spdxy find " .. q .. "' or 'spdxy help'.")
+    say("nothing matches '" .. q .. "'. Try '" .. SHORT .. " find " .. q .. "' or '" .. SHORT .. " help'.")
     return
   end
 
@@ -1044,13 +1089,13 @@ local function goto_query(q, clans_only)
   if #list == 1 then
     go_entry(list[1])
   else
-    show_picker("spdxy: " .. q, list)
+    show_picker(SHORT .. ": " .. q, list)
   end
 end
 
 local function cmd_find(q)
   q = trim(q)
-  if q == "" then say("Usage: spdxy find <text>"); return end
+  if q == "" then say("Usage: " .. SHORT .. " find <text>"); return end
   local list = search(q, true, true, true)
   if #list == 0 then say("nothing matches '" .. q .. "'."); return end
   table.sort(list, function(a, b)
@@ -1068,7 +1113,7 @@ end
 
 local function sorted_names()
   local names = {}
-  for n in pairs(places) do names[#names + 1] = n end
+  for n in pairs(data().places) do names[#names + 1] = n end
   table.sort(names)
   return names
 end
@@ -1081,6 +1126,7 @@ local function clean_name(s)
 end
 
 local function cmd_save(rest)
+  local places = data().places
   local name, sx, sy = rest:match("^(.-)%s+(-?%d+)%s*,?%s*(-?%d+)$")
   local x, y, plane
   if name and name ~= "" then
@@ -1091,13 +1137,13 @@ local function cmd_save(rest)
     plane = cur_plane()   -- remembered so names only match on that plane
   end
   name = clean_name(name)
-  if name == "" then say("Usage: spdxy save <name> [<x> <y>]"); return end
+  if name == "" then say("Usage: " .. SHORT .. " save <name> [<x> <y>]"); return end
   if not x then
-    say("no current coordinates; give them: spdxy save <name> <x> <y>")
+    say("no current coordinates; give them: " .. SHORT .. " save <name> <x> <y>")
     return
   end
   if not places[name] and count_places() >= MAX_WAYPOINTS then
-    say(string.format("waypoint limit (%d) reached; remove one with: spdxy del <name>", MAX_WAYPOINTS))
+    say(string.format("waypoint limit (%d) reached; remove one with: %s del <name>", MAX_WAYPOINTS, SHORT))
     return
   end
   places[name] = { x = x, y = y, plane = plane }
@@ -1106,8 +1152,9 @@ local function cmd_save(rest)
 end
 
 local function cmd_del(rest)
+  local places = data().places
   local name = clean_name(rest)
-  if name == "" then say("Usage: spdxy del <name>"); return end
+  if name == "" then say("Usage: " .. SHORT .. " del <name>"); return end
   if not places[name] then say("no waypoint '" .. name .. "'."); return end
   places[name] = nil
   save_table(KEY_PLACES, places)
@@ -1115,9 +1162,10 @@ local function cmd_del(rest)
 end
 
 local function cmd_list()
+  local places = data().places
   local names = sorted_names()
   if #names == 0 then
-    say("no waypoints saved. Use: spdxy save <name>")
+    say("no waypoints saved. Use: " .. SHORT .. " save <name>")
     return
   end
   say("waypoints:")
@@ -1174,7 +1222,7 @@ local function cmd_nearby(rest)
     if not qx then say("no coordinates yet (move one room or look)."); return end
   else
     local a, b = parse_xy(rest)
-    if not a then say("Usage: spdxy nearby [<x>, <y>]"); return end
+    if not a then say("Usage: " .. SHORT .. " nearby [<x>, <y>]"); return end
     qx, qy = tonumber(a), tonumber(b)
   end
 
@@ -1189,7 +1237,7 @@ local function cmd_nearby(rest)
       sq = ddx * ddx + ddy * ddy,
     }
   end
-  for n, p in pairs(places) do add(n, p.x, p.y, p.plane, "waypoint") end
+  for n, p in pairs(data().places) do add(n, p.x, p.y, p.plane, "waypoint") end
   for _, p in ipairs(PLACES) do add(p[1], p[2], p[3], p[4], "place") end
   for _, c in ipairs(CLANS) do
     add(string.format("%s [%d]", c[2], c[1]), c[3], c[4], "alyria", "clan hall")
@@ -1223,6 +1271,7 @@ local function cmd_nearby(rest)
 end
 
 local function cmd_back()
+  local last_origin = data().origin
   if not last_origin.x then say("no previous walk to go back from."); return end
   local plane = cur_plane()
   if plane and last_origin.plane and plane ~= last_origin.plane then
@@ -1248,7 +1297,7 @@ local function cmd_debug(arg)
   arg = trim(arg):lower()
   if arg == "on" then debug_on = true
   elseif arg == "off" then debug_on = false
-  elseif arg ~= "" then say("Usage: spdxyCoordinates debug on|off"); return end
+  elseif arg ~= "" then say("Usage: " .. NAME .. " debug on|off"); return end
   rune.store.set(KEY_DEBUG, debug_on)
   say("debug " .. (debug_on and "on" or "off"))
 end
@@ -1262,7 +1311,7 @@ local function dispatch(arg)
   if x then speed_to_x_y(x, y); return end
 
   if arg:match("^-?%d+$") then
-    say("one number is ambiguous: use 'spdxy <x> <y>' or 'spdxy clan <number>'.")
+    say(string.format("one number is ambiguous: use '%s <x> <y>' or '%s clan <number>'.", SHORT, SHORT))
     return
   end
 
@@ -1279,8 +1328,9 @@ local function dispatch(arg)
   elseif cmd == "resume" then cmd_resume()
   elseif cmd == "here" then cmd_here()
   elseif cmd == "again" or cmd == "last" then
-    if last_target.x then
-      speed_to_x_y(last_target.x, last_target.y)
+    local t = data().target
+    if t.x then
+      speed_to_x_y(t.x, t.y)
     else
       say("no previous destination.")
     end
@@ -1291,21 +1341,22 @@ local function dispatch(arg)
   elseif cmd == "nearby" or cmd == "near" then cmd_nearby(rest)
   elseif cmd == "back" then cmd_back()
   elseif cmd == "clan" or cmd == "clanhall" then
-    if trim(rest) == "" then say("Usage: spdxy clan <name|number>") else goto_query(rest, true) end
+    if trim(rest) == "" then say("Usage: " .. SHORT .. " clan <name|number>") else goto_query(rest, true) end
   else goto_query(arg, false)
   end
 end
 
 -- Aliases (typed bare, no leading slash). The bare forms are rune.alias.exact
--- handlers taking (args, ctx); the forms with arguments are regex aliases.
--- Every form goes through dispatch() so commands and place names cannot collide.
-local function run_args(m) dispatch(m[1] or "") end
-rune.alias.exact("spdxyCoordinates", function(args, ctx) help() end, { name = "spdxyCoordinates" })
-rune.alias.exact("spdxy", function(args, ctx) help() end, { name = "spdxy" })
+-- handlers taking (args, ctx); every form with arguments is ONE regex alias.
+-- Both go through dispatch() so commands and place names cannot collide.
+local function show_help(args, ctx) help() end
+rune.alias.exact(NAME, show_help, { name = NAME })
+rune.alias.exact(SHORT, show_help, { name = SHORT })
 rune.alias.exact("nearby", function(args, ctx) cmd_nearby("") end, { name = "nearby" })
-rune.alias.regex("^spdxyCoordinates[ ]+(.+)$", run_args, { name = "spdxyCoordinates-args" })
-rune.alias.regex("^spdxy[ ]+(.+)$", run_args, { name = "spdxy-args" })
-rune.alias.regex("^nearby[ ]+(.+)$", function(m) cmd_nearby(m[1] or "") end, { name = "nearby-args" })
+rune.alias.regex("^(" .. NAME .. "|" .. SHORT .. "|nearby)[ ]+(.+)$", function(m)
+  if m[1] == "nearby" then cmd_nearby(m[2] or "") else dispatch(m[2] or "") end
+end, { name = SHORT .. "-args" })
 
 -- One row on load.
-say(string.format("v%s loaded (spdxyCoordinates or spdxy for help)%s", VERSION, enabled and "" or " - walking disabled"))
+load_ms = (os.clock() - T0) * 1000
+say(string.format("v%s loaded (%s or %s for help)%s", VERSION, NAME, SHORT, enabled and "" or " - walking disabled"))

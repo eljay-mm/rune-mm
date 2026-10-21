@@ -40,6 +40,7 @@ rune.config.set("mouse", true)
 
 local PLUGINS = {
   "annwnQuestSearch",
+  "asciiMapPane",
   "bardSongTLAs",
   "basicAliases",
   "characterLog",
@@ -52,6 +53,7 @@ local PLUGINS = {
   "hangmanSolver",
   "herbAliases",
   "highlights",
+  "highlightCustom",
   "jmcSolver",
   "mapperShortCutKeys",
   "missingAffects",

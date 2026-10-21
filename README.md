@@ -118,7 +118,8 @@ To enable it again, remove the `--`. Things to know:
 | `gotoAliases.lua`         | Aliases to run to gates, quest masters, banks, post offices and other places in the town you are in.                 |
 | `hangmanSolver.lua`       | Solves hangman puzzles using an online solver (needs `curl`).                                                        |
 | `herbAliases.lua`         | Provides short aliases for Herbalism mixing, throwing and eating.                                                    |
-| `highlights.lua`          | Item highlights for easy recognition.                                                                                |
+| `highlights.lua`          | Highlights notable items and mobs in game output for easy recognition based on static config for all characters.     |
+| `highlightCustom.lua`     | Highlight words and phrases in game output on the fly per-character.                                       |
 | `jmcSolver.lua`           | Solves the Joint Magical Consortium mirror puzzle locally and lists every solution.                                  |
 | `mapperShortCutKeys.lua`  | Keyboard shortcuts for the mapper.                                                                                   |
 | `missingAffects.lua`      | Shows which wanted affects are missing from your current affects.                                                    |
@@ -188,4 +189,4 @@ Older plugins are being brought up to this standard as they are revised.
 
 - [Rune](https://runemud.com) by mmcdole (https://github.com/mmcdole/rune).
 - Base Materia Magica configuration, `mapper.lua` and `helpstyle` by horstgs (https://github.com/horstgs/rune-materiamagica-public).
-- Many plugins began as conversions of MUSHclient XML plugins by Ruthgul, Elbereth, Ferdinand, or Oona.
+- Many plugins began as conversions of MUSHclient XML plugins by Elbereth, Enelya, Ferdinand, Oona, or Ruthgul.

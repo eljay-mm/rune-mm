@@ -1,12 +1,13 @@
 -- Filename: eljayPlugins/hangmanSolver.lua
 -- Purpose: Solves hangman puzzles using an online solver (needs curl).
--- Version: 2.6
--- Date: 2026-Oct-20
+-- Version: 2.7
+-- Date: 2026-Oct-25
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
+--   2.7  Updated command handling, persisted settings, and help to repo conventions.
 --   2.6  Brought commands, help, load-time reporting, and output in line with repo conventions.
 --   2.5  Brought to standard: Purpose aligned with the README, short alias hms,
 --        cyan-prefixed single-row output, standard loader line.
@@ -17,22 +18,24 @@ TODO:
 -- How it works:
 --   * Inspired by the MUSHclient plugin by Oona.
 --   * Solves hangman puzzles using an online solver (hangman-solver.com), reached with curl.
---   * When MM says "You hold a game of hangman ...", the plugin sends "hangman start" and "hangman e" (the best opening letter).
---   * "Progress thus far: <pattern>" lines are remembered as the current pattern.
---   * "Failed letters: <letters>" lines trigger a lookup: the pattern and wrong guesses are sent to the solver.
---   * The returned words are echoed as possible guesses.
---   * A few well-known "emp" patterns (e____, em___, emp__, empt_) are solved locally without any lookup.
---   * Lookups are cached per game, use short curl timeouts, and after a failed lookup the solver pauses briefly to avoid repeated dead network stalls.
---   * Works on Linux/macOS (curl, sh) and Windows (curl.exe, cmd.exe); the pattern/guesses are sanitized to letters and underscores before they reach the shell.
---   * Settings (on/off, debug) are saved with rune.store.
+--   * When MM says "You hold a game of hangman ...", sends "hangman start"
+--     and "hangman e" as the opening guess.
+--   * Remembers "Progress thus far: <pattern>" lines as the current pattern.
+--   * Uses "Failed letters: <letters>" lines to look up possible guesses.
+--   * Solves a few well-known "emp" patterns locally without a lookup.
+--   * Caches lookups and pauses briefly after a failed request.
+--   * Works on Linux, macOS, and Windows with curl; shell-bound puzzle data is sanitized.
+--   * Settings (on/off and debug) are saved with rune.store.
 --
 -- Commands (type without "/"; "hms" is a short alias for "hangmanSolver"):
---   hangmanSolver               show this help
---   hangmanSolver on|off        enable / disable the solver triggers
---   hangmanSolver debug on|off  enable / disable debug messages
---   hangmanSolver help          show this help
---   hms                        short alias for hangmanSolver
-
+--   hangmanSolver       show this help
+--   hms on|off          enable / disable solver triggers
+--   hms debug on|off    enable / disable debug messages
+--   hms                 short alias for hangmanSolver
+--
+-- Tweaks:
+--   * BACKOFF_SECONDS  pause after a failed solver request
+--
 local LOAD_STARTED = os.clock()
 local LOAD_MS = 0
 
@@ -40,7 +43,7 @@ local LOAD_MS = 0
 local NAME = "hangmanSolver"
 local SHORT = "hms"
 
-local VERSION = "2.6"
+local VERSION = "2.7"
 local SETTINGS_KEY = NAME .. ".settings"
 
 local H = require("helpstyle")
@@ -98,16 +101,45 @@ local function load_settings()
   end
 end
 
-local function save_settings()
-  if rune.store and type(rune.store.set) == "function" then
-    pcall(rune.store.set, SETTINGS_KEY, {
-      enabled = enabled,
-      debug = debug_enabled,
-    })
+local function update_settings(mutate)
+  if not (rune.store and type(rune.store.get) == "function"
+      and type(rune.store.set) == "function") then
+    return
+  end
+
+  local ok, fresh = pcall(rune.store.get, SETTINGS_KEY)
+  if not ok or type(fresh) ~= "table" then
+    fresh = {}
+  end
+
+  mutate(fresh)
+  local saved = pcall(rune.store.set, SETTINGS_KEY, fresh)
+  if saved then
+    if type(fresh.enabled) == "boolean" then
+      enabled = fresh.enabled
+    end
+    if type(fresh.debug) == "boolean" then
+      debug_enabled = fresh.debug
+    end
   end
 end
 
-local function extractWords(json_string)
+local function set_enabled(value)
+  update_settings(function(settings)
+    settings.enabled = value
+  end)
+  -- Keep the runtime toggle responsive even if storage is unavailable.
+  enabled = value
+end
+
+local function set_debug(value)
+  update_settings(function(settings)
+    settings.debug = value
+  end)
+  debug_enabled = value
+end
+
+local function extract_words(json_string)
   local words = {}
   for word in json_string:gmatch('"word"%s*:%s*"([^"]*)"') do
     words[#words + 1] = word
@@ -115,7 +147,7 @@ local function extractWords(json_string)
   return words
 end
 
-local function curlCommand(url)
+local function curl_command(url)
   if IS_WINDOWS then
     return 'curl.exe -s -L --connect-timeout 2 --max-time 3 "' .. url .. '" 2>NUL'
   end
@@ -123,7 +155,7 @@ local function curlCommand(url)
   return "curl -s -L --connect-timeout 2 --max-time 3 '" .. url .. "' 2>/dev/null"
 end
 
-local function runCommand(cmd)
+local function run_command(cmd)
   if type(io.popen) ~= "function" then
     return nil
   end
@@ -147,7 +179,7 @@ local function runCommand(cmd)
   return output or ""
 end
 
-local function solveHangman(wrong_guesses)
+local function solve_hangman(wrong_guesses)
   if hangman_word == "" then
     say("Unknown starting length?")
     return
@@ -170,7 +202,7 @@ local function solveHangman(wrong_guesses)
     return
   end
 
-  -- Restrict shell-bound values to the expected characters.
+  -- Restrict shell-bound values to expected characters.
   local word = hangman_word:gsub("[^%a_]", "")
   local guesses = (wrong_guesses or ""):gsub("[^%a]", "")
   local key = word .. "|" .. guesses
@@ -198,16 +230,17 @@ local function solveHangman(wrong_guesses)
   local url = BASE_URL .. word .. "&guesses=" .. guesses
   dbg("Fetching solver results")
 
-  local response = runCommand(curlCommand(url))
+  local response = run_command(curl_command(url))
   if not response or #response == 0 then
     fail_until = os.time() + BACKOFF_SECONDS
-    say("Solver unavailable - manual guessing needed (retry in " .. BACKOFF_SECONDS .. "s)")
+    say("Solver unavailable - manual guessing needed (retry in "
+      .. BACKOFF_SECONDS .. "s)")
     return
   end
 
   dbg("Raw response (" .. #response .. " chars): " .. response:sub(1, 200))
 
-  local words = extractWords(response)
+  local words = extract_words(response)
   if #words > 0 then
     possible_guesses = words
     cache[key] = words
@@ -219,7 +252,7 @@ local function solveHangman(wrong_guesses)
   end
 end
 
-local function startHangman()
+local function start_hangman()
   hangman_word = ""
   possible_guesses = {}
   cache = {}
@@ -234,9 +267,8 @@ local function show_help()
   rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
   rune.echo(H.section("Commands"))
   rune.echo(H.line(NAME, "show this help"))
-  rune.echo(H.line(NAME .. " on|off", "enable / disable the solver triggers"))
-  rune.echo(H.line(NAME .. " debug on|off", "enable / disable debug messages"))
-  rune.echo(H.line(NAME .. " help", "show this help"))
+  rune.echo(H.line(SHORT .. " on|off", "enable / disable solver triggers"))
+  rune.echo(H.line(SHORT .. " debug on|off", "enable / disable debug messages"))
   rune.echo(H.line(SHORT, "short alias for " .. NAME))
   rune.echo(H.foot(string.format(
     "v%s  enabled=%s debug=%s bindings=5  load=%dms",
@@ -250,23 +282,19 @@ end
 local function handle_command(args, _ctx)
   local text = (args or ""):match("^%s*(.-)%s*$"):lower()
 
-  if text == "" or text == "help" then
+  if text == "" then
     show_help()
   elseif text == "on" then
-    enabled = true
-    save_settings()
+    set_enabled(true)
     say("Solver " .. onoff(enabled))
   elseif text == "off" then
-    enabled = false
-    save_settings()
+    set_enabled(false)
     say("Solver " .. onoff(enabled))
   elseif text == "debug on" then
-    debug_enabled = true
-    save_settings()
+    set_debug(true)
     say("Debug " .. onoff(debug_enabled))
   elseif text == "debug off" then
-    debug_enabled = false
-    save_settings()
+    set_debug(false)
     say("Debug " .. onoff(debug_enabled))
   else
     show_help()
@@ -280,7 +308,7 @@ rune.alias.exact(SHORT, handle_command)
 
 rune.trigger.regex("^You hold a game of hangman (.*?)$", function(_m)
   if enabled then
-    startHangman()
+    start_hangman()
   end
 end, { name = NAME .. "-start" })
 
@@ -292,10 +320,9 @@ end, { name = NAME .. "-pattern" })
 
 rune.trigger.regex("^Failed letters: (.*?)$", function(m)
   if enabled then
-    solveHangman(m[1] or "")
+    solve_hangman(m[1] or "")
   end
 end, { name = NAME .. "-failed" })
 
 LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
-save_settings()
 say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))

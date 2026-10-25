@@ -1,26 +1,32 @@
 # Contributing to rune-mm
 
-Lua plugins for the Rune client working with horstgs Materia Magica configuration.
+Lua plugins for the Rune client, designed for horstgs’ Materia Magica configuration.
 
 ## Project context
-- Env: Rune client (https://runemud.com, https://github.com/mmcdole/rune) + horstgs' MM setup (https://github.com/horstgs/rune-materiamagica-public)
-- Dev: Ghostty on Debian 13; cross-platform on Windows/macOS. Game: https://www.materiamagica.com
+
+- Target: Rune client (https://runemud.com, https://github.com/mmcdole/rune) and horstgs’ Materia Magica setup (https://github.com/horstgs/rune-materiamagica-public)
+- Development: Ghostty on Debian 13; plugins should also work on Windows and macOS where possible
+- Game: Materia Magica (https://www.materiamagica.com)
 
 ## Reference plugins
 
 | Topic | Reference |
 | --- | --- |
-| Display method (`paint`/`say`, `H.*`, aliases) | `annwnQuestSearch.lua` |
-| Loader line (command + short alias) | `eqdbResultsPicker.lua` |
-| Cyan `[pluginName] ` prefix & help footer | `jmcSolver.lua`, `druidSpellTLAs.lua` |
-| Help layout / Load time | `autopouch.lua` / `fauxSextant.lua` |
-| Character name API | `charname.lua` |
+| Display methods, help rows, bare-command aliases | `annwnQuestSearch.lua` |
+| Loader line and command naming | `eqdbResultsPicker.lua` |
+| Cyan prefix and help footer | `jmcSolver.lua`, `druidSpellTLAs.lua` |
+| Help layout | `autopouch.lua` |
+| Character-name API | `charname.lua` |
+| Load-time display | `fauxSextant.lua` |
 
 ## Required conventions
 
-### File placement, naming & header
-- Path: Directly in `eljayPlugins/` as `eljayPlugins/<camelName>.lua` (short, descriptive camelCase). The repo root *is* that directory once cloned into `~/.config/rune/eljayPlugins`; never nest files.
-- Every plugin must start exactly with this header format:
+### File placement and header
+
+- Put each plugin directly in `eljayPlugins/`, named `eljayPlugins/<camelName>.lua`. Do not nest plugin files.
+- Use a short, descriptive camelCase name.
+- Start every plugin with this header: Filename, Purpose, Version and Date—in that order—then exactly one `[[ ]]` TODO block (placeholder if nothing is planned), then Changelog, a bulleted How it works, Commands and Tweaks. Use `--` line comments everywhere else.
+
 ```lua
 -- Filename: eljayPlugins/<camelName>.lua
 -- Purpose: ...
@@ -34,75 +40,87 @@ TODO:
 --   x.y  ...
 --
 -- How it works:
---   * <bulleted summary; must match the Purpose line>
---   * <keep any "Inspired by" line; list dependencies/aliases from other plugins>
+--   * ...
 --
 -- Commands (type without "/"; "xyz" is a short alias for "<camelName>"):
 --   <camelName>            show this help
---   <camelName> on|off     enable / disable the trigger(s)
---   <camelName> debug      toggle debug messages (default off)
+--   <xyz> on|off     enable / disable the trigger(s)
+--   <xyz> debug      toggle debug messages (default off)
 --
 -- Tweaks (top of file):
 --   * LOOKUP_CMD   what it controls
 --
 ```
-- Use `--` line comments everywhere except exactly *one* `[[ ]]` Todo block in the header (placeholder if nothing is planned).
+- The “How it works” summary must match the Purpose and actual behavior. Preserve any “Inspired by” note and mention required plugins or external aliases.
+- List all commands, the short alias, and any top-of-file tweakable constants.
 
-### Commands, toggles & load output
-- Bare commands are `rune.alias.exact` handlers taking `(args, ctx)`, registered for both `NAME` and `SHORT` (no `/` prefix; `rune.command.add` only makes `/slash` commands). They must display help when typed bare. The name must not clash with game commands.
-- Define `local NAME = "..."` and `local SHORT = "..."` once under a `-- Command names: full command and short alias.` comment and use them everywhere.
-- Provide an `on|off` toggle for the trigger(s) (default on) and a `debug` toggle (default off). Save state in `rune.store`.
-- Exception: a loader with no commands or triggers (`initEljay.lua`) has no toggles or help; it may use a file-level `DEBUG` switch, and its header says so.
-- Help must use `local H = require("helpstyle")` (`H.title`, `H.section`, `H.line`, `H.foot`), printed via `rune.echo` or `emit()`. Include the `SHORT` alias line before the footer.
-- The footer is a single `H.foot` row, without the plugin name, that starts with the version and ends with load time: `v1.4  enabled=true debug=false bindings=20  load=12ms`.
-- Track load time via `local LOAD_STARTED = os.clock()` at file top, round with `math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)`, store it, and display. Do not recalculate during help display, and do not use `rune.time()`.
-- Load output: Print a single row on load with a cyan prefix: `[pluginName] vX.Y loaded (<command> for help)`. Extra rows only for things needing attention; never one row per alias, trigger or file. (Exception: `characterLog` prints its full log path).
+### Commands, toggles and help
 
-### Character name & settings
-- Use `local charname = require("charname")`. Do not run ad hoc detection or explicit GMCP subscriptions for names.
-- `charname.get()` returns the name or `nil` before login. `charname.key(prefix)` generates per-character keys. `charname.on_change(cb)` catches login/changes (`charname.set` is internal; never call it). Wrap callbacks in `pcall`. Never cache or build paths while name is `nil`.
-- Settings: Use `rune.store`. No `.txt` config files unless there is a very explicit reason. Read the latest table inside the write operation, mutate it, save it, then refresh the local read-only cache.
+- Define `local NAME` and `local SHORT` once near the top, under `-- Command names: full command and short alias.` Use them wherever command names are needed.
+- Register both bare commands with `rune.alias.exact` handlers taking `(args, ctx)`. Bare commands have no `/`; `rune.command.add` creates slash commands only. Choose a full command name that does not clash with an in-game command.
+- Typing either command without arguments must show help.
+- Provide `<plugin> on|off` for triggers (default on) and `<plugin> debug on|off` for debug messages (default off). Store both states in `rune.store` so they persist across restarts.
+- Help must use `local H = require("helpstyle")` and `H.title`, `H.section`, `H.line`, and `H.foot`; print via `rune.echo` or `emit()`. Include the short-alias row after command rows and before the footer. Keep help lines to 76 characters or fewer (the footer row may be longer) and use the short alias in help rows.
+- The single footer row starts with the version, omits the plugin name, and includes enabled/debug state, binding or trigger count when applicable, and stored load time. Capture `LOAD_STARTED = os.clock()` at file start; calculate rounded milliseconds once after initialization with `math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)`. Store and display that value; do not recalculate it when help is shown or use `rune.time()`.
+- Exception: a loader with no commands or triggers, such as `initEljay.lua`, needs no help or toggles; it may use a file-level `DEBUG` switch, documented in its header.
 
-### Style & basicAliases.lua
-- Keep aliases/triggers on a single row where possible. Prefer readable, maintainable Lua.
-- `basicAliases.lua` forbidden additions: `ct`, `at`, `ft`, `reply`, `talk_alias` or signature helpers.
+### Load output
 
-## Cross-platform
-- Detect Windows: `package.config:sub(1,1) == "\\"`. Use forward slashes in built paths. Use backslashes only for `cmd.exe` built-ins: `(path:gsub("/", "\\"))` (parenthesized to drop the count).
-- Avoid Unix-only tools (`mkdir -p`, `find`). Use `cmd.exe` or `curl.exe` equivalents and `2>NUL`.
-- Temp directories: check `TMPDIR` -> `TEMP` -> `TMP` -> `/tmp`. Refuse paths that cannot be safely quoted.
-- If a plugin cannot support a platform, say so in its header and in the README's Windows notes.
+- Print one cyan-prefixed load line, such as `[pluginName] vX.Y loaded (<command> or <alias> for help)`. Use `rune.style` for the cyan prefix.
+- Build the line using `NAME` and `SHORT`. Print extra rows only when attention is needed; never print a separate row for each alias, trigger or file.
+- Exception: `characterLog` prints its single row with the full log path, including the character name in the filename.
 
-## Performance and security
-- **Shell input:** Sanitize text (e.g., restrict to letters/underscores) before executing shell commands.
-- **Network calls:** Use short timeouts, cache results, skip repeat lookups, and use back-offs.
-- **Loops & watchdogs:** Avoid infinite loops (`pcall` cannot catch them). Defer heavy logic (IO, network, files) to first use or timers to pass Rune's 5-second boot watchdog.
-- **Triggers:** Prefer anchored patterns and escape literal text. Avoid unanchored regexes on every incoming line. Build lookups at load.
-- **Files & Secrets:** Use `io.popen` over temp files where possible; avoid predictable names. Never log/echo secrets. Keep log folders private and out of git (`logs/` in `.gitignore`).
-- **State & Logging:** Keep logging guarded by a `debug_on` flag (off by default) to keep hot-paths fast. Wrap `rune.store` updates in `pcall` using fresh lookups to prevent state overwrites. Safely handle async `charname.get()` returning `nil`.
+### Character name and settings
 
-## Managing & delivering plugins
-- Register: Add to `PLUGINS` in `initEljay.lua` alphabetically (lower only if it depends on another plugin loading first) and add a row to README matching `Purpose` (shortened, no commands). Disable a plugin by commenting out its name there.
-- Delivery: Always deliver the full `.lua` file alongside performance/security notes.
-- Versioning: Minor bumps only (`3.7` -> `3.8`) unless major changes are explicitly justified. Header, `VERSION`, and footer must match.
+- Use `local charname = require("charname")` wherever a character name is needed. Do not implement name detection or add per-plugin GMCP subscriptions for it.
+- `charname.get()` may return `nil` until login. Don’t cache the name at load or build per-character keys/paths until it is known. Use `charname.key(prefix)` for per-character store keys and `charname.on_change(cb)` for changes. Keep callbacks short and wrap their work in `pcall`. Plugins must not call `charname.set()`.
+- Save settings with `rune.store`, wrapping calls in `pcall`. Don’t add separate `.txt` configuration files without a clear need.
+- Before each write, read the latest store table inside the write operation, mutate it, and save it. Never base a write on a long-lived cached table. After saving, refresh any in-memory cache; use that cache for reads only.
 
-## Pre-flight checklist
-- [ ] File is directly in `eljayPlugins/` and named correctly.
-- [ ] Header follows format exactly, with commands/tweaks listed.
-- [ ] Exactly one `[[ ]]` Todo block in header; no other block comments used.
-- [ ] Purpose matches "How it works" and actual plugin behavior; "Inspired by" kept.
-- [ ] Changelog is present and current.
-- [ ] Commands registered as bare `rune.alias.exact` handlers without a `/`.
-- [ ] `NAME` and `SHORT` defined under required comment and used everywhere; `SHORT` row included before help footer.
-- [ ] On/off and debug toggles exist; debug defaults to off; states saved to `rune.store`.
-- [ ] Help screen renders via `helpstyle` with version at start of footer and `load=` at the end.
-- [ ] Prints a single cyan-prefixed loader row on load (unless `characterLog`).
-- [ ] Settings use `rune.store`; writes read fresh state first and update cache after.
-- [ ] Name tracks via `charname.lua`; handles `nil` before login safely without ad hoc GMCP triggers.
-- [ ] Works on Windows as well as Linux, or the limitation is documented.
-- [ ] No forbidden aliases or helpers added to `basicAliases.lua`.
-- [ ] Version bump rules followed; values match `VERSION` and help UI.
-- [ ] Added alphabetically to `PLUGINS` in `initEljay.lua` and documented in README.
-- [ ] Global hot-path logging is guarded securely behind `debug_on` checks.
-- [ ] Startup sequences defer heavy IO operations to avoid watchdog timeouts.
-- [ ] Performance/security notes are included.
+### Style
+
+- Keep aliases and triggers on one row where possible; prefer readable, maintainable Lua.
+
+### Cross-platform support
+
+- Detect Windows with `package.config:sub(1, 1) == "\\"`; use forward slashes in constructed paths. For `cmd.exe` built-ins, convert paths with `(path:gsub("/", "\\"))`.
+- Avoid Unix-only tools and paths without Windows alternatives. Use appropriate `cmd.exe` equivalents, `curl.exe`, and `2>NUL` where needed.
+- Check temp directories in this order: `TMPDIR`, `TEMP`, `TMP`, then `/tmp`.
+- Refuse unsafe-to-quote shell paths with a message—for example, paths containing `"` or `%` on Windows. Don’t pass them to the shell.
+- If a plugin cannot support a platform, document that limitation in its header and in the README’s Windows notes.
+
+### Performance and security
+
+- Never build shell commands from unsanitized text; reduce input to expected characters first.
+- For network calls, use short connect and total timeouts, cache results, skip repeat lookups, and back off after failures.
+- Avoid endless loops; `pcall` cannot stop them. Defer slow work such as network calls, shell commands and large file reads so startup stays within Rune’s 5-second watchdog.
+- Prefer anchored triggers; escape literal text, avoid large unanchored patterns on every incoming line, and build lookups once at load.
+- Prefer `io.popen` over temp files where possible; avoid predictable temp names.
+- Never log or echo secrets. Keep log folders private where possible and exclude `logs/` from git.
+- Keep debug output off by default and guarded by the debug state, especially on hot paths.
+
+### Registering and delivering plugins
+
+- Add plugins to the `PLUGINS` list in `initEljay.lua`, alphabetically unless a load dependency requires a different order. Document each plugin in the README table with a shortened version of its Purpose, without commands.
+- To disable a plugin, comment out or remove its name from `PLUGINS`.
+- Deliver the full `.lua` file with performance and security recommendations, a code-cleanup offer, and a file-size-savings report.
+- Use minor version bumps for normal changes (`3.7` → `3.8`). Bump the major version only with an explicit, justified reason. Keep the header version, `VERSION` constant and footer version consistent.
+
+### Pre-flight checklist
+
+- [ ] File is directly in `eljayPlugins/` with the correct name.
+- [ ] Header has the required sections, commands and tweaks; exactly one TODO block; no other block comments.
+- [ ] Purpose, “How it works” and behavior agree; preserve “Inspired by” notes.
+- [ ] Changelog is current.
+- [ ] Full and short bare commands use `rune.alias.exact`; bare commands show help.
+- [ ] `NAME` and `SHORT` are defined once and used consistently; help includes the short-alias row before the footer.
+- [ ] On/off and debug on/off controls work, use persistent store state, and have the required defaults.
+- [ ] Help uses `helpstyle`; lines are at most 76 characters (footer excepted); footer includes stored load time and applicable binding/trigger count.
+- [ ] Load output is one cyan-prefixed row, except for `characterLog`.
+- [ ] Store writes use fresh data and refresh the read-only cache.
+- [ ] Character-name handling uses `charname.lua` and safely handles `nil` before login.
+- [ ] Platform support works or limitations are documented.
+- [ ] Versioning follows policy and all version values match.
+- [ ] Plugin is registered in `initEljay.lua` and documented in the README.
+- [ ] Heavy startup work is deferred; debug logging is guarded.
+- [ ] Delivery includes performance/security recommendations, a cleanup offer and a file-size-savings report.

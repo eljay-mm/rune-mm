@@ -889,7 +889,9 @@ end
 
 local function help()
   local H = helpstyle()
-  emit(H.title(NAME .. " - walk to sextant coordinates, towns and clan halls"))
+  emit(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
+  emit(H.section("Commands"))
+  emit(H.line(NAME, "show this help"))
   emit(H.section("Walk:"))
   emit(H.line(SHORT .. " <x>, <y>", "walk to coordinates (comma optional)"))
   emit(H.line(SHORT .. " <town>", "town, landmark, worldgate or waypoint"))

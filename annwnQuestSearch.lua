@@ -1,12 +1,14 @@
 -- Filename: eljayPlugins/annwnQuestSearch.lua
 -- Purpose: Looks up the quest you are reading about on annwn.info, as a clipboard copy and clickable link
--- Version: 2.8
--- Date: 2026-Oct-19
+-- Version: 2.9
+-- Date: 2026-Oct-25
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
+--   2.9  Added the required short-alias help row and changed settings writes
+--        to read and mutate the latest stored table.
 --   2.8  Added standard help footer with trigger count and measured load time;
 --        persisted the debug setting and added explicit debug on|off support.
 --   2.7  Full command is annwnQuestSearch, aqs kept as the short alias; loader
@@ -30,18 +32,20 @@ TODO:
 --   * Safety: control characters are stripped before echo and the quest name
 --     is capped before URL generation.
 --
--- Commands (aqs works in place of annwnQuestSearch):
---   annwnQuestSearch               show this help
---   annwnQuestSearch on|off        enable or disable the trigger
---   annwnQuestSearch debug on|off  enable or disable debug messages
+-- Commands:
+--   annwnQuestSearch             show this help
+--   aqs on | off                 enable or disable the trigger
+--   aqs debug on | off           enable or disable debug messages
+--   aqs                          short alias for annwnQuestSearch
 --
 -- Tweaks (top of file):
+--   * SEARCH_URL       Annwn quest-search address
 --   * MAX_NAME_LENGTH  Maximum quest name length used for URL generation
 
 local LOAD_STARTED = os.clock()
 local LOAD_MS
 
-local VERSION         = "2.8"
+local VERSION         = "2.9"
 local NAME            = "annwnQuestSearch"
 local SHORT           = "aqs"
 local SEARCH_URL      = "https://annwn.info/quest/search/?search=quest&keyword="
@@ -52,8 +56,9 @@ local ANSI_LINK  = "\27[4;36m"
 local ANSI_CYAN  = "\27[36m"
 local ANSI_RESET = "\27[0m"
 
-local enabled       = true
-local debug_enabled = false
+local enabled        = true
+local debug_enabled  = false
+local settings_cache = {}
 
 local H = require("helpstyle")
 
@@ -97,13 +102,17 @@ local function load_settings()
   end
 
   local ok, saved = pcall(rune.store.get, SETTINGS_KEY)
-  if ok and type(saved) == "table" then
-    if type(saved.enabled) == "boolean" then
-      enabled = saved.enabled
-    end
-    if type(saved.debug_enabled) == "boolean" then
-      debug_enabled = saved.debug_enabled
-    end
+  if not ok or type(saved) ~= "table" then
+    return
+  end
+
+  settings_cache = saved
+
+  if type(settings_cache.enabled) == "boolean" then
+    enabled = settings_cache.enabled
+  end
+  if type(settings_cache.debug_enabled) == "boolean" then
+    debug_enabled = settings_cache.debug_enabled
   end
 end
 
@@ -112,10 +121,21 @@ local function save_settings()
     return
   end
 
-  pcall(rune.store.set, SETTINGS_KEY, {
-    enabled = enabled,
-    debug_enabled = debug_enabled,
-  })
+  local latest = {}
+  if type(rune.store.get) == "function" then
+    local ok, saved = pcall(rune.store.get, SETTINGS_KEY)
+    if ok and type(saved) == "table" then
+      latest = saved
+    end
+  end
+
+  latest.enabled = enabled
+  latest.debug_enabled = debug_enabled
+
+  local ok = pcall(rune.store.set, SETTINGS_KEY, latest)
+  if ok then
+    settings_cache = latest
+  end
 end
 
 local function url_encode(value)
@@ -141,14 +161,14 @@ local function emit(text)
 end
 
 local function show_help()
-  emit(H.title("Annwn quest search  (alias: " .. SHORT .. ")"))
+  emit(H.title(NAME .. " (alias: " .. SHORT .. ")"))
   emit(H.section("Commands"))
   emit(H.line(NAME, "show this help"))
-  emit(H.line(NAME .. " on|off", "enable or disable the trigger"))
-  emit(H.line(NAME .. " debug on|off", "enable or disable debug messages"))
+  emit(H.line(SHORT .. " on | off", "enable or disable the trigger"))
+  emit(H.line(SHORT .. " debug on | off", "enable or disable debug messages"))
+  emit(H.line(SHORT, "short alias for " .. NAME))
   emit(H.section("Usage"))
-  emit(H.line("quest status", "copies the search URL and shows an Annwn link"))
-  emit(H.line("Ctrl+Shift+click", "open the link or URL in the browser (Ghostty)"))
+  emit(H.line("quest status", "shows and copies annwn URL"))
   emit(H.foot(string.format(
     "v%s  enabled=%s debug=%s triggers=1  load=%dms",
     VERSION,

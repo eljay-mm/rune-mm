@@ -278,9 +278,9 @@ local function help()
   rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
   rune.echo(H.section("Commands"))
   rune.echo(H.line(NAME, "show this help"))
-  rune.echo(H.line(NAME .. " list", "list spell aliases and analogues"))
-  rune.echo(H.line(NAME .. " on|off", "enable / disable all druid TLAs"))
-  rune.echo(H.line(NAME .. " debug on|off", "enable / disable debug messages"))
+  rune.echo(H.line(SHORT .. " list", "list spell aliases and analogues"))
+  rune.echo(H.line(SHORT .. " on|off", "enable / disable all druid TLAs"))
+  rune.echo(H.line(SHORT .. " debug on|off", "enable / disable debug messages"))
   rune.echo(H.line(SHORT, "short alias for " .. NAME))
   rune.echo(H.foot(string.format(
     "v%s  enabled=%s debug=%s bindings=3  load=%dms",

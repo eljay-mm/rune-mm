@@ -1,37 +1,44 @@
 -- Filename: eljayPlugins/bardSongTLAs.lua
 -- Purpose: Provide three-letter aliases for bard songs.
--- Version: 2.9
--- Date: 2026-Oct-19
+-- Version: 2.10
+-- Date: 2026-Oct-25
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
---   2.9  Removed the Song aliases section from help.
---   2.8  Moved the short alias after the debug command in help and removed the redundant list-help wording.
---   2.7  Standardized command help, footer, alias documentation, and registered-binding count.
---   2.6  Added a list subcommand to show all configured TLAs and their songs.
---   2.5  Standardized header, help, persistent toggles, command aliases, and load-time reporting.
---   2.4  Cyan prefix and loader line; all song TLAs share a single alias; commands use one regex.
---   2.3  Renamed command to bardSongTLAs with short alias bard; help lists all TLAs.
---   2.2  Added command summary, enable/disable toggle, debug toggle, and persistent settings.
+--   2.10  Standardized command names, settings writes, and help output.
+--   2.9   Removed the Song aliases section from help.
+--   2.8   Moved the short alias after the debug command in help and removed
+--         the redundant list-help wording.
+--   2.7   Standardized command help, footer, alias documentation, and
+--         registered-binding count.
+--   2.6   Added a list subcommand to show all configured TLAs and their songs.
+--   2.5   Standardized header, help, persistent toggles, command aliases,
+--         and load-time reporting.
+--   2.4   Cyan prefix and loader line; all song TLAs share a single alias;
+--         commands use one regex.
+--   2.3   Renamed command to bardSongTLAs with short alias bard; help lists
+--         all TLAs.
+--   2.2   Added command summary, enable/disable toggle, debug toggle, and
+--         persistent settings.
 --
 -- How it works:
---   * Each row in the songs table maps a TLA to a bard song, e.g. "bfi" -> play 'fireball'.
+--   * Each row maps a TLA to a bard song, e.g. "bfi" -> play 'fireball'.
 --   * Songs are grouped as in 'help music': Peace, Martial, and Versatile.
---   * One alias matches all TLAs; adding a song requires adding one row to the table.
---   * The list subcommand shows all configured TLAs grouped by song type.
---   * Only fixed, curated song names are sent; no user-supplied text is forwarded.
+--   * One alias matches all TLAs; add a song by adding a row to the table.
+--   * The list subcommand shows configured TLAs grouped by song type.
+--   * Only curated song names are sent; user-supplied text is not forwarded.
 --   * When disabled, song aliases do nothing; settings persist in rune.store.
 --
 -- Commands (type without "/"; short alias: bard):
 --   bardSongTLAs                 show this help
---   bard                          short alias for bardSongTLAs
 --   bardSongTLAs list            show all configured TLAs
---   bard list                    show all configured TLAs
 --   bardSongTLAs on|off          enable / disable the song aliases
---   bard on|off                  enable / disable the song aliases
 --   bardSongTLAs debug on|off    enable / disable debug messages
+--   bard                          short alias for bardSongTLAs
+--   bard list                    show all configured TLAs
+--   bard on|off                  enable / disable the song aliases
 --   bard debug on|off            enable / disable debug messages
 --
 -- Tweaks (top of file):
@@ -40,9 +47,11 @@ TODO:
 
 local LOAD_STARTED = os.clock()
 
+-- Command names: full command and short alias.
 local NAME = "bardSongTLAs"
 local SHORT = "bard"
-local VERSION = "2.9"
+
+local VERSION = "2.10"
 local SETTINGS_KEY = "bardSongTLAs.settings"
 
 local enabled = true
@@ -63,6 +72,16 @@ local function prefix()
     end
   end
   return text
+end
+
+local function styled_tla(tla)
+  if rune.style and type(rune.style.cyan) == "function" then
+    local ok, colored = pcall(rune.style.cyan, tla)
+    if ok and type(colored) == "string" then
+      return colored
+    end
+  end
+  return tla
 end
 
 local function say(text)
@@ -94,15 +113,27 @@ local function load_settings()
   end
 end
 
-local function save_settings()
-  if not (rune.store and type(rune.store.set) == "function") then
-    return
+local function update_settings(mutate)
+  local fresh = {}
+  if rune.store and type(rune.store.get) == "function" then
+    local ok, stored = pcall(rune.store.get, SETTINGS_KEY)
+    if ok and type(stored) == "table" then
+      fresh = stored
+    end
   end
 
-  pcall(rune.store.set, SETTINGS_KEY, {
-    enabled = enabled,
-    debug = debug_enabled,
-  })
+  mutate(fresh)
+
+  if rune.store and type(rune.store.set) == "function" then
+    pcall(rune.store.set, SETTINGS_KEY, fresh)
+  end
+
+  if type(fresh.enabled) == "boolean" then
+    enabled = fresh.enabled
+  end
+  if type(fresh.debug) == "boolean" then
+    debug_enabled = fresh.debug
+  end
 end
 
 local function bool_text(value)
@@ -174,22 +205,22 @@ local function help()
   )
 
   if H and H.title and H.section and H.line and H.foot then
-    rune.echo(H.title("Bard song TLAs  (alias: " .. SHORT .. ")"))
+    rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
     rune.echo(H.section("Commands"))
     rune.echo(H.line(NAME, "show this help"))
-    rune.echo(H.line(NAME .. " list", "show all configured TLAs"))
-    rune.echo(H.line(NAME .. " on|off", "enable / disable the song aliases"))
-    rune.echo(H.line(NAME .. " debug on|off", "enable / disable debug messages"))
+    rune.echo(H.line(SHORT .. " list", "show all configured TLAs"))
+    rune.echo(H.line(SHORT .. " on|off", "enable / disable song aliases"))
+    rune.echo(H.line(SHORT .. " debug on|off", "enable / disable debug"))
     rune.echo(H.line(SHORT, "short alias for " .. NAME))
     rune.echo(H.foot(footer))
     return
   end
 
-  rune.echo("Bard song TLAs  (alias: " .. SHORT .. ")")
+  rune.echo(NAME .. "  (alias: " .. SHORT .. ")")
   rune.echo("  " .. NAME .. "              show this help")
-  rune.echo("  " .. NAME .. " list         show all configured TLAs")
-  rune.echo("  " .. NAME .. " on|off       enable / disable the song aliases")
-  rune.echo("  " .. NAME .. " debug on|off enable / disable debug messages")
+  rune.echo("  " .. SHORT .. " list         show all configured TLAs")
+  rune.echo("  " .. SHORT .. " on|off       enable / disable song aliases")
+  rune.echo("  " .. SHORT .. " debug on|off enable / disable debug")
   rune.echo("  " .. SHORT .. "                   short alias for " .. NAME)
   rune.echo(footer)
 end
@@ -207,7 +238,7 @@ local function show_song_list()
     for i = group.first, group.last do
       local entry = songs[i]
       if entry then
-        rune.echo("  " .. entry[1] .. "  " .. entry[2])
+        rune.echo("  " .. styled_tla(entry[1]) .. "  " .. entry[2])
       end
     end
   end
@@ -216,31 +247,21 @@ end
 local function handle_command(args)
   local text = tostring(args or ""):lower():match("^%s*(.-)%s*$")
 
-  if text == "on" then
-    enabled = true
-    save_settings()
-    say("enabled")
+  if text == "on" or text == "off" then
+    local value = text == "on"
+    update_settings(function(settings)
+      settings.enabled = value
+    end)
+    say(value and "enabled" or "disabled")
     return
   end
 
-  if text == "off" then
-    enabled = false
-    save_settings()
-    say("disabled")
-    return
-  end
-
-  if text == "debug on" then
-    debug_enabled = true
-    save_settings()
-    say("debug enabled")
-    return
-  end
-
-  if text == "debug off" then
-    debug_enabled = false
-    save_settings()
-    say("debug disabled")
+  if text == "debug on" or text == "debug off" then
+    local value = text == "debug on"
+    update_settings(function(settings)
+      settings.debug = value
+    end)
+    say(value and "debug enabled" or "debug disabled")
     return
   end
 
@@ -286,5 +307,7 @@ load_ms = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
 
 say("v" .. VERSION .. " loaded (" .. NAME .. " or " .. SHORT .. " for help)")
 
--- Performance: Builds the TLA lookup and regex once at load; no runtime file or network I/O.
--- Security: Only curated song names are sent; command input is used only to select fixed toggles.
+-- Performance: Builds the TLA lookup and regex once at load; no runtime file
+-- or network I/O.
+-- Security: Only curated song names are sent; command input selects fixed
+-- toggles or the list action.

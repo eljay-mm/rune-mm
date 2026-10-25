@@ -1,3 +1,4 @@
+```md
 # Contributing to rune-mm
 
 This repository (https://github.com/eljay-mm/rune-mm) is a collection of Lua plugins for the Rune client, designed to work with the horstgs Materia Magica configuration. The project prefers a consistent house style across all plugins.
@@ -50,9 +51,9 @@ TODO:
 --   * ...
 --
 -- Commands (type without "/"; "xyz" is a short alias for "<camelName>"):
---   <camelName>            show this help
---   <camelName> on|off     enable / disable the trigger(s)
---   <camelName> debug      toggle debug messages (default off)
+--   <xyz>            show this help
+--   <xyz> on|off     enable / disable the trigger(s)
+--   <xyz> debug      toggle debug messages (default off)
 --
 -- Tweaks (top of file):
 --   * LOOKUP_CMD   what it controls
@@ -64,7 +65,7 @@ Rules:
 - Include a bulleted "How it works" summary in the header using the style already used in the repo
 - The "How it works" statement must match the `Purpose` line
 - Keep any existing "Inspired by" line in the "How it works" section
-- If the plugin needs another plugin or an alias defined elsewhere (for example `researchNotesPicker` uses the `rrl` and `rrr` aliases from `basicAliases`), say so in "How it works"
+- If the plugin depends on another plugin or an alias defined elsewhere, document that dependency in "How it works"
 - List the plugin's commands in the header, including the short alias. If the file has constants at the top that are meant to be tweaked, list them under "Tweaks"
 - Use plain `--` line comments everywhere. Never use `[[ ]]` block-comment markers, except the Todo block: exactly one per header, after the first four lines and before `Changelog`, holding the planning notes for the next pass, or the placeholder `- insert planning notes here between revisions.` when nothing is planned
 
@@ -83,6 +84,7 @@ Rules:
   - use `H.title`, `H.section`, `H.line`, `H.foot`
   - the rows are printed with `rune.echo` (or passed to `emit()`, as `annwnQuestSearch.lua` does)
 - Help includes a row for the short alias, placed after the command rows and before the footer: `rune.echo(H.line(SHORT, "short alias for " .. NAME))`
+- Use the short alias in the help rows and keep descriptions concise, so no help line, except the footer, is longer than 76 characters
 - The version appears at the start of the single `H.foot` status row, without the plugin name in that row
 - The same footer row reports enabled and debug states, the number of registered bindings or triggers when applicable, and load time (for example, `v1.4  enabled=true debug=false bindings=20  load=12ms`)
 - Measure load time with `os.clock()`: capture `local LOAD_STARTED = os.clock()` at the top of the file, then calculate rounded milliseconds once after initialization with `math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)`
@@ -102,9 +104,9 @@ local H = require("helpstyle")
 local function help()
   rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
   rune.echo(H.section("Commands"))
-  rune.echo(H.line(NAME,              "show this help"))
-  rune.echo(H.line(NAME .. " on|off", "enable / disable the trigger(s)"))
-  rune.echo(H.line(NAME .. " debug",  "toggle debug messages"))
+  rune.echo(H.line(SHORT,              "show this help"))
+  rune.echo(H.line(SHORT .. " on|off", "enable / disable the trigger(s)"))
+  rune.echo(H.line(SHORT .. " debug",  "toggle debug messages"))
   rune.echo(H.line(SHORT,             "short alias for " .. NAME))
   rune.echo(H.foot(string.format("v%s  enabled=%s debug=%s  load=%dms",
     VERSION, tostring(enabled), tostring(debug_on), LOAD_MS)))
@@ -194,17 +196,6 @@ end
 - Keep aliases and triggers on a single row each where possible
 - Prefer readable, maintainable Lua
 
-### basicAliases.lua restrictions
-
-`basicAliases.lua` has stricter rules than other plugins:
-
-- Never include:
-  - `ct`
-  - `at`
-  - `ft`
-  - `reply`
-  - `talk_alias` helpers or signature helpers
-
 ## Cross-platform
 
 Plugins must work on Linux, macOS and Windows wherever possible:
@@ -243,6 +234,7 @@ When providing or updating a plugin:
 
 - Always deliver the full `.lua` file
 - Include performance and security recommendations along with the plugin
+- Include a code cleanup offer and a file-size-savings report with every delivery
 
 ## Versioning
 
@@ -254,23 +246,23 @@ When providing or updating a plugin:
 
 Before considering a plugin complete, confirm:
 
-- [ ] File is in `eljayPlugins/` and named correctly
-- [ ] Header uses the required format, with commands (and tweaks, if any) listed
-- [ ] Header has the single `[[ ]]` Todo block between `Date` and `Changelog` (placeholder if empty), and no other `[[ ]]` markers
-- [ ] Purpose and "How it works" match the actual behavior, and any "Inspired by" line is kept
-- [ ] Changelog is present and current
-- [ ] Commands are defined without a `/` prefix, as bare `rune.alias.exact` handlers
-- [ ] Full command is the plugin name, with a short alias, and neither clashes with an in-game command
-- [ ] `NAME` and `SHORT` are defined under the `-- Command names:` comment and used in alias registration, help, debug messages and the loader line; help has the `SHORT` alias row before the footer
-- [ ] On/off toggle and debug toggle exist, debug defaults to off, and debug output is guarded by it
-- [ ] Help summary works when the command is typed bare, with the version at the start of the footer row and the load time at its end
-- [ ] Load output is a single loader row (`[pluginName] vX.Y loaded (<command> for help)`) with the coloured prefix, unless it is `characterLog`
-- [ ] Settings are stored with `rune.store`; every write reads the latest value first and refreshes the in-memory copy after saving
-- [ ] Character name comes from `charname.lua`, not from ad hoc detection, and the plugin works while the name is still `nil`
-- [ ] Load is fast: no slow work at load, and the footer reports `load=`
-- [ ] Works on Windows as well as Linux, or the limitation is documented
-- [ ] No forbidden aliases or helpers were added
-- [ ] Version bump follows the repo policy, and header, `VERSION` constant and footer match
-- [ ] Plugin is listed in `PLUGINS` in `initEljay.lua`
-- [ ] README table row matches the `Purpose`
-- [ ] Performance/security notes are included
+- [ ] File is in `eljayPlugins/` and named correctly.
+- [ ] Header has the required format, commands, and tweaks where applicable.
+- [ ] Exactly one `[[ ]]` TODO block appears between `Date` and `Changelog`; use the placeholder if there are no planning notes.
+- [ ] Purpose and `How it works` match the behavior; preserve any `Inspired by` line.
+- [ ] Changelog is present and current.
+- [ ] Commands are bare `rune.alias.exact` handlers, with a full name and non-conflicting short alias.
+- [ ] `NAME` and `SHORT` are defined under the required comment and used consistently. Help includes the short-alias row before the footer.
+- [ ] On/off and debug toggles exist; debug defaults to off and is guarded.
+- [ ] Bare command shows help, using the short alias in help rows; help lines (except the footer) are at most 76 characters.
+- [ ] Footer starts with the version and includes the stored load time.
+- [ ] Load output is one colored loader row, except for `characterLog`.
+- [ ] Settings use `rune.store`; writes read fresh data and refresh the cache.
+- [ ] Character names use `charname.lua`; the plugin works while the name is still `nil`.
+- [ ] Load is fast; slow work is deferred.
+- [ ] Windows support works or limitations are documented.
+- [ ] Header, `VERSION`, and footer versions match and follow version policy.
+- [ ] Plugin is listed in `initEljay.lua`; README row matches its Purpose.
+- [ ] Performance and security recommendations are included in the delivery.
+- [ ] A code cleanup offer and file-size-savings report are included in the delivery.
+```

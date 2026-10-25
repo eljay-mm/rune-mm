@@ -1,12 +1,14 @@
 -- Filename: eljayPlugins/researchNotesPicker.lua
 -- Purpose: Turns research-list output into a searchable picker for repeat thesis purchases and handles the notes around the session.
--- Version: 1.13
--- Date: 2026-Oct-19
+-- Version: 1.14
+-- Date: 2026-Oct-24
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
+--   1.14 Added standalone rrl and rrr aliases; no longer depends on
+--        basicAliases for research-list and research-buy commands.
 --   1.13 Standardized help and command handling; clarified trigger and debug toggles.
 --   1.12 Measure load time once after initialization and show the fixed value in help.
 --   1.11 Brought help, persistent toggles, load timing and footer in line with repo conventions.
@@ -26,7 +28,8 @@ TODO:
 --   * The picker filters by subject, number or cost. "pick" reopens the last list;
 --     "done" sends "hold notes". If the picker is dismissed, the next submitted input
 --     sends "hold notes".
---   * The rrl and rrr aliases are not defined here; they come from an external definition.
+--   * The standalone rrl alias sends "read research list"; rrr <item> buys research
+--     and handles the notes. These aliases are registered by this plugin.
 --   * Nothing is gagged: the normal research-list output remains visible.
 --
 -- Commands (typed bare, no "/"; rnp is the short alias for researchNotesPicker):
@@ -36,6 +39,8 @@ TODO:
 --   researchNotesPicker debug on|off    enable or disable debug messages
 --   researchNotesPicker pick            reopen the last research picker
 --   researchNotesPicker done            put the notes back now
+--   rrl                                 show the research list
+--   rrr <item>                          buy research and handle the notes
 --
 -- Tweaks (top of file):
 --   * DEBOUNCE   seconds of silence after the last row before the picker opens
@@ -43,7 +48,7 @@ TODO:
 local LOAD_STARTED = os.clock()
 
 local NAME     = "researchNotesPicker"
-local VERSION  = "1.13"
+local VERSION  = "1.14"
 local SHORT    = "rnp"
 local DEBOUNCE = 0.4 -- seconds of silence after the last row before the picker opens
 
@@ -100,11 +105,13 @@ local function show_help()
   emit(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
   emit(H.section("Commands"))
   emit(H.line(NAME, "show this help"))
-  emit(H.line(NAME .. " on|off", "enable or disable the thesis-list trigger"))
-  emit(H.line(NAME .. " debug on|off", "enable or disable debug messages"))
-  emit(H.line(NAME .. " pick", "reopen the last research picker"))
-  emit(H.line(NAME .. " done", "put the notes back now"))
-  emit(H.line(SHORT, "short alias for " .. NAME))  
+  emit(H.line(SHORT .. " on|off", "enable or disable the thesis-list trigger"))
+  emit(H.line(SHORT .. " debug on|off", "enable or disable debug messages"))
+  emit(H.line(SHORT .. " pick", "reopen the last research picker"))
+  emit(H.line(SHORT .. " done", "put the notes back now"))
+  emit(H.line(SHORT, "short alias for " .. NAME))
+  emit(H.line("rrl", "show the research list"))
+  emit(H.line("rrr <item>", "buy research and handle the notes"))
   emit(H.foot(string.format(
     "v%s  enabled=%s debug=%s triggers=1  load=%dms",
     VERSION, tostring(enabled), tostring(DEBUG), LOAD_MS or 0
@@ -245,6 +252,24 @@ local function handle_command(args)
   local sub, rest = text:match("^%s*(%S*)%s*(.-)%s*$")
   run(sub, rest)
 end
+
+-- Standalone research aliases previously supplied by basicAliases.lua.
+rune.alias.exact("rrl", function()
+  rune.send("read research list")
+end)
+
+rune.alias.exact("rrr", function(args)
+  local item = type(args) == "string" and args:match("^%s*(.-)%s*$") or ""
+  if item == "" or item:find("[%c;]") then
+    say("Usage: rrr <item>")
+    return
+  end
+
+  rune.send(
+    "rem notes;read research buy " .. item ..
+    ";bind thesis notes;hold notes"
+  )
+end)
 
 rune.alias.exact(NAME, handle_command)
 rune.alias.exact(SHORT, handle_command)

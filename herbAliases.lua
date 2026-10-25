@@ -1,11 +1,12 @@
 -- Filename: eljayPlugins/herbAliases.lua
 -- Purpose: Provides short aliases for Herbalism mixing, throwing and eating.
--- Version: 1.12
--- Date: 2026-Oct-20
+-- Version: 1.13
+-- Date: 2026-Oct-25
 --[[
 - Confirm the configured h* actions and mixture names in game.
 ]]
 -- Changelog:
+--   1.13 Align command documentation and help output with project conventions.
 --   1.12 Remove the "mix" prefix from the list display and fit list rows within 74 characters.
 --   1.11 Strip the leading "a " and trailing " herbal mixture" from mixture names in the list.
 --   1.10 Add h* aliases and mixture names to the common-mix list.
@@ -29,11 +30,11 @@
 --   * Press Esc to close the picker.
 --
 -- Commands (type without "/"; "herb" is a short alias for "herbAliases"):
---   herbAliases / herb          show this help
---   herbAliases list            list common mixes, aliases, use details, commands and power ranges
---   herbAliases pick            open the searchable mix picker
---   herbAliases on|off          enable / disable the aliases
---   herbAliases debug [on|off]  toggle or set debug messages
+--   herbAliases             show this help
+--   herbAliases list        list common mixes and power ranges
+--   herbAliases pick        open the searchable mix picker
+--   herbAliases on|off      enable / disable the aliases
+--   herbAliases debug       toggle debug messages
 --
 -- Tweaks:
 --   * mixAliases  entries shown by list and pick.
@@ -44,7 +45,8 @@ local LOAD_STARTED = os.clock()
 -- Command names: full command and short alias.
 local NAME = "herbAliases"
 local SHORT = "herb"
-local VERSION = "1.12"
+local VERSION = "1.13"
+local BINDING_COUNT = 38
 
 local STORE_ENABLED = "eljayPlugins." .. NAME .. ".enabled"
 local STORE_DEBUG = "eljayPlugins." .. NAME .. ".debug"
@@ -140,20 +142,24 @@ local function showHelp()
   rune.echo(H.title(NAME .. " (alias: " .. SHORT .. ")"))
   rune.echo(H.section("Commands"))
   rune.echo(H.line(NAME, "show this help"))
-  rune.echo(H.line(NAME .. " list", "list common mixes, aliases, use details and power ranges"))
-  rune.echo(H.line(NAME .. " pick", "open the searchable mix picker"))
-  rune.echo(H.line(NAME .. " on|off", "enable / disable the aliases"))
-  rune.echo(H.line(NAME .. " debug [on|off]", "toggle or set debug messages"))
-  rune.echo(H.section("Use aliases"))
-  rune.echo(H.line("haw / hclt / hdi / hey / hcl / hre", "use the matching herbal mixture"))
-  rune.echo(H.line("haa / hfv / hca / hhh / hdt / hge", "use the matching herbal mixture"))
-  rune.echo(H.line("hfa / hpd / hbp / heo / hbb / hbl", "use the matching herbal mixture"))
+  rune.echo(H.line(SHORT .. " list", "list common mixes and power ranges"))
+  rune.echo(H.line(SHORT .. " pick", "open the searchable mix picker"))
+  rune.echo(H.line(SHORT .. " on|off", "enable / disable the aliases"))
+  rune.echo(H.line(SHORT .. " debug", "toggle debug messages"))
   rune.echo(H.line(SHORT, "short alias for " .. NAME))
+  rune.echo(H.section("Use aliases"))
+  rune.echo(H.line("haw / hclt / hdi", "use configured mixture"))
+  rune.echo(H.line("hey / hcl / hre", "use configured mixture"))
+  rune.echo(H.line("haa / hfv / hca", "use configured mixture"))
+  rune.echo(H.line("hhh / hdt / hge", "use configured mixture"))
+  rune.echo(H.line("hfa / hpd / hbp", "use configured mixture"))
+  rune.echo(H.line("heo / hbb / hbl", "use configured mixture"))
   rune.echo(H.foot(string.format(
-    "v%s  enabled=%s debug=%s bindings=38  load=%dms",
+    "v%s  enabled=%s debug=%s bindings=%d  load=%dms",
     VERSION,
     onoff(enabled),
     onoff(debugEnabled),
+    BINDING_COUNT,
     LOAD_MS
   )))
 end
@@ -170,12 +176,17 @@ local function fit(value, width)
   return value .. string.rep(" ", width - #value)
 end
 
+local function cyan(value)
+  local ok, styled = pcall(rune.style.cyan, value)
+  return ok and styled or value
+end
+
 local function listMixAliases()
   rune.echo(H.title("Herbalism common mixes"))
   rune.echo(
-    fit("m* alias", 8) ..
-    fit("h* alias", 8) ..
-    fit("use", 6) ..
+    fit("mix", 8) ..
+    fit("use", 8) ..
+    fit("howol;l", 6) ..
     fit("mixture", 21) ..
     fit("mix command", 21) ..
     "power"
@@ -205,8 +216,8 @@ local function listMixAliases()
     local displayCommand = mixCommand(mix):gsub("^mix%s+", "")
 
     rune.echo(
-      fit(mix.alias, 8) ..
-      fit(hAlias, 8) ..
+      cyan(fit(mix.alias, 8)) ..
+      cyan(fit(hAlias, 8)) ..
       fit(use, 6) ..
       fit(mixture, 21) ..
       fit(displayCommand, 21) ..

@@ -42,7 +42,7 @@
 local LOAD_STARTED = os.clock()
 
 local NAME = "numPadBindings"
-local ALIAS = "npb"
+local SHORT = "npb"
 local VERSION = "2.8"
 
 rune.config.set("numpad", true)
@@ -172,12 +172,13 @@ local function footer()
 end
 
 local function show_summary()
-  help_row("title", "Numpad accelerators  (alias: " .. ALIAS .. ")")
+  help_row("title", "numPadBindings  (alias: " .. SHORT .. ")")
   help_row("section", "Commands")
-  help_row("line", NAME .. " / " .. ALIAS, "show this help")
-  help_row("line", NAME .. " on|off", "enable / disable the bindings")
-  help_row("line", NAME .. " list", "show every binding")
-  help_row("line", NAME .. " debug on|off", "enable / disable debug messages")
+  help_row("line", NAME .. " / " .. SHORT, "show this help")
+  help_row("line", SHORT .. " on|off", "enable / disable the bindings")
+  help_row("line", SHORT .. " list", "show every binding")
+  help_row("line", SHORT .. " debug on|off", "enable / disable debug messages")
+  help_row("line", SHORT .. " ", "short alias for " .. NAME)
   help_row("section", "Layers")
   help_row("line", "numpad", "walk (5 = look)")
   help_row("line", "alt+", "look <direction> (5 = scan)")
@@ -186,7 +187,7 @@ local function show_summary()
 end
 
 local function show_list()
-  help_row("title", "Numpad bindings")
+  help_row("title", "numPadBindings")
   for _, binding in ipairs(bindings) do
     help_row("line", binding[1], "-> " .. binding[2])
   end
@@ -243,7 +244,7 @@ end
 
 -- Bare commands are aliases; rune.command.add only creates slash commands.
 if rune.alias and type(rune.alias.exact) == "function" then
-  for _, word in ipairs({ NAME, ALIAS }) do
+  for _, word in ipairs({ NAME, SHORT }) do
     pcall(rune.alias.exact, word, function(args, ctx)
       run_command(args_to_text(args))
     end)
@@ -253,7 +254,7 @@ end
 if rune.alias and type(rune.alias.regex) == "function" then
   pcall(
     rune.alias.regex,
-    "^(?:" .. NAME .. "|" .. ALIAS .. ") +(.*)$",
+    "^(?:" .. NAME .. "|" .. SHORT .. ") +(.*)$",
     function(match)
       run_command(match[1])
     end,
@@ -261,4 +262,4 @@ if rune.alias and type(rune.alias.regex) == "function" then
   )
 end
 
-say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, ALIAS))
+say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))

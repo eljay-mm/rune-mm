@@ -1,51 +1,49 @@
 -- Filename: eljayPlugins/asciiMapPane.lua
 -- Purpose: ASCII map pane for Rune + horstgs Materia Magica.
--- Version: 2.11
--- Date: 2026-Oct-21
+-- Version: 2.27
+-- Date: 2026-Oct-23
 --
 --[[ Todo:
 - insert planning notes here between revisions.
 --]]
 --
 -- Changelog:
---   2.11  calibrate now draws a labelled frame of the exact size to test (the
---         current size, or calibrate <W> <H>), so you can see whether it fits.
---   2.10  Brought to standard from the v2.7 baseline. Removed the disabled
---         map.db fallback reader and the store-loading state (about 250 lines);
---         store search stops at the first usable store and retries every 5s.
---         Short alias amp; NAME/SHORT locals; one regex alias for both names;
---         helpstyle loaded only when help is shown; settings saved with
---         read-modify-write; load time in the help footer; named GMCP handler.
---         (v2.8/2.9 changes are not in this file.)
---   2.7   Layout and links follow mapper_map.lua (exit-graph walk, rooms two
---         characters apart, link only when the exit leads to the placed room).
+--   2.27  No-loss size pass: dead pane-size probing and the inert pad setting
+--         removed; settings, commands and help table-driven; layout node cap
+--         scaled to the pane; look hook skips long input; header trimmed.
+--   2.26  `amp colours` also tries asciiMapColours at the config root, and
+--         says where the file is expected when it cannot be loaded.
+--   2.25  Colour management moved to eljayPlugins/asciiMapColours.lua, loaded
+--         only on `amp colours`; basic (16-colour) is the default scheme
+--         again. On `look` the trail is cleared. Removed the links, color,
+--         dim, tags and help subcommands.
+--   2.24  Trail fades in the colour of you, never inverted.
 -- How it works:
---   * Rune sends GMCP Room.Info on every move; the plugin keeps the latest room and redraws the pane.
---   * Inspired by mapper_map.lua in the horstgs Rune configuration: the layout comes from the exit graph, not from room coordinates, which are unreliable.
---   * From your room it walks the exits breadth-first in a fixed order (n ne e se s sw w nw); each exit is one step, and the first room to reach a cell keeps it.
---   * By default only rooms in the same zone and on the same floor are placed; up, down, in and out exits are not drawn.
---   * Rooms sit two characters apart, so every cell between two rooms belongs to exactly one link; a link (- | / \ or box lines) is drawn only when that exit leads to the room placed in that cell.
---   * Exits to rooms the mapper has not stored yet show as ?; rooms are symbolled and coloured by terrain, flags and name, with your recent trail highlighted and far rooms faded.
---   * Redraws are skipped when nothing relevant changed; settings are saved with rune.store, and debug output stays off unless enabled.
---   * Server-supplied text is stripped of control characters before display to protect the terminal from injected escapes.
---   * Typing the command on its own shows a help summary using helpstyle, with the version at the start of the footer row.
+--   * GMCP Room.Info on every move updates the latest room and redraws the pane; redraws are skipped when nothing relevant changed.
+--   * Layout follows mapper_map.lua (horstgs): from your room it walks the exits breadth-first (n ne e se s sw w nw), one step per exit, the first room to reach a cell keeps it; only your zone and floor by default; up, down, in and out exits are not drawn.
+--   * Walk depth comes from the pane: out until rooms stop landing in the visible window (one room of margin), at least the window radius and at most three times that plus six.
+--   * Rooms sit two characters apart; a box-line link is drawn only when that exit leads to the room placed in that cell. Exits to rooms the mapper has not stored show as ?.
+--   * Rooms are classified by flags and tags like mapper_map.lua: x pk, T trainer, $ shop, S safe, ^ v % stairs, # road, o plain. The trail (your last six rooms) uses the colour of you, fading, and is cleared on look.
+--   * In the wilds the game sends its own map after a compass frame; the pane shows only the title, the room number and name, the exits row, and that map's roads (#) and you (@) where the game put them.
+--   * Colours: 16-colour basic is the default; `amp colours` loads asciiMapColours.lua (schemes, custom colours, codes) and its saved codes are applied at startup. Fixed in every scheme: id/name bold white, exits and stairs cyan, shops green, roads grey. The 256-colour schemes need `export TERM=xterm-256color` before starting Rune (add it to ~/.bashrc to keep it).
+--   * The pane title is the area name: the plugin sets rune.asciimap_title and calls rune_build_layout(); init.lua uses title = rune.asciimap_title or "asciiMap" for that pane.
+--   * The pane size is saved per character via charname (other settings are shared); the room store is require("mapper_store"). Server text is stripped of control characters; debug output stays off unless enabled.
+--   * The bare command shows a help summary (helpstyle) with the version at the start of the footer row.
 --
 -- Commands:
 --   asciiMapPane (amp)                    show this summary
 --   asciiMapPane on|off                   show or hide the map pane
---   asciiMapPane compact|spaced           1 char per room, no links / rooms two apart with links (default)
 --   asciiMapPane zone on|off              stay in the current zone (default) / cross zone borders
---   asciiMapPane links unicode|ascii      link line characters
---   asciiMapPane color on|off             ANSI colours on/off
---   asciiMapPane flags|trail|dim on|off   overlays
---   asciiMapPane size <W> <H>|auto        set pane size in characters
+--   asciiMapPane colours|colors ...       colour schemes and codes (asciiMapColours.lua)
+--   asciiMapPane flags|trail on|off       overlays
+--   asciiMapPane size <W> <H>|auto        set pane size in characters (saved per character)
 --   asciiMapPane calibrate [W H]          draw a test frame of that size (default: current)
---   asciiMapPane pad <N>                  border allowance
+--   asciiMapPane legend                   what the symbols mean
+--   asciiMapPane refresh | reset          force a redraw | restore defaults
 --   asciiMapPane debug on|off             debug logging (default off)
---   asciiMapPane help                     show this summary
 
 local T0 = os.clock and os.clock() or 0
-local VERSION = "2.11"
+local VERSION = "2.27"
 
 -- Command names: full command and short alias.
 local NAME  = "asciiMapPane"
@@ -56,17 +54,12 @@ local PANE_ID = "eljayPlugins/asciiMapPane"
 -- Rune's pane API has no size query, so this is the "auto" size. Edit
 -- these two numbers (or use asciiMapPane size W H) to match your pane.
 local DEFAULT_W = 42
-local DEFAULT_H = 15
+local DEFAULT_H = 10
 
 -- Limits (input validation / resource safety).
 local MIN_W, MAX_W = 10, 200
 local MIN_H, MAX_H = 3, 100
-local MAX_PAD = 10
 
-local ROOM_MARKER    = "o"
-local UP_MARKER      = "^"
-local DOWN_MARKER    = "v"
-local UPDOWN_MARKER  = "%"
 local CURRENT_MARKER = "@"
 
 local enabled = true
@@ -76,12 +69,10 @@ local last_pane_text = nil
 local load_ms = 0
 
 local manual_w, manual_h = nil, nil
-local use_color = true
-local compact = false   -- spaced (links) is the default view
-local border_pad = 2
 
 -- Redraw skipping
 local last_sig = nil
+local wilds, wilds_uid, wilds_id = nil, nil, 0   -- the game's wilds map (see Setup)
 local epoch = 0
 
 -- Server-supplied text may include control characters.
@@ -106,79 +97,9 @@ end
 -- Store access (lazy)
 -----------------------------------------------------------------------
 
-local store, store_source, store_note = nil, "none", nil
-local next_find = 0
-
-local function usable(t)
-    return type(t) == "table"
-        and type(rawget(t, "rooms")) == "table"
-        and type(rawget(t, "get")) == "function"
-        and next(rawget(t, "rooms")) ~= nil
-end
-
--- First usable store wins: well-known names first, then a scan.
-local function find_store()
-    local function try(label, value)
-        if usable(value) then
-            return value, label
-        end
-    end
-
-    local s, label = try("_G.mapper_store", _G.mapper_store)
-    if s then return s, label end
-
-    if type(_G.mapper) == "table" then
-        s, label = try("_G.mapper.store", _G.mapper.store)
-        if s then return s, label end
-        s, label = try("_G.mapper", _G.mapper)
-        if s then return s, label end
-    end
-
-    for _, name in ipairs({ "mapper_store", "eljayPlugins.mapper_store" }) do
-        s, label = try("package.loaded." .. name, package.loaded[name])
-        if s then return s, label end
-    end
-
-    pcall(function()
-        for name, value in pairs(package.loaded) do
-            s, label = try("package.loaded." .. tostring(name), value)
-            if s then return end
-        end
-        for name, value in pairs(_G) do
-            s, label = try("_G." .. tostring(name), value)
-            if s then return end
-        end
-    end)
-    if s then return s, label end
-
-    for _, name in ipairs({ "mapper_store", "eljayPlugins.mapper_store" }) do
-        local ok, mod = pcall(require, name)
-        s, label = try("require(" .. name .. ")", ok and mod or nil)
-        if s then return s, label end
-    end
-
-    return nil, "none"
-end
-
-local function get_store()
-    if usable(store) then
-        return store
-    end
-
-    local now = os.time and os.time()
-    if not now or now >= next_find then
-        local found, label = find_store()
-        if found then
-            store, store_source = found, label
-            if DEBUG then dbg("store -> %s", label) end
-            return store
-        end
-        next_find = (now or 0) + 5
-    end
-
-    store_note = "mapper store not found (retrying)."
-    return nil
-end
+-- The room store, required directly as mapper_map.lua does.
+local store = require("mapper_store")
+local charname = require("charname")
 
 -----------------------------------------------------------------------
 -- Helpers
@@ -222,28 +143,12 @@ local function write_pane(text)
 
     last_pane_text = text
 
-    if not rune.pane then
-        return
-    end
+    if rune.pane and rune.pane.replace then
+        pcall(rune.pane.replace, PANE_ID, text)
 
-    local done = false
-
-    if type(rune.pane.replace) == "function" then
-        done = pcall(rune.pane.replace, PANE_ID, text)
-    end
-
-    if not done then
-        if rune.pane.clear then
-            rune.pane.clear(PANE_ID)
+        if rune.pane.scroll_to_top then
+            pcall(rune.pane.scroll_to_top, PANE_ID)
         end
-
-        if rune.pane.write then
-            rune.pane.write(PANE_ID, text)
-        end
-    end
-
-    if type(rune.pane.scroll_to_top) == "function" then
-        pcall(rune.pane.scroll_to_top, PANE_ID)
     end
 end
 
@@ -265,53 +170,28 @@ local function hide_pane()
     end
 end
 
-local SIZE_FNS = {
-    "size", "get_size", "dimensions", "dims", "info", "get",
-    "metrics", "rect", "bounds",
-}
+-- The pane title is the area name. Panes have no runtime title setter, so
+-- this sets rune.asciimap_title and re-declares the layout, as mapper_map.lua
+-- does; init.lua reads the title when it builds the layout.
+local function set_title(text)
+    text = clean(text):sub(1, 40)
+    if text == "" then text = "asciiMap" end
+    if text == rune.asciimap_title then return end
 
-local function detect_size_raw()
+    rune.asciimap_title = text
+    if rune_build_layout then pcall(rune_build_layout) end
+    last_pane_text = nil   -- the re-declared pane may be empty
+    if DEBUG then dbg("title: %s", text) end
+end
+
+-- Rune has no pane size query, so the size is the one you set with `size W H`
+-- (saved per character) or the default above.
+local function detect_size()
     if manual_w and manual_h then
         return manual_w, manual_h, "manual"
     end
 
-    local p = rune.pane
-
-    if type(p) == "table" then
-        for _, name in ipairs(SIZE_FNS) do
-            if type(p[name]) == "function" then
-                local ok, a, b = pcall(p[name], PANE_ID)
-                if ok then
-                    if type(a) == "table" then
-                        a, b = a.width or a.w or a.cols or a.columns,
-                            a.height or a.h or a.rows or a.lines
-                    end
-
-                    a, b = tonumber(a), tonumber(b)
-                    if a and b and a > 0 and b > 0 then
-                        return a - border_pad, b - border_pad, "pane." .. name
-                    end
-                end
-            end
-        end
-
-        if type(p.width) == "function" and type(p.height) == "function" then
-            local ok1, w = pcall(p.width, PANE_ID)
-            local ok2, h = pcall(p.height, PANE_ID)
-            w, h = tonumber(w), tonumber(h)
-            if ok1 and ok2 and w and h and w > 0 and h > 0 then
-                return w - border_pad, h - border_pad, "pane.width/height"
-            end
-        end
-    end
-
     return DEFAULT_W, DEFAULT_H, "default"
-end
-
-local function detect_size()
-    local w, h, src = detect_size_raw()
-    return clamp(math.floor(w), MIN_W, MAX_W),
-        clamp(math.floor(h), MIN_H, MAX_H), src
 end
 
 -----------------------------------------------------------------------
@@ -322,15 +202,17 @@ local EXIT_ORDER = {
     "n", "ne", "e", "se", "s", "sw", "w", "nw", "u", "d", "in", "out",
 }
 
-local function header_line(info, stored, width)
-    local name = info.name or (stored and stored.name) or "Unknown room"
-    local area = info.area or info.zone or (stored and stored.area)
+local function area_of(info, stored)
+    return info.area or info.zone or (stored and stored.area)
         or (type(info.coord) == "table" and info.coord.name)
         or "Unknown zone"
+end
 
-    local text = string.format("%s %s | %s",
-        clean(info_uid(info) or (stored and stored.uid) or "?"),
-        clean(name), clean(area))
+local function header_line(info, stored, width)
+    local name = info.name or (stored and stored.name) or "Unknown room"
+
+    local text = string.format("%s %s",
+        clean(info_uid(info) or (stored and stored.uid) or "?"), clean(name))
 
     return #text > width and text:sub(1, width) or text
 end
@@ -367,125 +249,97 @@ end
 -- Styling tables
 -----------------------------------------------------------------------
 
-local GLYPHS = {
-    { "~", { "water", "swim", "ocean", "river", "lake", "sea" }, "34" },
-    { "#", { "road", "street", "path", "trail", "lane", "city", "town",
-             "urban", "paved" }, "33" },
-    { "$", { "shop" }, "32" },
-    { "o", { "forest", "wood", "jungle", "tree" }, "32" },
-    { "o", { "mountain", "hill", "peak" }, "90" },
-    { "o", { "inside", "indoor", "building", "house", "cave",
-             "dungeon", "tunnel" }, "36" },
-}
-
-local DEFAULT_ROOM_COLOR = "37"
-
-local NAME_GLYPHS = {
-    { "#", { "road", "street", "trail", "path", "lane", "avenue", "alley",
-             "highway", "boulevard", "crossroads", "bridge" }, "33" },
-    { "$", { "shop", "store", "market", "bazaar" }, "32" },
-}
-
-local FLAG_FG  = { { "safe", "92" } }
-local FLAG_MOD = { { "dark", "2" } }
+-- Colour codes in use, by name. The defaults are the 16-colour basic scheme;
+-- `amp colours` (asciiMapColours.lua) can change them, and the saved codes
+-- are applied at startup (see load_codes).
+local CODES = { header = "1;37", exits = "36", road = "37", stairs = "36",
+    shop = "32", you = "1;30;43", unexplored = "1;91", pk = "1;91",
+    trainer = "93", safe = "92", room = "37", links = "90", dark = "2" }
+local DEFAULT_CODES = {}
+for k, v in pairs(CODES) do DEFAULT_CODES[k] = v end
 
 local UNEXPLORED_MARKER = "?"
 
-local TRAIL_LENGTH = 6
-local TRAIL_COLORS = { "1;95", "95", "35", "35", "2;35", "2;35" }
-local DIM_START = 0.7
+local TRAIL_LENGTH = 6   -- rooms remembered
 
 local ESC = string.char(27)
-
-local COLORS = {
-    ["@"] = "1;97;45",
-    ["?"] = "1;91",
-    ["#"] = "33", ["$"] = "32", ["o"] = "37", ["~"] = "34",
-    ["^"] = "1;92", ["v"] = "1;92", ["%"] = "1;92",
-    ["-"] = "90", ["|"] = "90", ["/"] = "90", ["\\"] = "90",
-    ["X"] = "90",
-}
 
 local opts = { flags = true, trail = true, dim = true, zone = true }
 
 local history = {}
 
-local function first_match(entries, text, plain_words)
-    for _, entry in ipairs(entries) do
-        for _, word in ipairs(entry[2]) do
-            local hit
-            if plain_words then
-                hit = text:find("%f[%a]" .. word .. "%f[%A]")
-            else
-                hit = text:find(word, 1, true)
-            end
+-- Rooms are classified by exact flags and tags, as mapper_map.lua does.
+local function tokens(v)
+    local set = {}
 
-            if hit then
-                return entry[1], entry[3]
-            end
-        end
+    if type(v) == "table" then
+        for _, x in ipairs(v) do set[tostring(x):lower()] = true end
+    else
+        for tok in tostring(v or ""):lower():gmatch("[^,%s]+") do set[tok] = true end
     end
 
-    return nil
+    return set
 end
 
+local function token_list(v)
+    local t = {}
+    for k in pairs(tokens(v)) do t[#t + 1] = k end
+    table.sort(t)
+    return table.concat(t, ",")
+end
+
+-- A room is a road when its terrain, flags or tags hold one of these words.
+local ROADS = { road = true, street = true, path = true, trail = true }
+
+local function is_road(room, flags, tags)
+    for _, set in ipairs({ flags, tags, tokens(room.terrain), tokens(room.terraininfo) }) do
+        for t in pairs(ROADS) do
+            if set[t] then return true end
+        end
+    end
+
+    return false
+end
+
+local PK = { npk = true, cpk = true, lpk = true,
+    ["player-kill-neutral"] = true, ["player-kill-chaotic"] = true }
+
+-- Order matters: pk, trainer, shop, safe, then stairs, road, a plain room.
 local function compute_style(room)
-    local glyph, color
-    local up = has_exit(room, "u")
-    local down = has_exit(room, "d")
+    local flags, tags = tokens(room.flags), tokens(room.tags)
+    local pk = tags.dt
 
-    if up and down then
-        glyph = UPDOWN_MARKER
-    elseif up then
-        glyph = UP_MARKER
-    elseif down then
-        glyph = DOWN_MARKER
+    for t in pairs(PK) do
+        if flags[t] then pk = true break end
     end
 
-    if glyph then
-        color = COLORS[glyph]
+    local glyph, key
+
+    if pk then
+        glyph, key = "x", "pk"
+    elseif flags.trainer or tags.trainer then
+        glyph, key = "T", "trainer"
+    elseif flags.shop or tags.shop then
+        glyph, key = "$", "shop"
+    elseif flags.safe or tags.safe then
+        glyph, key = "s", "safe"
     else
-        local text = (tostring(room.terrain or "") .. " "
-            .. tostring(room.terraininfo or "") .. " "
-            .. tostring(room.flags or "")):lower()
+        local up, down = has_exit(room, "u"), has_exit(room, "d")
 
-        if text:match("%S") then
-            glyph, color = first_match(GLYPHS, text, false)
-        end
-
-        if not glyph or glyph == ROOM_MARKER then
-            local name = tostring(room.name or ""):lower():gsub("[^%a]", " ")
-            local g, c = first_match(NAME_GLYPHS, " " .. name .. " ", true)
-
-            if g then
-                glyph, color = g, c
-            end
-        end
-
-        if not glyph then
-            glyph, color = ROOM_MARKER, DEFAULT_ROOM_COLOR
+        if up and down then
+            glyph, key = "%", "stairs"
+        elseif up then
+            glyph, key = "^", "stairs"
+        elseif down then
+            glyph, key = "v", "stairs"
+        elseif is_road(room, flags, tags) then
+            glyph, key = "#", "road"
+        else
+            glyph, key = "o", "room"
         end
     end
 
-    local flags = tostring(room.flags or ""):lower()
-    local fg, mod
-
-    for _, f in ipairs(FLAG_FG) do
-        if flags:find(f[1], 1, true) then
-            fg = f[2]
-            break
-        end
-    end
-
-    for _, f in ipairs(FLAG_MOD) do
-        if flags:find(f[1], 1, true) then
-            mod = f[2]
-            break
-        end
-    end
-
-    return { glyph = glyph, color = color or DEFAULT_ROOM_COLOR,
-        flag_fg = fg, flag_mod = mod }
+    return { glyph = glyph, key = key, dark = flags.dark or tags.dark }
 end
 
 local style_cache = setmetatable({}, { __mode = "k" })
@@ -499,25 +353,82 @@ local function room_style(room)
     return st
 end
 
-local function cell_color(st, rank, dist)
-    local code = st.color
+-- With the flags overlay off, special rooms are drawn as plain rooms.
+local SPECIAL = { pk = true, trainer = true, shop = true, safe = true }
+local PLAIN = { glyph = "o", key = "room" }
 
-    if opts.flags then
-        if st.flag_fg then
-            code = st.flag_fg
+-- The trail is drawn in the colour of you, fading from your last room back,
+-- and never inverted: a block colour (background or reverse video) becomes
+-- text in that colour. Finds the colour in you's code: a background first,
+-- else a foreground.
+local function trail_base(code)
+    local nums = {}
+    for n in code:gmatch("%d+") do nums[#nums + 1] = tonumber(n) end
+
+    local fg, bg, i = nil, nil, 1
+    while i <= #nums do
+        local n = nums[i]
+
+        if (n == 38 or n == 48) and nums[i + 1] == 5 and nums[i + 2] then
+            local c = nums[i + 2]
+            local base = (c < 16) and { c16 = (c < 8) and 30 + c or 82 + c } or { c256 = c }
+            if n == 48 then bg = base else fg = base end
+            i = i + 2
+        elseif (n >= 40 and n <= 47) or (n >= 100 and n <= 107) then
+            bg = { c16 = n - 10 }
+        elseif (n >= 30 and n <= 37) or (n >= 90 and n <= 97) then
+            fg = { c16 = n }
         end
 
-        if st.flag_mod then
-            code = st.flag_mod .. ";" .. code
-        end
+        i = i + 1
     end
 
+    return bg or fg or { c16 = 37 }
+end
+
+local FADE = { 1, 0.88, 0.76, 0.66, 0.57, 0.5 }   -- brightness per trail step
+local LEVELS = { 0, 95, 135, 175, 215, 255 }      -- the 256-colour cube levels
+
+-- A 256-colour number scaled to a fraction of its brightness.
+local function dim256(n, f)
+    if n >= 232 then
+        return math.max(232, 232 + math.floor((n - 232) * f))
+    end
+
+    local v, out = n - 16, 0
+    for _, comp in ipairs({ math.floor(v / 36), math.floor(v / 6) % 6, v % 6 }) do
+        local want, best, gap = LEVELS[comp + 1] * f, 0, math.huge
+        for lv = 0, 5 do
+            local d = math.abs(LEVELS[lv + 1] - want)
+            if d < gap then best, gap = lv, d end
+        end
+        out = out * 6 + best
+    end
+
+    return 16 + out
+end
+
+local function trail_code(rank)
+    local base = trail_base(CODES.you)
+    local step = math.min(rank, #FADE)
+
+    if base.c256 then
+        return (step == 1 and "1;" or "") .. "38;5;" .. dim256(base.c256, FADE[step])
+    end
+
+    -- 16 colours cannot be scaled: bold, then plain, then faint.
+    return (step == 1 and "1;" or (step > 3 and "2;" or "")) .. base.c16
+end
+
+local function cell_color(st, rank)
     if rank and opts.trail then
-        return TRAIL_COLORS[math.min(rank, #TRAIL_COLORS)]
+        return trail_code(rank)
     end
 
-    if opts.dim and dist > DIM_START and code:sub(1, 2) ~= "2;" then
-        code = "2;" .. code
+    local code = CODES[st.key]
+
+    if opts.flags and st.dark then
+        code = code .. ";" .. CODES.dark
     end
 
     return code
@@ -540,21 +451,16 @@ local DIR_ORDER = { "n", "ne", "e", "se", "s", "sw", "w", "nw" }
 -- A jump of 1..4 floors in a horizontal exit is a stair coded as an exit,
 -- not a real neighbour; 5 or more is a stale coordinate and is left alone.
 local MAX_FLOOR_JUMP = 4
-local MIN_DEPTH, MAX_DEPTH = 12, 30    -- rooms of reach from your room
-local MAX_NODES = 4000
+-- Depth is worked out from the pane: the walk goes out until rooms stop
+-- landing in the visible window (plus one room of margin), but never fewer
+-- levels than the window's radius, and at most three times that plus six.
+local PATIENCE = 2    -- levels with nothing in view before the walk stops
 
--- Link glyphs per direction.
-local LINK_GLYPHS = {
-    unicode = { n = "\226\148\130", s = "\226\148\130",
-        e = "\226\148\128", w = "\226\148\128",
-        ne = "\226\149\177", sw = "\226\149\177",
-        nw = "\226\149\178", se = "\226\149\178" },
-    ascii = { n = "|", s = "|", e = "-", w = "-",
-        ne = "/", sw = "/", nw = "\\", se = "\\" },
-}
-
-local link_style = "unicode"
-local LINK_CODE = "90"
+-- Link glyphs per direction (box drawing characters).
+local LINK_GLYPHS = { n = "\226\148\130", s = "\226\148\130",
+    e = "\226\148\128", w = "\226\148\128",
+    ne = "\226\149\177", sw = "\226\149\177",
+    nw = "\226\149\178", se = "\226\149\178" }
 
 local LONG_DIRS = {
     north = "n", south = "s", east = "e", west = "w",
@@ -580,9 +486,8 @@ end
 
 local function pseudo_room(info)
     local room = { uid = info_uid(info), name = info.name,
-        area = info.area or info.zone, terrain = info.terrain,
-        terraininfo = info.terraininfo, flags = info.flags,
-        coord = info.coord, exits = {} }
+        area = info.area or info.zone, flags = info.flags,
+        tags = info.tags, coord = info.coord, exits = {} }
 
     if type(info.exits) == "table" then
         for dir, e in pairs(info.exits) do
@@ -604,7 +509,11 @@ end
 -- arrive keeps it (breadth-first, so rooms nearer to you win) and the other
 -- is simply not placed.  Returns layout[uid] = {x, y}, rooms[uid] = room,
 -- the cell -> uid map, exits to rooms the mapper does not have, and a count.
-local function build_layout(s, start, root_uid, area, root_z, depth, same_zone)
+local function build_layout(s, start, root_uid, area, root_z, win, same_zone)
+    local reach = math.max(win.xmax, -win.xmin, win.ymax, -win.ymin)
+    local max_depth = reach * 3 + 6
+    local max_nodes = math.max(500, 6 * (win.xmax - win.xmin + 1) * (win.ymax - win.ymin + 1))
+
     local function on_this_floor(room)
         if not root_z or type(room.coord) ~= "table" then
             return true
@@ -628,8 +537,11 @@ local function build_layout(s, start, root_uid, area, root_z, depth, same_zone)
     local frontier = { { room = start, x = 0, y = 0 } }
     local count = 1
 
-    for _ = 1, depth do
-        local nxt = {}
+    local idle, level = 0, 0
+
+    while level < max_depth do
+        level = level + 1
+        local nxt, seen = {}, 0   -- seen: rooms placed this level inside the window
 
         for _, node in ipairs(frontier) do
             local exits = node.room.exits
@@ -659,6 +571,10 @@ local function build_layout(s, start, root_uid, area, root_z, depth, same_zone)
                                 rooms[dest] = dest_room
                                 occupied[k] = dest
                                 count = count + 1
+                                if x >= win.xmin and x <= win.xmax
+                                    and y >= win.ymin and y <= win.ymax then
+                                    seen = seen + 1
+                                end
                                 nxt[#nxt + 1] = { uid = dest, room = dest_room,
                                     x = x, y = y }
                             end
@@ -670,12 +586,17 @@ local function build_layout(s, start, root_uid, area, root_z, depth, same_zone)
 
         frontier = nxt
 
-        if #frontier == 0 or count >= MAX_NODES then
+        if #frontier == 0 or count >= max_nodes then
+            break
+        end
+
+        idle = (seen > 0) and 0 or idle + 1
+        if level >= reach and idle >= PATIENCE then
             break
         end
     end
 
-    return layout, rooms, occupied, unknown, count
+    return layout, rooms, occupied, unknown, count, level
 end
 
 -----------------------------------------------------------------------
@@ -683,17 +604,10 @@ end
 -----------------------------------------------------------------------
 
 local function paint_text(text, code)
-    if not use_color then
-        return text
-    end
     return ESC .. "[" .. code .. "m" .. text .. ESC .. "[0m"
 end
 
 local function paint_row(chars, codes)
-    if not use_color then
-        return table.concat(chars)
-    end
-
     local out, current = {}, nil
 
     for i = 1, #chars do
@@ -702,8 +616,6 @@ local function paint_row(chars, codes)
 
         if ch == " " then
             code = nil
-        elseif not code then
-            code = COLORS[ch]
         end
 
         if code ~= current then
@@ -750,11 +662,7 @@ local function draw_impl()
         return
     end
 
-    local s = get_store()
-    if not s then
-        write_pane(store_note or "mapper_store not found.")
-        return
-    end
+    local s = store
 
     local width, height = detect_size()
     width = math.max(width, 5)
@@ -779,9 +687,8 @@ local function draw_impl()
 
     local sig = table.concat({
         uid or "?", epoch, width, height,
-        compact and 1 or 0, use_color and 1 or 0, link_style,
         opts.flags and 1 or 0, opts.trail and 1 or 0,
-        opts.dim and 1 or 0, opts.zone and 1 or 0,
+        opts.zone and 1 or 0, wilds and wilds.id or 0,
         table.concat(history, ","), table.concat(es, ","),
     }, "|")
 
@@ -790,30 +697,66 @@ local function draw_impl()
         return
     end
 
+    set_title(area_of(current_info, stored))
+
     local header = header_line(current_info, stored, width)
     local rows = math.max(height - 2, 1)    -- header + exits lines
     local sx0 = math.floor((width + 1) / 2) -- centre column
     local sy0 = math.floor((rows + 1) / 2)  -- centre row
 
     local lines = {
-        paint_text(header, "1;37"),
-        paint_text(exits_line(start, current_info, width), "36"),
+        paint_text(header, CODES.header),
+        paint_text(exits_line(start, current_info, width), CODES.exits),
     }
 
-    -- Rooms visible each side of you, and how far to walk to fill the pane.
-    local step = compact and 1 or 2         -- characters per room step
-    local half_w = math.max(width / (2 * step), 1)
-    local half_h = math.max(rows / (2 * step), 1)
-    local depth = clamp(math.ceil(math.max(half_w, half_h)) + 1,
-        MIN_DEPTH, MAX_DEPTH)
+    -- Wilds: only the roads (#) and you (@) of the game's own map, in the
+    -- places the game put them, centred on you; no adjacent rooms.
+    if wilds then
+        for sy = 1, rows do
+            local row = wilds.rows[wilds.r0 - sy0 + sy] or ""
+            local chars, codes = {}, {}
+
+            for sx = 1, width do
+                local i = wilds.c0 + sx - sx0
+                local ch = (i >= 1) and row:sub(i, i) or ""
+
+                if ch == "#" then
+                    chars[sx], codes[sx] = "#", CODES.road
+                elseif ch == "@" then
+                    chars[sx], codes[sx] = "@", CODES.you
+                else
+                    chars[sx], codes[sx] = " ", false
+                end
+            end
+
+            lines[#lines + 1] = paint_row(chars, codes)
+        end
+
+        view_stats = string.format("wilds map: %d rows", #wilds.rows)
+        needs_followup = false
+        write_pane(table.concat(lines, "\n"))
+        last_sig = sig
+        return
+    end
+
+    -- Rooms visible each side of you. win is the visible window in room
+    -- units plus one room of margin (links and ? markers reach into the pane
+    -- from rooms just outside it); build_layout works out its own depth.
+    local step = 2                          -- characters per room step
+    local win = {
+        xmin = math.ceil((1 - sx0) / step) - 1,
+        xmax = math.floor((width - sx0) / step) + 1,
+        ymin = math.ceil((sy0 - rows) / step) - 1,
+        ymax = math.floor((sy0 - 1) / step) + 1,
+    }
 
     local area = start.area or (stored and stored.area)
     local zc = (stored and stored.coord) or start.coord
     local root_z = type(zc) == "table" and tonumber(zc.z) or nil
     local root_uid = tostring(uid or start.uid or "?")
 
-    local layout, rooms, occupied, unknown, placed =
-        build_layout(s, start, root_uid, area, root_z, depth, opts.zone)
+    local layout, rooms, occupied, unknown, placed, depth =
+        build_layout(s, start, root_uid, area, root_z, win, opts.zone)
 
     needs_followup = (stored == nil)
 
@@ -862,26 +805,24 @@ local function draw_impl()
         return a.x < b.x
     end)
 
-    local glyphs = LINK_GLYPHS[link_style] or LINK_GLYPHS.unicode
-    local abs = math.abs
+    local glyphs = LINK_GLYPHS
 
     for _, node in ipairs(order) do
         local room = rooms[node.uid]
         local nx, ny = node.x * step, node.y * step
 
         if node.uid == root_uid then
-            put(nx, ny, CURRENT_MARKER, nil)
+            put(nx, ny, CURRENT_MARKER, CODES.you)
         else
             local st = room_style(room)
-            local dist = math.max(abs(node.x) / half_w, abs(node.y) / half_h)
+            if not opts.flags and SPECIAL[st.key] then st = PLAIN end
 
-            put(nx, ny, st.glyph,
-                cell_color(st, trail_rank[node.uid], dist))
+            put(nx, ny, st.glyph, cell_color(st, trail_rank[node.uid]))
         end
 
         -- A link only where this exit really leads to the room placed in
         -- the cell that direction points at.
-        if not compact and type(room.exits) == "table" then
+        if type(room.exits) == "table" then
             for i = 1, #DIR_ORDER do
                 local dir = DIR_ORDER[i]
                 local e = room.exits[dir]
@@ -892,7 +833,7 @@ local function draw_impl()
                     local d = DELTA[dir]
 
                     if t and t.x == node.x + d[1] and t.y == node.y + d[2] then
-                        put(nx + d[1], ny + d[2], glyphs[dir], LINK_CODE, true)
+                        put(nx + d[1], ny + d[2], glyphs[dir], CODES.links, true)
                     end
                 end
             end
@@ -907,17 +848,15 @@ local function draw_impl()
             seen[u.k] = true
             n_unexplored = n_unexplored + 1
 
-            put(u.x * step, u.y * step, UNEXPLORED_MARKER, nil, true)
+            put(u.x * step, u.y * step, UNEXPLORED_MARKER, CODES.unexplored, true)
 
-            if not compact then
-                local d = DELTA[u.dir]
-                put(u.fx * step + d[1], u.fy * step + d[2], glyphs[u.dir],
-                    LINK_CODE, true)
-            end
+            local d = DELTA[u.dir]
+            put(u.fx * step + d[1], u.fy * step + d[2], glyphs[u.dir],
+                CODES.links, true)
         end
     end
 
-    view_stats = string.format("layout: %d rooms, %d unexplored, depth %d",
+    view_stats = string.format("layout: %d rooms, %d unexplored, reach %d",
         placed, n_unexplored, depth)
 
     for sy = 1, rows do
@@ -987,7 +926,7 @@ local function request_later_draw()
 end
 
 -----------------------------------------------------------------------
--- Pane utilities: legend, debug dump, terrains, calibration ruler
+-- Pane utilities: legend, debug dump, flags and tags list, calibrate
 -----------------------------------------------------------------------
 
 local function legend()
@@ -1005,18 +944,19 @@ local function legend()
         end
     end
 
-    add(CURRENT_MARKER, COLORS["@"], "you")
-    add(UNEXPLORED_MARKER, COLORS["?"], "unexplored exit")
+    add(CURRENT_MARKER, CODES.you, "you")
+    add(UNEXPLORED_MARKER, CODES.unexplored, "unexplored exit")
+    add("x", CODES.pk, "pk")
+    add("T", CODES.trainer, "trainer")
+    add("$", CODES.shop, "shop")
+    add("S", CODES.safe, "safe")
+    add("^", CODES.stairs, "up")
+    add("v", CODES.stairs, "down")
+    add("%", CODES.stairs, "up+down")
+    add("#", CODES.road, "road")
+    add("o", CODES.room, "room")
 
-    for _, entry in ipairs(GLYPHS) do
-        add(entry[1], entry[3], entry[2][1])
-    end
-
-    add(UP_MARKER, COLORS["^"], "up")
-    add(DOWN_MARKER, COLORS["v"], "down")
-    add(UPDOWN_MARKER, COLORS["%"], "up+down")
-
-    local out = { paint_text(NAME .. " legend", "1;37") }
+    local out = { paint_text(NAME .. " legend", CODES.header) }
     local line, len = {}, 0
 
     local function flush()
@@ -1037,10 +977,9 @@ local function legend()
 
     flush()
 
-    out[#out + 1] = paint_text("safe", FLAG_FG[1][2]) .. " = safe room, "
-        .. paint_text("dark", "2;" .. DEFAULT_ROOM_COLOR) .. " = dark"
-    out[#out + 1] = paint_text("magenta", TRAIL_COLORS[1])
-        .. " = path you walked, faint = far away"
+    out[#out + 1] = paint_text("dark", CODES.room .. ";" .. CODES.dark) .. " = dark room"
+    out[#out + 1] = paint_text("trail", trail_code(1))
+        .. " = path you walked (fades with age)"
 
     force_pane(table.concat(out, "\n"))
 end
@@ -1061,68 +1000,28 @@ local function debug_dump()
         out[#out + 1] = "Room.Info: none yet"
     end
 
-    local names = {}
-    if type(rune.pane) == "table" then
-        for k, v in pairs(rune.pane) do
-            names[#names + 1] = tostring(k) .. (type(v) == "function" and "()" or "")
-        end
-        table.sort(names)
-    end
-    out[#out + 1] = "rune.pane: " .. table.concat(names, " ")
-
-    local s = get_store()
+    local s = store
     local w, h, src = detect_size()
 
     out[#out + 1] = string.format("pane size %sx%s (%s)", tostring(w), tostring(h), src)
 
-    if s then
-        local total = 0
-        for _ in pairs(s.rooms) do
-            total = total + 1
-        end
-
-        local uid = info_uid(current_info)
-        local stored = uid and s.get(uid)
-        local c = stored and stored.coord
-        if type(c) ~= "table" then c = {} end
-
-        out[#out + 1] = string.format("store: %s | rooms %d", store_source, total)
-        out[#out + 1] = string.format("here: %s,%s,%s | %s",
-            tostring(c.x), tostring(c.y), tostring(c.z), view_stats)
-        out[#out + 1] = string.format("terrain=[%s] info=[%s] glyph=%s",
-            clean(stored and stored.terrain or ""),
-            clean(stored and stored.terraininfo or ""),
-            stored and room_style(stored).glyph or "-")
-    else
-        out[#out + 1] = "store: NOT FOUND - " .. tostring(store_note)
+    local total = 0
+    for _ in pairs(s.rooms) do
+        total = total + 1
     end
 
-    force_pane(table.concat(out, "\n"))
-end
+    local uid = info_uid(current_info)
+    local stored = uid and s.get(uid)
+    local c = stored and stored.coord
+    if type(c) ~= "table" then c = {} end
 
-local function list_terrains()
-    local s = get_store()
-    if not s then
-        write_pane("mapper_store not found.")
-        return
-    end
-
-    local counts = {}
-    for _, room in pairs(s.rooms) do
-        local t = tostring(room.terrain or "(none)")
-        counts[t] = (counts[t] or 0) + 1
-    end
-
-    local rows = {}
-    for t, n in pairs(counts) do
-        rows[#rows + 1] = { t, n }
-    end
-    table.sort(rows, function(a, b) return a[2] > b[2] end)
-
-    local out = { "terrain (rooms):" }
-    for i = 1, math.min(#rows, 25) do
-        out[#out + 1] = string.format("%s (%d)", clean(rows[i][1]), rows[i][2])
-    end
+    out[#out + 1] = string.format("store rooms %d", total)
+    out[#out + 1] = string.format("here: %s,%s,%s | %s",
+        tostring(c.x), tostring(c.y), tostring(c.z), view_stats)
+    out[#out + 1] = string.format("flags=[%s] tags=[%s] glyph=%s",
+        clean(token_list(stored and stored.flags)),
+        clean(token_list(stored and stored.tags)),
+        stored and room_style(stored).glyph or "-")
 
     force_pane(table.concat(out, "\n"))
 end
@@ -1181,11 +1080,10 @@ end
 -- Setup
 -----------------------------------------------------------------------
 
+-- The layout in init.lua declares the pane (title and border); this only
+-- makes sure it exists.
 if rune.pane and rune.pane.create then
-    rune.pane.create(PANE_ID, {
-        title = "Map",
-        border = "full",
-    })
+    rune.pane.create(PANE_ID)
 end
 
 local function set_enabled(value)
@@ -1246,47 +1144,42 @@ end
 local function onoff(v) return v and "on" or "off" end
 
 local function help_status()
-    local w, h, src = detect_size()
+    local w, h = detect_size()
     return string.format(
-        "v" .. VERSION .. "  enabled=%s mode=%s links=%s zone=%s color=%s size=%sx%s (%s) flags=%s trail=%s dim=%s debug=%s load=%dms",
-        onoff(enabled), compact and "compact" or "spaced", link_style,
-        opts.zone and "same" or "any", onoff(use_color),
-        tostring(w), tostring(h), src, onoff(opts.flags), onoff(opts.trail),
-        onoff(opts.dim), onoff(DEBUG), load_ms)
+        "v%s  enabled=%s zone=%s size=%sx%s debug=%s load=%dms",
+        VERSION, onoff(enabled), opts.zone and "same" or "any",
+        tostring(w), tostring(h), onoff(DEBUG), load_ms)
 end
 
 local function show_help(note)
     local h = helpstyle()
     local out = {}
     local function emit(text) out[#out + 1] = text end
+    local function row(cmd, desc)
+        emit(h.line(cmd == "" and NAME or (NAME .. " " .. cmd), desc))
+    end
 
     if note then emit(paint(note)) end
 
     emit(h.title(NAME .. " - ASCII map of the rooms around you"))
     emit(h.section("Display:"))
-    emit(h.line(NAME, "show this summary"))
-    emit(h.line(NAME .. " on|off", "show or hide the map pane"))
-    emit(h.line(NAME .. " compact|spaced", "1 char per room, no links / rooms two apart with links"))
-    emit(h.line(NAME .. " zone on|off", "stay in this zone (default) / cross zone borders"))
-    emit(h.line(NAME .. " links unicode|ascii", "link line characters"))
-    emit(h.line(NAME .. " color on|off", "ANSI colours"))
-    emit(h.line(NAME .. " refresh", "force a redraw (clears caches)"))
-    emit(h.line(NAME .. " reset", "restore defaults"))
-    emit(h.line(NAME .. " legend", "what the symbols and colours mean"))
+    row("", "show this summary")
+    row("on|off", "show or hide the map pane")
+    row("zone on|off", "stay in this zone / cross borders")
+    row("colours|colors", "list or change the map colours")
+    row("refresh", "force a redraw")
+    row("reset", "restore defaults")
+    row("legend", "what the symbols mean")
     emit(h.section("Overlays:"))
-    emit(h.line(NAME .. " flags on|off", "tint safe and dark rooms"))
-    emit(h.line(NAME .. " trail on|off", "colour the rooms you just walked"))
-    emit(h.line(NAME .. " dim on|off", "fade far-away rooms"))
+    row("flags on|off", "mark x T $ S rooms, dark [" .. onoff(opts.flags) .. "]")
+    row("trail on|off", "colour rooms you walked [" .. onoff(opts.trail) .. "]")
     emit(h.section("Size:"))
-    emit(h.line(NAME .. " size <W> <H>", "set pane size in characters"))
-    emit(h.line(NAME .. " size auto", "back to the default size"))
-    emit(h.line(NAME .. " pad <N>", "border allowance (default 2)"))
-    emit(h.line(NAME .. " calibrate [W H]", "test frame to find the right size"))
+    row("size <W> <H>", "set pane size (per character)")
+    row("size auto", "back to the default size")
+    row("calibrate [W H]", "test frame to find the size")
     emit(h.section("Info:"))
-    emit(h.line(NAME .. " terrains", "list terrain names in your map"))
-    emit(h.line(NAME .. " debug", "pane API, size and room data"))
-    emit(h.line(NAME .. " debug on|off", "debug logging (default off)"))
-    emit(h.line(NAME .. " help", "this summary"))
+    row("debug", "size and room data")
+    row("debug on|off", "debug logging (default off)")
     emit(h.line(SHORT, "short alias for " .. NAME))
     emit(h.foot(help_status()))
 
@@ -1299,82 +1192,147 @@ local function show_help(note)
 end
 
 -----------------------------------------------------------------------
+-- Colours: the codes are applied here; asciiMapColours.lua (loaded only when
+-- `amp colours` is used) holds the schemes and the editing commands
+-----------------------------------------------------------------------
+
+local COLOURS_KEY = "asciiMapPane.colours"
+
+-- Apply the saved colour codes at startup. Only digits and ; are accepted,
+-- so nothing but a colour sequence can reach the terminal.
+local function load_codes()
+    if not (rune.store and type(rune.store.get) == "function") then return end
+
+    local ok, saved = pcall(rune.store.get, COLOURS_KEY)
+    if not ok or type(saved) ~= "table" or type(saved.codes) ~= "table" then return end
+
+    for k, v in pairs(saved.codes) do
+        if CODES[k] ~= nil and type(v) == "string" and #v <= 40
+            and v:match("^%d[%d;]*$") then
+            CODES[k] = v
+        end
+    end
+end
+
+-- amp reset: back to the 16-colour defaults (a custom scheme is kept).
+local function reset_colours()
+    for k, v in pairs(DEFAULT_CODES) do CODES[k] = v end
+
+    local ok, cur = pcall(rune.store.get, COLOURS_KEY)
+    if ok and type(cur) == "table" then
+        cur.scheme, cur.codes = "basic", nil
+        pcall(rune.store.set, COLOURS_KEY, cur)
+    end
+end
+
+local COLOURS_MODULES = { "eljayPlugins/asciiMapColours", "asciiMapColours" }
+local colour_api
+
+local function colours_command(words)
+    local mod, err
+
+    for _, name in ipairs(COLOURS_MODULES) do
+        local ok, m = pcall(require, name)
+
+        if ok and type(m) == "table" and m.run then
+            mod = m
+            break
+        end
+
+        err = err or tostring(ok and "no run() in module" or m)   -- keep the first
+    end
+
+    if not mod then
+        say("colours module not loaded: " .. clean(err):sub(1, 60))
+        say("expected: " .. (rune.config_dir or ".") .. "/eljayPlugins/asciiMapColours.lua")
+        return
+    end
+
+    colour_api = colour_api or {
+        CODES = CODES, NAME = NAME, SHORT = SHORT, clean = clean, say = say,
+        paint = paint, paint_text = paint_text, helpstyle = helpstyle,
+        help_status = help_status,
+        redraw = function() last_pane_text = nil; draw() end,
+    }
+    mod.run(words, colour_api)
+end
+
+-----------------------------------------------------------------------
 -- Saved settings (rune.store); debug is deliberately not saved
 -----------------------------------------------------------------------
 
 local SETTINGS_KEY = "asciiMapPane.settings"
-local saved_sig = nil
+local SIZE_KEY = "asciiMapPane.size"   -- per character once the name is known
+local saved_sig = {}
 
-local function snapshot()
-    return {
-        enabled = enabled, compact = compact, color = use_color,
-        flags = opts.flags, trail = opts.trail, dim = opts.dim,
-        zone = opts.zone, links = link_style, v = 3,
-        w = manual_w or false, h = manual_h or false, pad = border_pad,
-    }
+local function get_table(key)
+    if not (rune.store and rune.store.get) then return nil end
+
+    local ok, t = pcall(rune.store.get, key)
+    if ok and type(t) == "table" then return t end
 end
 
-local function snapshot_sig(t)
-    return table.concat({
-        tostring(t.enabled), tostring(t.compact), tostring(t.color),
-        tostring(t.flags), tostring(t.trail), tostring(t.dim),
-        tostring(t.zone), tostring(t.links), tostring(t.w), tostring(t.h),
-        tostring(t.pad),
-    }, "|")
+-- Read the latest stored table, change only our keys, write it back; skipped
+-- when sig is what was last saved under that key.
+local function save_to(key, fields, sig)
+    if saved_sig[key] == sig or not (rune.store and rune.store.set) then return end
+
+    local cur = get_table(key) or {}
+    for k, v in pairs(fields) do cur[k] = v end
+
+    if pcall(rune.store.set, key, cur) then saved_sig[key] = sig end
 end
 
--- Read the latest stored table, change only our keys, write it back.
 local function save_settings()
-    if not (rune.store and type(rune.store.set) == "function") then return end
-
-    local snap = snapshot()
-    local sig = snapshot_sig(snap)
-    if sig == saved_sig then return end
-
-    local ok, cur = pcall(rune.store.get, SETTINGS_KEY)
-    if not ok or type(cur) ~= "table" then cur = {} end
-
-    for k, v in pairs(snap) do cur[k] = v end
-
-    if pcall(rune.store.set, SETTINGS_KEY, cur) then
-        saved_sig = sig
-    end
+    save_to(SETTINGS_KEY,
+        { enabled = enabled, flags = opts.flags, trail = opts.trail, zone = opts.zone },
+        table.concat({ tostring(enabled), tostring(opts.flags),
+            tostring(opts.trail), tostring(opts.zone) }, "|"))
 end
 
 local function load_settings()
-    if not (rune.store and type(rune.store.get) == "function") then return end
-    local ok, saved = pcall(rune.store.get, SETTINGS_KEY)
-    if not ok or type(saved) ~= "table" then return end
+    local saved = get_table(SETTINGS_KEY)
+    if not saved then return end
 
     if type(saved.enabled) == "boolean" then enabled = saved.enabled end
-    -- Saved before the mapper_map layout (v3): the old default was the
-    -- dense view without links, so only trust `compact` from v3 settings.
-    if saved.v == 3 and type(saved.compact) == "boolean" then
-        compact = saved.compact
-    end
-    if type(saved.color) == "boolean" then use_color = saved.color end
 
-    if saved.links == "ascii" or saved.links == "unicode" then
-        link_style = saved.links
-    end
-
-    for _, name in ipairs({ "flags", "trail", "dim", "zone" }) do
+    for _, name in ipairs({ "flags", "trail", "zone" }) do
         if type(saved[name]) == "boolean" then opts[name] = saved[name] end
     end
+end
 
-    local w, h = tonumber(saved.w), tonumber(saved.h)
-    if w and h then
-        manual_w = clamp(math.floor(w), MIN_W, MAX_W)
-        manual_h = clamp(math.floor(h), MIN_H, MAX_H)
+-- The custom pane size is saved per character, as mapper_map.lua saves its
+-- settings: until the name is known the plain key is used.
+local function size_key()
+    if charname.get() then return charname.key(SIZE_KEY) end
+    return SIZE_KEY
+end
+
+-- This character's size, else the plain key, else the old shared settings.
+local function load_size()
+    local found
+
+    for _, key in ipairs({ size_key(), SIZE_KEY, SETTINGS_KEY }) do
+        found = get_table(key)
+        if found then break end
     end
 
-    local pad = tonumber(saved.pad)
-    if pad then border_pad = clamp(math.floor(pad), 0, MAX_PAD) end
+    local w, h = tonumber(found and found.w), tonumber(found and found.h)
+    manual_w = w and h and clamp(math.floor(w), MIN_W, MAX_W) or nil
+    manual_h = w and h and clamp(math.floor(h), MIN_H, MAX_H) or nil
+    saved_sig[size_key()] = nil
+end
 
-    saved_sig = snapshot_sig(snapshot())
+local function save_size()
+    local key = size_key()
+
+    save_to(key, { w = manual_w or false, h = manual_h or false },
+        table.concat({ key, tostring(manual_w), tostring(manual_h) }, "|"))
 end
 
 load_settings()
+load_size()
+load_codes()
 
 if not enabled then hide_pane() end
 
@@ -1387,6 +1345,56 @@ local function redraw_now()
     draw()
 end
 
+local function reset_all()
+    enabled = true
+    opts.flags, opts.trail, opts.zone = true, true, true
+    manual_w, manual_h = nil, nil
+    reset_colours()
+    reset_caches()
+    show_pane()
+    redraw_now()
+    say("settings reset to defaults")
+end
+
+local function set_size(words)
+    local w, h = tonumber(words[2]), tonumber(words[3])
+
+    if w and h then
+        local cw = clamp(math.floor(w), MIN_W, MAX_W)
+        local ch = clamp(math.floor(h), MIN_H, MAX_H)
+        manual_w, manual_h = cw, ch
+
+        if cw ~= w or ch ~= h then
+            say(string.format("size limited to %dx%d (allowed %d-%d x %d-%d)",
+                cw, ch, MIN_W, MAX_W, MIN_H, MAX_H))
+        end
+    else
+        manual_w, manual_h = nil, nil
+    end
+
+    redraw_now()
+end
+
+local COMMANDS = {
+    on = function() set_enabled(true) end,
+    off = function() set_enabled(false) end,
+    debug = function(words)
+        if words[2] == "on" or words[2] == "off" then
+            DEBUG = (words[2] == "on")
+            say("debug logging " .. onoff(DEBUG))
+        else
+            debug_dump()
+        end
+    end,
+    calibrate = function(words) calibrate(words[2], words[3]) end,
+    colours = colours_command,
+    colors = colours_command,
+    legend = legend,
+    refresh = function() reset_caches() redraw_now() end,
+    reset = reset_all,
+    size = set_size,
+}
+
 local function run_command_impl(arg_text)
     epoch = epoch + 1
 
@@ -1394,75 +1402,19 @@ local function run_command_impl(arg_text)
     for word in tostring(arg_text or ""):gmatch("%S+") do words[#words + 1] = word:lower() end
     local action = words[1] or ""
 
-    if action == "" or action == "help" or action == "?" or action == "h" or action == "-h" or action == "--help" then
+    if action == "" then
         show_help()
-    elseif action == "off" then
-        set_enabled(false)
-    elseif action == "on" then
-        set_enabled(true)
-    elseif action == "debug" then
-        if words[2] == "on" or words[2] == "off" then
-            DEBUG = (words[2] == "on")
-            say("debug logging " .. onoff(DEBUG))
-        else
-            debug_dump()
-        end
-    elseif action == "calibrate" then
-        calibrate(words[2], words[3])
-    elseif action == "color" or action == "colour" then
-        use_color = (words[2] ~= "off")
-        redraw_now()
-    elseif action == "legend" then
-        legend()
-    elseif action == "terrains" then
-        list_terrains()
-    elseif action == "compact" or action == "spaced" then
-        compact = (action == "compact")
-        redraw_now()
-    elseif action == "refresh" then
-        reset_caches()
-        redraw_now()
-    elseif action == "reset" then
-        enabled, compact, use_color = true, false, true
-        opts.flags, opts.trail, opts.dim, opts.zone = true, true, true, true
-        link_style = "unicode"
-        manual_w, manual_h, border_pad = nil, nil, 2
-        reset_caches()
-        show_pane()
-        redraw_now()
-        say("settings reset to defaults")
-    elseif action == "size" then
-        local w, h = tonumber(words[2]), tonumber(words[3])
-        if w and h then
-            local cw = clamp(math.floor(w), MIN_W, MAX_W)
-            local ch = clamp(math.floor(h), MIN_H, MAX_H)
-            manual_w, manual_h = cw, ch
-            if cw ~= w or ch ~= h then
-                say(string.format("size limited to %dx%d (allowed %d-%d x %d-%d)", cw, ch, MIN_W, MAX_W, MIN_H, MAX_H))
-            end
-        else
-            manual_w, manual_h = nil, nil
-        end
-        redraw_now()
-    elseif action == "pad" then
-        local n = tonumber(words[2])
-        if n then border_pad = clamp(math.floor(n), 0, MAX_PAD) end
-        redraw_now()
-    elseif action == "links" then
-        if words[2] == "ascii" or words[2] == "unicode" then
-            link_style = words[2]
-            redraw_now()
-        else
-            show_help("links: unicode or ascii")
-        end
+    elseif COMMANDS[action] then
+        COMMANDS[action](words)
     elseif opts[action] ~= nil then
         opts[action] = (words[2] ~= "off")
         redraw_now()
     else
-        show_help("unknown option '" .. action .. "'")
+        show_help("unknown option '" .. clean(action):sub(1, 20) .. "'")
     end
 
     save_settings()
+    save_size()
 end
 
 local function run_command(arg_text)
@@ -1479,6 +1431,78 @@ if rune.alias and rune.alias.regex then
     end, { name = NAME })
 end
 
+-- The name arrives a moment after login, and the size is keyed on it.
+if charname.on_change then
+    charname.on_change(function()
+        load_size()
+        last_sig = nil
+        if enabled then draw() end
+    end)
+end
+
+-- Wilds: after a compass frame the game sends its own map (11 rows). Only
+-- its roads (#) and you (@) are shown; see draw_impl.
+local WILDS_FRAME = "^\\(-{10,}\\)\\s+\\S+ <---\\(M\\)---> \\S+\\s*$"
+local WILDS_LINES = 13   -- frame line, compass row, then the 11 map rows
+local wilds_pending, wilds_n = nil, 0
+
+local function wilds_text(line)
+    if type(line) == "string" then return line end
+    local ok, text = pcall(function() return line:clean() end)
+    return ok and tostring(text) or ""
+end
+
+-- The map and Room.Info can arrive in either order, so the map is attached
+-- to whatever room is current a moment after it arrived.
+local function wilds_commit(n)
+    if n ~= wilds_n or not wilds_pending then return end
+
+    wilds, wilds_uid, wilds_pending = wilds_pending, info_uid(current_info), nil
+    last_sig = nil
+    draw()
+end
+
+-- A room that sent no map is not the wilds: back to the normal view.
+local function wilds_check()
+    if wilds and wilds_uid ~= info_uid(current_info) then
+        wilds, wilds_uid = nil, nil
+        last_sig = nil
+        draw()
+    end
+end
+
+local function wilds_capture(_, ctx)
+    if not enabled or type(ctx) ~= "table" or type(ctx.lines) ~= "table" then return end
+
+    local rows, r0, c0 = {}, nil, nil
+
+    for i = 3, #ctx.lines do
+        local text = wilds_text(ctx.lines[i])
+        if text:find("%l") then break end   -- description or objects: the map is over
+
+        rows[#rows + 1] = text
+        local c = text:find("@", 1, true)
+        if c then r0, c0 = #rows, c end
+    end
+
+    if not r0 or #rows < 3 then return end
+
+    wilds_id, wilds_n = wilds_id + 1, wilds_n + 1
+    wilds_pending = { rows = rows, r0 = r0, c0 = c0, id = wilds_id }
+
+    local n = wilds_n
+    if rune.timer and rune.timer.after then
+        rune.timer.after(0.3, function() wilds_commit(n) end)
+    else
+        wilds_commit(n)
+    end
+end
+
+if rune.trigger and rune.trigger.regex then
+    pcall(rune.trigger.regex, WILDS_FRAME, wilds_capture,
+        { name = NAME .. ".wilds", span = { max = WILDS_LINES } })
+end
+
 if rune.gmcp and rune.gmcp.on then
     rune.gmcp.on("Room.Info", function(data)
         if type(data) ~= "table" then return end
@@ -1490,7 +1514,25 @@ if rune.gmcp and rune.gmcp.on then
             history[TRAIL_LENGTH + 2] = nil
         end
         request_draw()
+        if wilds and rune.timer and rune.timer.after then
+            rune.timer.after(0.6, wilds_check)
+        end
     end, { name = NAME })
+end
+
+-- On look: forget the trail and redraw, so the fading trail is removed.
+if rune.hooks and rune.hooks.on then
+    rune.hooks.on("input", function(text)
+        if #text > 12 then return end
+
+        local cmd = text:lower():match("^%s*(%S+)%s*$")
+
+        if cmd == "look" or cmd == "l" then
+            for i = #history, 2, -1 do history[i] = nil end
+            last_sig = nil
+            if enabled then draw() end
+        end
+    end, { name = NAME .. ".look" })
 end
 
 if rune.hooks and rune.hooks.on then

@@ -1,12 +1,13 @@
 -- Filename: eljayPlugins/spellTLAs.lua
 -- Purpose: General spell Three Letter Aliases, optionally targettable.
--- Version: 3.8
--- Date: 2026-Oct-20
+-- Version: 3.9
+-- Date: 2026-Oct-21
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
+--   3.9  Match longer spell aliases before shorter prefixes.
 --   3.8  Standard pass: NAME/SHORT constants, help footer, load-time reporting, and cyan loader prefix.
 --   3.7  Standard pass: spellTLAs command (short alias spell), on/off and debug persisted, loader line, version footer.
 --   3.6  Repo-style header and command summary cleanup; behavior preserved.
@@ -22,17 +23,18 @@ TODO:
 --   * every key starting with "c" also gets an n-alias: nXX -> aff clear 'spell name'
 --   * keys not starting with "c" (ill, bbm, ssh, ssw) only get the cast alias
 --   * one regex alias handles all cast keys and one handles all n-keys
+--   * longer aliases are matched before shorter prefixes
 --   * targets are validated before being sent; unsafe or overlong targets are refused
 --   * spells are grouped and sorted by spell name within each group
 --   * on/off and debug states are stored in rune.store; debug defaults to off
 --   * typing spellTLAs or spell alone shows this command summary
 --
 -- Commands (type without "/"; "spell" is a short alias for "spellTLAs"):
---   spellTLAs                 show this help
---   spellTLAs on|off          enable or disable the cast and n-aliases
---   spellTLAs list [text]     list aliases, optionally filtered by key or spell
---   spellTLAs debug on|off    enable or disable debug output
---   spell                      short alias for spellTLAs
+--   spell                 	 show this help
+--   spell on|off          	 enable or disable the cast and n-aliases
+--   spell list [text]     	 list aliases, optionally filtered by key or spell
+--   spell debug on|off        enable or disable debug output
+--   spell                     short alias for spellTLAs
 --   cXX [target]              cast 'spell' [target]
 --   nXX                       aff clear 'spell' (c-keys only)
 --
@@ -45,7 +47,7 @@ local LOAD_STARTED = os.clock()
 local NAME  = "spellTLAs"
 local SHORT = "spell"
 
-local VERSION = "3.8"
+local VERSION = "3.9"
 local MAX_TARGET = 60
 
 local casts    = {}   -- key -> spell name (cXX, ill, bbm, ...)
@@ -278,8 +280,16 @@ cast("cwo", "word of recall")
 -- Build each dispatcher pattern once after the lookup tables are populated.
 local function key_pattern(tbl)
   local keys = {}
-  for key in pairs(tbl) do keys[#keys + 1] = key end
-  table.sort(keys)
+  for key in pairs(tbl) do
+    keys[#keys + 1] = key
+  end
+
+  -- Match the longest alias first so a shorter prefix cannot consume it.
+  table.sort(keys, function(a, b)
+    if #a == #b then return a < b end
+    return #a > #b
+  end)
+
   return table.concat(keys, "|")
 end
 
@@ -321,9 +331,9 @@ local function show_help()
   emit(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
   emit(H.section("Commands"))
   emit(H.line(NAME, "show this help"))
-  emit(H.line(NAME .. " on|off", "enable or disable the aliases"))
-  emit(H.line(NAME .. " list [text]", "list aliases, optionally filtered"))
-  emit(H.line(NAME .. " debug on|off", "enable or disable debug output"))
+  emit(H.line(SHORT .. " on|off", "enable or disable the aliases"))
+  emit(H.line(SHORT .. " list [text]", "list aliases, optionally filtered"))
+  emit(H.line(SHORT .. " debug on|off", "enable or disable debug output"))
   emit(H.line(SHORT, "short alias for " .. NAME))
   emit(H.section("Aliases"))
   emit(H.line("cXX [target]", "cast 'spell' [target]"))

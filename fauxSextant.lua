@@ -1,17 +1,17 @@
 -- Filename: eljayPlugins/fauxSextant.lua
 -- Purpose: Update the statusTray SEXTANT field from GMCP coordinates
--- Version: 2.9
--- Date: 2026-Oct-19
+-- Version: 2.10
+-- Date: 2026-Oct-25
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
---   2.9  Measure load time once after initialization, not when help is opened.
---   2.8  Add the required Todo block, persistent debug on/off commands,
---        load-time reporting, and help for unrecognized subcommands.
---   2.7  Align header, commands, help, and aliases with repository conventions.
---   2.6  Fix subcommands showing help by registering a separate alias per command.
+--   2.10  Align command constants, help, settings writes, and loader output
+--        with repository conventions.
+--   2.9   Measure load time once after initialization, not when help is opened.
+--   2.8   Add the required Todo block, persistent debug on/off commands,
+--         load-time reporting, and help for unrecognized subcommands.
 --
 -- How it works:
 --   * Reads coordinates from GMCP Room.Info and updates the statusTray SEXTANT field.
@@ -20,20 +20,22 @@ TODO:
 --   * Writes to statusTray and refreshes the bar only when the value changes.
 --
 -- Commands (type without "/"; "fs" is a short alias for "fauxSextant"):
---   fauxSextant                 show this help
---   fauxSextant on|off           enable / disable coordinate updates
---   fauxSextant toggle           toggle coordinate updates
---   fauxSextant show|status      show coordinates / enabled state
---   fauxSextant debug [on|off]   toggle or set debug messages
---   fs                          short alias for fauxSextant
+--   fauxSextant                       show this help
+--   fauxSextant on|off                enable / disable coordinate updates
+--   fauxSextant toggle                toggle coordinate updates
+--   fauxSextant show|status           show coordinates / enabled state
+--   fauxSextant debug [on|off]        toggle or set debug messages
+--   fs                                short alias for fauxSextant
 --   fs on|off|toggle|show|status|debug [on|off]
 --
 
 local LOAD_STARTED = os.clock()
 
-local PLUGIN_NAME = "fauxSextant"
+-- Command names: full command and short alias.
+local NAME = "fauxSextant"
 local SHORT = "fs"
-local VERSION = "2.9"
+
+local VERSION = "2.10"
 local STORE_KEY = "fauxSextant.settings"
 local TRAY_STORE_KEY = "statustray.settings"
 
@@ -41,7 +43,7 @@ local style = rune.style
 local H = require("helpstyle")
 
 local function say(message)
-    rune.echo(style.cyan("[" .. PLUGIN_NAME .. "] ") .. message)
+    rune.echo(style.cyan("[" .. NAME .. "] ") .. message)
 end
 
 local function load_settings()
@@ -49,37 +51,40 @@ local function load_settings()
     if ok and type(settings) == "table" then
         return settings
     end
-
     return {}
 end
 
 local stored = load_settings()
 local enabled = stored.enabled ~= false
-local debug = stored.debug == true
+local debug_on = stored.debug == true
 local last_coord
 local pushed_value
 local pushed_known = false
-local load_ms = 0
+local LOAD_MS = 0
 
 rune.gmcp.subscribe("Room")
 
 local function debug_log(message)
-    if debug then
+    if debug_on then
         say(style.gray(message))
     end
 end
 
-local function save_settings()
-    local ok, err = pcall(rune.store.set, STORE_KEY, {
-        enabled = enabled,
-        debug = debug,
-    })
+local function update_settings(mutate)
+    local ok, fresh = pcall(rune.store.get, STORE_KEY)
+    if not ok or type(fresh) ~= "table" then
+        fresh = {}
+    end
 
-    if not ok then
+    mutate(fresh)
+
+    local saved, err = pcall(rune.store.set, STORE_KEY, fresh)
+    if not saved then
         say("could not save settings: " .. tostring(err))
         return false
     end
 
+    stored = fresh
     return true
 end
 
@@ -147,33 +152,39 @@ local function set_enabled(on)
     end
 
     enabled = on
-    save_settings()
+    update_settings(function(settings)
+        settings.enabled = enabled
+        settings.debug = debug_on
+    end)
     update_status_tray(last_coord, true)
     say(on and style.green("on") or style.red("off"))
 end
 
 local function set_debug(on)
-    if debug == on then
+    if debug_on == on then
         say("debug " .. (on and style.green("already on") or style.red("already off")))
         return
     end
 
-    debug = on
-    save_settings()
+    debug_on = on
+    update_settings(function(settings)
+        settings.enabled = enabled
+        settings.debug = debug_on
+    end)
     say("debug " .. (on and style.green("on") or style.red("off")))
 end
 
 local function help()
-    rune.echo(H.title("Faux Sextant  (alias: fs)"))
+    rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
     rune.echo(H.section("Commands"))
-    rune.echo(H.line("fauxSextant", "show this help"))
-    rune.echo(H.line("fauxSextant on|off", "enable / disable coordinate updates"))
-    rune.echo(H.line("fauxSextant toggle", "toggle coordinate updates"))
-    rune.echo(H.line("fauxSextant show|status", "show coordinates / enabled state"))
-    rune.echo(H.line("fauxSextant debug [on|off]", "toggle or set debug messages"))
-    rune.echo(H.line("fs ...", "short alias for fauxSextant"))
-    rune.echo(H.foot("v" .. VERSION .. "  enabled=" .. tostring(enabled)
-        .. " debug=" .. tostring(debug) .. "  load=" .. tostring(load_ms) .. "ms"))
+    rune.echo(H.line(NAME, "show this help"))
+    rune.echo(H.line(SHORT .. " on|off", "enable / disable coordinate updates"))
+    rune.echo(H.line(SHORT .. " toggle", "toggle coordinate updates"))
+    rune.echo(H.line(SHORT .. " show|status", "show coordinates / enabled state"))
+    rune.echo(H.line(SHORT .. " debug [on|off]", "toggle or set debug messages"))
+    rune.echo(H.line(SHORT, "short alias for " .. NAME))
+    rune.echo(H.foot(string.format("v%s  enabled=%s debug=%s  load=%dms",
+        VERSION, tostring(enabled), tostring(debug_on), LOAD_MS)))
 end
 
 local function handle_command(action, argument)
@@ -185,7 +196,7 @@ local function handle_command(action, argument)
         set_enabled(true)
     elseif action == "off" then
         set_enabled(false)
-    elseif action == "show" or action == "now" then
+    elseif action == "show" then
         local text = describe(last_coord)
         say(text or style.gray("no coordinates for this room"))
     elseif action == "status" then
@@ -196,7 +207,7 @@ local function handle_command(action, argument)
         elseif argument == "off" then
             set_debug(false)
         elseif argument == "" then
-            set_debug(not debug)
+            set_debug(not debug_on)
         else
             help()
         end
@@ -212,7 +223,6 @@ local COMMANDS = {
     { suffix = "off", action = "off" },
     { suffix = "toggle", action = "toggle" },
     { suffix = "show", action = "show" },
-    { suffix = "now", action = "now" },
     { suffix = "status", action = "status" },
     { suffix = "debug", action = "debug" },
     { suffix = "debug on", action = "debug", argument = "on" },
@@ -226,10 +236,13 @@ local function register_aliases(prefix)
             command = command .. " " .. item.suffix
         end
 
+        local action = item.action
+        local argument = item.argument or ""
+
         local ok, err = pcall(function()
             rune.alias.exact(command, function(args, ctx)
                 debug_log("command: '" .. command .. "'")
-                handle_command(item.action, item.argument or "")
+                handle_command(action, argument)
             end)
         end)
 
@@ -243,10 +256,10 @@ rune.gmcp.on("Room.Info", function(data)
     local coord = type(data) == "table" and data.coord or nil
     last_coord = describe(coord) and coord or nil
     update_status_tray(last_coord)
-end, { name = PLUGIN_NAME })
+end, { name = NAME })
 
-register_aliases(PLUGIN_NAME)
+register_aliases(NAME)
 register_aliases(SHORT)
 
-load_ms = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
-say("v" .. VERSION .. " loaded (fauxSextant or fs for help)")
+LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
+say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))

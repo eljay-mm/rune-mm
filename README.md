@@ -90,8 +90,6 @@ To enable it again, remove the `--`. Things to know:
   listed (for example a newly added one) stays off until you add its name.
 - The list is alphabetical. Only move a plugin lower if it depends on another one having
   loaded first.
-- `researchNotesPicker` relies on the `rrl` and `rrr` aliases defined in `basicAliases`,
-  so keep `basicAliases` enabled if you use it.
 - Plugins that provide an on/off command (for example `hangmanSolver on|off` or
   `spdxyCoordinates on|off`) can also be switched off for the current session without
   editing any file; see each plugin's header comment or help screen.
@@ -119,9 +117,9 @@ To enable it again, remove the `--`. Things to know:
 | `hangmanSolver.lua`       | Solves hangman puzzles using an online solver (needs `curl`).                                                        |
 | `herbAliases.lua`         | Provides short aliases for Herbalism mixing, throwing and eating.                                                    |
 | `highlights.lua`          | Highlights notable items and mobs in game output for easy recognition based on static config for all characters.     |
-| `highlightCustom.lua`     | Highlight words and phrases in game output on the fly per-character.                                       |
+| `highlightCustom.lua`     | Highlight words and phrases in game output on the fly per-character.                                                 |
 | `jmcSolver.lua`           | Solves the Joint Magical Consortium mirror puzzle locally and lists every solution.                                  |
-| `mapperShortCutKeys.lua`  | Keyboard shortcuts for the mapper.                                                                                   |
+| `mapperShortKeys.lua`     | Keyboard shortcuts for mapper.                                                                                       |
 | `missingAffects.lua`      | Shows which wanted affects are missing from your current affects.                                                    |
 | `numPadBindings.lua`      | Numpad movement, look and door keys.                                                                                 |
 | `oocWikiSearch.lua`       | Searches the Materia Magica OOC wiki.                                                                                |

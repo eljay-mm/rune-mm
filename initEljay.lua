@@ -36,11 +36,52 @@ local DEBUG = false -- set true to find a hanging plugin
 local TMP = os.getenv("TMPDIR") or os.getenv("TEMP") or os.getenv("TMP") or "/tmp"
 local PROGRESS_FILE = TMP .. "/rune-init-progress.log" -- only used when DEBUG = true
 
+--==-- init.lua Over-rides
 rune.config.set("mouse", true)
+
+-- Panes have no runtime title setter, so comms calls rune_build_layout again
+-- when the filter changes, and mapper_map does the same when the map's area
+-- or zoom changes, and asciiMapPane when its area changes. That function reads
+-- rune.comms_title, rune.map_title and rune.asciimap_title, which those
+-- modules set. Anything else here should stay stable across
+-- those re-declarations.
+function rune_build_layout()
+    rune.ui.layout({
+        type = "column",
+        children = {
+            { type = "row", size = "1fr", children = {
+                { type = "pane", name = "output", size = 74, border = "none" },
+                { type = "column", size = "1fr", children = {
+                    { type = "pane", name = "comms", size = 20, border = "full",
+                      title = rune.comms_title or "Comms",
+                      hidden = rune.pane.is_hidden("comms") or false },
+                    { type = "row", size = "1fr", children = {
+                        { type = "column", size = 48, children = {
+                            { type = "pane", name = "map", size = "1fr", border = "full",
+                              title = rune.map_title or "Map",
+                              hidden = rune.map_hidden == true
+                                  or rune.pane.is_hidden("map") or false },
+                                  { type = "pane", name = "eljayPlugins/asciiMapPane", size = "1fr", border = "full",
+                          title = rune.asciimap_title or "asciiMap",
+                          hidden = rune.pane.is_hidden("eljayPlugins/asciiMapPane") or false },
+                        }},
+                        
+                    }},
+                }},
+            }},
+            { type = "input" },
+            { type = "bar", name = "status" },
+        },
+    })
+end
+
+rune_build_layout()
+--==-- end Over-ride section
 
 local PLUGINS = {
   "annwnQuestSearch",
   "asciiMapPane",
+  "asciiMapColours",
   "bardSongTLAs",
   "basicAliases",
   "characterLog",
@@ -55,7 +96,8 @@ local PLUGINS = {
   "highlights",
   "highlightCustom",
   "jmcSolver",
-  "mapperShortCutKeys",
+  "mapperShortKeys",
+--  "megaQuestSearch",
   "missingAffects",
   "numPadBindings",
   "oocWikiSearch",

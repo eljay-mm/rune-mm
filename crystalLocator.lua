@@ -312,9 +312,9 @@ local HELP_COMMANDS = {
 }
 
 local HELP_USAGE = {
-  { "cl", "look crystalQuest" },
+  { "look map | look crystalQuest", "find location and populate statusTray" },
   { "tc", "take crystal" },
-  { "cc", "give, drop and sac the map; clear slot" }, 
+  { "cc", "give, drop and sac the map; clear tray" }, 
   { SHORT, "short alias for " .. NAME },
 }
 
@@ -438,7 +438,6 @@ rune.alias.exact("cc", function()
   status_crystal()
   return "give tadamir Tadamir;drop crystalQuest;sac crystalQuest"
 end)
-rune.alias.exact("cl", "look crystalQuest")
 rune.alias.exact("tc", "take crystal")
 
 if LOAD_START then load_ms = math.floor((os.clock() - LOAD_START) * 1000 + 0.5) end

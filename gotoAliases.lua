@@ -1,27 +1,26 @@
 -- Filename: eljayPlugins/gotoAliases.lua
 -- Purpose: Aliases to run to gates, quest masters, banks, post offices and other places in the town you are in.
--- Version: 1.11
--- Date: 2026-Oct-25
+-- Version: 1.12
+-- Date: 2026-Oct-26
 --[[
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
---   1.11 Standard pass: exact aliases, persistent debug state, aligned help.
---   1.10 Standard pass, 23.3 KB to under 16 KB: compact town data parsed on first use, no exact-alias
---        fallback or load breakdown, saves read the latest store value, NAME/SHORT help rows.
---   1.9  Remove goto next and goto custom.
+--   1.12 Standard pass: one regex alias instead of two exact ones, settings read on first use,
+--        SHORT help rows, compact code (under 16,000 bytes).
+--   1.11 Exact aliases, persistent debug state, aligned help.
 --
 -- How it works:
 --   * Inspired by the MUSHclient plugin by Oona.
 --   * Reads GMCP Room.Info to work out which town you are in.
---   * Bare aliases gotoAliases and goto show help; arguments dispatch goto commands.
+--   * One regex alias catches gotoAliases and goto; no argument shows help.
 --   * goto north|east|south|west|gate runs the mapper to that town exit.
 --   * goto qm and rep run to the destination, then act if already there.
---   * goto post|bank|reagents|lockers only runs the mapper; no action when
---     already at the destination.
+--   * goto post|bank|reagents|lockers only runs the mapper.
 --   * goto crystal runs to the crystal quest office in Rune.
 --   * goto pursuer runs leg by leg towards the Orc Pursuer in Wroth.
---   * Town data is parsed on first use. Settings are saved in rune.store.
+--   * Town data and settings load on first use; settings are saved in rune.store.
+--   * The help footer shows the load time.
 --
 -- Commands (type without "/"; "goto" is a short alias for "gotoAliases"):
 --   gotoAliases | goto               show this help
@@ -40,11 +39,13 @@ local LOAD_STARTED = os.clock()
 -- Command names: full command and short alias.
 local NAME = "gotoAliases"
 local SHORT = "goto"
-local VERSION = "1.11"
+local VERSION = "1.12"
 local STORE_KEY = "gotoAliases.settings"
+local PATTERN = "^(goto(?:Aliases)?(?:\\s+.*)?)$"  -- captures the whole typed line
 
 local style = rune.style
 local enabled, DEBUG = true, false
+local settings_loaded = false
 local LOAD_MS = 0
 local cur, events = {}, 0
 local pursuing, leg_sent = false, false
@@ -53,26 +54,13 @@ local function paint(color, text)
   local fn = style and style[color]
   return fn and fn(text) or text
 end
-
-local function say(msg)
-  rune.echo(paint("cyan", "[" .. NAME .. "] ") .. msg)
-end
-
-local function dbg(msg)
-  if DEBUG then say(paint("gray", "debug: " .. msg)) end
-end
-
-local function send(cmd)
-  rune.send(cmd)
-end
-
+local function say(msg) rune.echo(paint("cyan", "[" .. NAME .. "] ") .. msg) end
+local function dbg(msg) if DEBUG then say(paint("gray", "debug: " .. msg)) end end
+local function send(cmd) rune.send(cmd) end
+-- Through the alias layer (for "mapper goto"); plain send if unavailable.
 local function execute(cmd)
   local fn = rune.execute or rune.exec
-  if fn then
-    local ok = pcall(fn, cmd)
-    if ok then return end
-  end
-  send(cmd)
+  if not (fn and pcall(fn, cmd)) then send(cmd) end
 end
 
 local function load_settings()
@@ -81,23 +69,22 @@ local function load_settings()
   return {}
 end
 
+-- Read the latest stored table, change it, save it back, then refresh the in-memory copy.
 local function update_settings(mutate)
   local settings = load_settings()
   mutate(settings)
   local ok, err = pcall(rune.store.set, STORE_KEY, settings)
-  if not ok then
-    say("could not save settings: " .. tostring(err))
-    return false
-  end
-  enabled = settings.enabled ~= false
-  DEBUG = settings.debug == true
+  if not ok then say("could not save settings: " .. tostring(err)); return false end
+  settings_loaded = true
+  enabled, DEBUG = settings.enabled ~= false, settings.debug == true
   return true
 end
 
-do
-  local settings = load_settings()
-  enabled = settings.enabled ~= false
-  DEBUG = settings.debug == true
+local function ensure_settings()
+  if settings_loaded then return end
+  settings_loaded = true
+  local s = load_settings()
+  enabled, DEBUG = s.enabled ~= false, s.debug == true
 end
 
 -- Compact town data is parsed on first use.
@@ -149,10 +136,8 @@ local DATA = {
   "renn sug n17150349 =",
 }
 
-local FIELD = {
-  n = "north", s = "south", e = "east", w = "west", g = "default_gate",
-  q = "qm", t = "rep", p = "post", b = "bank", r = "reagents", l = "locker",
-}
+local FIELD = { n = "north", s = "south", e = "east", w = "west", g = "default_gate", q = "qm", t = "rep",
+  p = "post", b = "bank", r = "reagents", l = "locker" }
 local towns, zone_town, gate_town
 
 local function load_data()
@@ -166,13 +151,10 @@ local function load_data()
       local field = FIELD[token:sub(1, 1)]
       if field then town[field] = token:sub(2) end
     end
-    town.default_gate = town.default_gate or town.north or town.south
-      or town.east or town.west
+    town.default_gate = town.default_gate or town.north or town.south or town.east or town.west
     towns[key] = town
-    for _, direction in ipairs({ "north", "south", "east", "west" }) do
-      if town[direction] and not gate_town[town[direction]] then
-        gate_town[town[direction]] = key
-      end
+    for _, d in ipairs({ "north", "south", "east", "west" }) do
+      if town[d] and not gate_town[town[d]] then gate_town[town[d]] = key end
     end
     for zone in zones:gmatch("[^|]+") do zone_town[zone] = key end
   end
@@ -187,15 +169,12 @@ end
 local function have_room()
   if cur.num then return true end
   say("No room data yet. Move one room, then try again.")
-  say("Use " .. SHORT .. " where to see what room data has arrived.")
   return false
 end
 
 local function where()
-  load_data()
-  say("room=" .. tostring(cur.num) .. " zone=" .. tostring(cur.zone)
-    .. " plane=" .. tostring(cur.plane) .. " town=" .. tostring(town_key())
-    .. " events=" .. events)
+  say("room=" .. tostring(cur.num) .. " zone=" .. tostring(cur.zone) .. " plane=" .. tostring(cur.plane)
+    .. " town=" .. tostring(town_key()) .. " events=" .. events)
   if cur.zone and cur.zone ~= "Alyria" and not zone_town[cur.zone] then
     say("Zone '" .. cur.zone .. "' is not in the town data (add it to DATA).")
   end
@@ -212,25 +191,15 @@ local function goto_field(field, label, action)
       dbg("mapper goto " .. room)
       execute("mapper goto " .. room)
     end
-  else
-    say("There is no " .. label .. " for this location.")
-  end
+  else say("There is no " .. label .. " for this location.") end
 end
 
 local function list_options()
   if not have_room() then return end
   local key, out = town_key(), {}
-  if not key then
-    say("There are no goto options from this location.")
-    return
-  end
-  for _, field in ipairs({
-    "north", "south", "east", "west", "qm", "rep", "post", "bank",
-    "reagents", "locker",
-  }) do
-    if towns[key][field] then
-      out[#out + 1] = field == "locker" and "lockers" or field
-    end
+  if not key then say("There are no goto options from this location."); return end
+  for _, f in ipairs({ "north", "south", "east", "west", "qm", "rep", "post", "bank", "reagents", "locker" }) do
+    if towns[key][f] then out[#out + 1] = f == "locker" and "lockers" or f end
   end
   say("You can goto: " .. table.concat(out, ", "))
 end
@@ -239,65 +208,38 @@ local function go_crystal()
   if not have_room() then return end
   local key = town_key()
   if key == "rune" then
-    if cur.num == "10407" then send("shop buy 1")
-    else execute("mapper goto 10407") end
-  elseif cur.zone == "Alyria" then
-    send("run rune")
-  elseif key == "xaventry" or key == "newrigel" then
-    execute("mapper goto " .. towns[key].south)
-  else
-    say("There is no crystal quest office route from this location.")
-  end
+    if cur.num == "10407" then send("shop buy 1") else execute("mapper goto 10407") end
+  elseif cur.zone == "Alyria" then send("run rune")
+  elseif key == "xaventry" or key == "newrigel" then execute("mapper goto " .. towns[key].south)
+  else say("No crystal quest office route from here.") end
 end
 
 local function pursuer_step(initial)
   if not pursuing then return end
   local key = town_key()
   if not key then
-    if cur.zone ~= "Alyria" then
-      say("You don't know how to get there from here.")
-      pursuing = false
-    elseif initial then
-      say("Get to a gate to start running to the pursuer.")
-    end
+    if cur.zone ~= "Alyria" then say("You don't know how to get there from here."); pursuing = false
+    elseif initial then say("Get to a gate to start running to the pursuer.") end
     return
   end
-
   if key == "wroth" then
-    if initial and cur.num == "7461" then
-      send("sayto orc yes")
-      send("nod orc")
-      pursuing = false
-    elseif cur.num == "7682" then
-      send("enter portal")
-      send("south")
-      pursuing = false
-    elseif initial or cur.num == "1960870" then
-      execute("mapper goto 7682")
-    end
+    if initial and cur.num == "7461" then send("sayto orc yes"); send("nod orc"); pursuing = false
+    elseif cur.num == "7682" then send("enter portal"); send("south"); pursuing = false
+    elseif initial or cur.num == "1960870" then execute("mapper goto 7682") end
     return
   end
-
   local town = towns[key]
-  if town.continent == "beltane" then
-    say("You can't get there from Beltane.")
-    pursuing = false
-    return
-  end
-
+  if town.continent == "beltane" then say("You can't get there from Beltane."); pursuing = false; return end
   if cur.zone == "Alyria" then
     if not leg_sent then
-      leg_sent = true
+      leg_sent = true  -- one run per leg
       send(town.continent == "sepharia" and "run wroth" or "run rune")
     end
   else
     leg_sent = false
     if initial then
-      if town.default_gate then
-        execute("mapper goto " .. town.default_gate)
-      else
-        say("Make your way to the gate outside to run to the pursuer.")
-      end
+      if town.default_gate then execute("mapper goto " .. town.default_gate)
+      else say("Make your way to the gate outside to run to the pursuer.") end
     end
   end
 end
@@ -305,26 +247,18 @@ end
 local function go_pursuer()
   if not have_room() then return end
   local key = town_key()
-  if (not key and cur.zone ~= "Alyria")
-      or (key and towns[key].continent == "beltane") then
-    say("You can't get to the orc pursuer from where you are!")
-    return
+  if (not key and cur.zone ~= "Alyria") or (key and towns[key].continent == "beltane") then
+    say("You can't get to the orc pursuer from where you are!"); return
   end
   pursuing, leg_sent = true, false
-  say("Running to the Orc Pursuer. '" .. SHORT
-    .. " cancel' stops after the current leg.")
+  say("Running to the Orc Pursuer. '" .. SHORT .. " cancel' stops after the current leg.")
   pursuer_step(true)
 end
 
 local function help()
   local ok, H = pcall(require, "helpstyle")
   if not ok then
-    H = {
-      title = tostring,
-      section = tostring,
-      foot = tostring,
-      line = function(a, b) return a .. "  " .. b end,
-    }
+    H = { title = tostring, section = tostring, foot = tostring, line = function(a, b) return a .. "  " .. b end }
   end
 
   local rows = {
@@ -342,19 +276,15 @@ local function help()
   }
 
   local width = 0
-  for _, row in ipairs(rows) do
-    if #row[1] > width then width = #row[1] end
-  end
+  for _, row in ipairs(rows) do width = math.max(width, #row[1]) end
 
   rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
   rune.echo(H.section("Commands"))
   for _, row in ipairs(rows) do
     rune.echo(H.line(row[1] .. string.rep(" ", width - #row[1]), row[2]))
   end
-  rune.echo(H.foot(string.format(
-    "v%s  enabled=%s debug=%s  load=%dms",
-    VERSION, tostring(enabled), tostring(DEBUG), LOAD_MS
-  )))
+  rune.echo(H.foot(string.format("v%s  enabled=%s debug=%s  load=%dms",
+    VERSION, tostring(enabled), tostring(DEBUG), LOAD_MS)))
 end
 
 local function set_enabled(on)
@@ -362,46 +292,31 @@ local function set_enabled(on)
     say(on and paint("green", "already on") or paint("red", "already off"))
     return
   end
-  if not update_settings(function(settings) settings.enabled = on end) then
-    return
-  end
+  if not update_settings(function(settings) settings.enabled = on end) then return end
   if not on then pursuing = false end
   say(on and paint("green", "on") or paint("red", "off"))
 end
 
 local function set_debug(value)
   local next_value = value == "on" or (value ~= "off" and not DEBUG)
-  if not update_settings(function(settings) settings.debug = next_value end) then
-    return
-  end
+  if not update_settings(function(settings) settings.debug = next_value end) then return end
   say("debug " .. (DEBUG and paint("green", "on") or paint("red", "off")))
 end
 
-local FIELDS = {
-  north = "north", south = "south", east = "east", west = "west",
-  gate = "default_gate", post = "post", bank = "bank",
-  reagents = "reagents", reagent = "reagents",
-  lockers = "locker", locker = "locker",
-}
+local FIELDS = { north = "north", south = "south", east = "east", west = "west", gate = "default_gate",
+  post = "post", bank = "bank", reagents = "reagents", reagent = "reagents", lockers = "locker", locker = "locker" }
 local ACT = {
   help = help,
   list = list_options,
   where = where,
   crystal = go_crystal,
   pursuer = go_pursuer,
-  qm = function()
-    goto_field("qm", "quest master", "quest request 'rewarding'")
-  end,
-  rep = function()
-    goto_field("rep", "town rep", "sayto representative yes")
-  end,
+  qm = function() goto_field("qm", "quest master", "quest request 'rewarding'") end,
+  rep = function() goto_field("rep", "town rep", "sayto representative yes") end,
   cancel = function()
-    if pursuing then
-      say("You will stop when this leg completes.")
-      pursuing = false
-    else
-      say("No pursuer run is active.")
-    end
+    say(pursuing and "You will stop when this leg completes."
+      or "No pursuer run is active.")
+    pursuing = false
   end,
   on = function() set_enabled(true) end,
   off = function() set_enabled(false) end,
@@ -409,28 +324,22 @@ local ACT = {
 }
 local ALWAYS = { help = true, on = true, off = true, debug = true, where = true }
 
-local function typed(args, ctx)
-  if type(args) == "string" then return args end
-  if type(args) == "table" then
-    if type(args.line) == "string" then return args.line end
-    if type(args.text) == "string" then return args.text end
-    if type(args.args) == "string" then return args.args end
-    if type(args[1]) == "string" then return table.concat(args, " ") end
-  end
-  if type(ctx) == "table" then
-    if type(ctx.line) == "string" then return ctx.line end
-    if type(ctx.text) == "string" then return ctx.text end
+-- First text argument (string, capture list or context table).
+local function typed(...)
+  for i = 1, select("#", ...) do
+    local v = select(i, ...)
+    if type(v) == "table" then v = v[#v] or v.line or v.text end
+    if type(v) == "string" then return v end
   end
   return ""
 end
 
-local function handle(command, args, ctx)
-  local line = typed(args, ctx):match("^%s*(.-)%s*$")
-  line = line:gsub("^" .. NAME .. "%s*", "")
-  line = line:gsub("^" .. SHORT .. "%s*", "")
+local function handle(...)
+  ensure_settings()
+  local line = typed(...):match("^%s*(.-)%s*$")
+  line = line:gsub("^" .. SHORT .. "%a*%s*", "")
   local sub, arg = line:match("^(%S*)%s*(.-)$")
-  sub = (sub or ""):lower()
-  arg = (arg or ""):lower()
+  sub, arg = sub:lower(), arg:lower()
   if sub == "" then sub = "help" end
 
   if not enabled and not ALWAYS[sub] then
@@ -447,29 +356,18 @@ local function handle(command, args, ctx)
   end
 end
 
-local ok_name, err_name = pcall(rune.alias.exact, NAME, handle)
-if not ok_name then
-  say(paint("red", "could not register " .. NAME .. " alias: " .. tostring(err_name)))
-end
-local ok_short, err_short = pcall(rune.alias.exact, SHORT, handle)
-if not ok_short then
-  say(paint("red", "could not register " .. SHORT .. " alias: " .. tostring(err_short)))
-end
-
 pcall(rune.gmcp.subscribe, "Room")
-local ok_gmcp, err_gmcp = pcall(function()
-  rune.gmcp.on("Room.Info", function(data)
-    if type(data) ~= "table" then return end
-    events = events + 1
-    cur.num = data.num ~= nil and tostring(data.num) or nil
-    cur.zone = data.zone
-    cur.plane = type(data.coord) == "table" and data.coord.name or nil
-    if pursuing then pursuer_step(false) end
-  end, { name = NAME })
-end)
-if not ok_gmcp then
-  say(paint("red", "could not register Room.Info handler: " .. tostring(err_gmcp)))
-end
+rune.gmcp.on("Room.Info", function(data)
+  if type(data) ~= "table" then return end
+  events = events + 1
+  cur.num = data.num ~= nil and tostring(data.num) or nil
+  cur.zone = data.zone
+  cur.plane = type(data.coord) == "table" and data.coord.name or nil
+  if pursuing then pursuer_step(false) end
+end, { name = NAME })
+
+local ok, err = pcall(rune.alias.regex, PATTERN, handle)
+if not ok then say(paint("red", "could not register alias: " .. tostring(err))) end
 
 LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
 say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))

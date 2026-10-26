@@ -1,29 +1,29 @@
 -- Filename: eljayPlugins/myExamplePlugin.lua
--- Purpose: Provide a baseline template adhering to rune-mm house style guidelines.
--- Version: 1.0
--- Date: 2026-Oct-20
+-- Purpose: Provide a baseline template for rune-mm plugins.
+-- Version: 1.1
+-- Date: 2026-Oct-26
 --[[
 TODO:
-- insert planning notes here between revisions.
+- Replace the example setting and state with plugin-specific behavior.
 ]]
 -- Changelog:
+--   1.1  Corrected command handling, persistence, and load-time reporting.
 --   1.0  Initial baseline template delivery.
 --
 -- How it works:
---   * Provide a baseline template adhering to rune-mm house style guidelines.
---   * Safely reads and writes to rune.store on a per-character basis.
---   * Registers bare alias commands and handles standard on/off toggles.
+--   * Shows help and accepts bare full-name and short-alias commands.
+--   * Persists enabled and debug states per character with rune.store.
+--   * Demonstrates a minimal place to add plugin-specific behavior.
 --
--- Commands (type without "/"; "example" is a short alias for "myExamplePlugin"):
+-- Commands (type without "/"; "mep" is a short alias for "myExamplePlugin"):
 --   myExamplePlugin            show this help
---   myExamplePlugin on|off     enable / disable the trigger(s)
---   myExamplePlugin debug      toggle debug messages (default off)
+--   mep on|off                 enable / disable the plugin
+--   mep debug on|off           enable / disable debug messages
 --
 -- Tweaks (top of file):
---   * SAMPLE_TWEAK   an example constant value meant to be adjusted by the user
+--   * SAMPLE_TWEAK   example setting for plugin-specific behavior
 --
 
--- Capture start time immediately to track load duration
 local LOAD_STARTED = os.clock()
 
 -- Tweaks:
@@ -31,57 +31,19 @@ local SAMPLE_TWEAK = "default_value"
 
 -- Command names: full command and short alias.
 local NAME  = "myExamplePlugin"
-local SHORT = "example"
+local SHORT = "mep"
 
--- Version tracking (must match header)
-local VERSION = "1.0"
+local VERSION = "1.1"
 
--- Required modules
 local H        = require("helpstyle")
 local charname = require("charname")
 local style    = rune.style
 
--- State tracking
 local enabled  = true
 local debug_on = false
 local cache    = {}
+local LOAD_MS
 
--- Pre-calculate unique character key securely
-local function get_store_key(char_name)
-  if not char_name or char_name == "" then return nil end
-  return charname.key(NAME)
-end
-
--- Safe database interaction pattern
-local function update_settings(mutate)
-  local name = charname.get()
-  local key = get_store_key(name)
-  if not key then return end
-
-  local ok, fresh = pcall(rune.store.get, key)
-  if not ok or type(fresh) ~= "table" then fresh = {} end
-  
-  mutate(fresh)
-  pcall(rune.store.set, key, fresh)
-  cache = fresh
-end
-
--- Local persistence initializer
-local function load_for(name)
-  local key = get_store_key(name)
-  if not key then return end
-
-  local ok, data = pcall(rune.store.get, key)
-  if ok and type(data) == "table" then
-    cache = data
-    if cache.enabled ~= nil then enabled = cache.enabled end
-    if cache.debug_on ~= nil then debug_on = cache.debug_on end
-  else
-    cache = {}
-  end
-end
-
--- Contextual message display
 local function say(msg)
   rune.echo(style.cyan("[" .. NAME .. "] ") .. msg)
 end
@@ -92,65 +54,89 @@ local function debug_log(msg)
   end
 end
 
--- Render standardized help configuration UI
+local function store_key()
+  if not charname.get() then return nil end
+  return charname.key(NAME)
+end
+
+local function update_settings(mutate)
+  local key = store_key()
+  if not key then return end
+
+  local ok, fresh = pcall(rune.store.get, key)
+  if not ok or type(fresh) ~= "table" then fresh = {} end
+
+  mutate(fresh)
+
+  local saved = pcall(rune.store.set, key, fresh)
+  if saved then cache = fresh end
+end
+
+local function load_for(name)
+  if not name or name == "" then return end
+
+  local key = charname.key(NAME)
+  local ok, data = pcall(rune.store.get, key)
+
+  if ok and type(data) == "table" then
+    cache = data
+  else
+    cache = {}
+  end
+
+  enabled = cache.enabled ~= false
+  debug_on = cache.debug_on == true
+end
+
 local function help()
   rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
   rune.echo(H.section("Commands"))
-  rune.echo(H.line(NAME,              "show this help"))
-  rune.echo(H.line(NAME .. " on|off", "enable / disable the trigger(s)"))
-  rune.echo(H.line(NAME .. " debug",  "toggle debug messages"))
-  rune.echo(H.line(SHORT,             "short alias for " .. NAME))
-  
-  -- Calculate load metric exactly once at startup and render cached value
-  rune.echo(H.foot(string.format("v%s  enabled=%s debug=%s  load=%dms",
-    VERSION, tostring(enabled), tostring(debug_on), LOAD_MS)))
+  rune.echo(H.line(SHORT, "show this help"))
+  rune.echo(H.line(SHORT .. " on|off", "enable / disable the plugin"))
+  rune.echo(H.line(SHORT .. " debug on|off", "enable / disable debug"))
+  rune.echo(H.line(SHORT, "short alias for " .. NAME))
+  rune.echo(H.foot(string.format(
+    "v%s  enabled=%s debug=%s bindings=2  load=%dms",
+    VERSION, tostring(enabled), tostring(debug_on), LOAD_MS
+  )))
 end
 
--- Input command route handler
 local function handle_command(args, ctx)
-  local cmd = args and args:match("^%s*(%S+)")
-  
-  if not cmd or cmd == "" then
+  local command, value = (args or ""):match("^%s*(%S*)%s*(%S*)")
+  command = (command or ""):lower()
+  value = (value or ""):lower()
+
+  if command == "" then
     help()
-    return
-  end
-  
-  cmd = cmd:lower()
-  
-  if cmd == "on" then
-    enabled = true
-    update_settings(function(t) t.enabled = true end)
-    say("Triggers enabled.")
-  elseif cmd == "off" then
-    enabled = false
-    update_settings(function(t) t.enabled = false end)
-    say("Triggers disabled.")
-  elseif cmd == "debug" then
-    debug_on = not debug_on
-    update_settings(function(t) t.debug_on = debug_on end)
+  elseif command == "on" or command == "off" then
+    enabled = command == "on"
+    update_settings(function(settings)
+      settings.enabled = enabled
+    end)
+    say(enabled and "Enabled." or "Disabled.")
+  elseif command == "debug" and (value == "on" or value == "off") then
+    debug_on = value == "on"
+    update_settings(function(settings)
+      settings.debug_on = debug_on
+    end)
     say("Debug mode set to: " .. tostring(debug_on))
   else
     help()
   end
 end
 
--- Bind bare commands via explicit exact aliases
 rune.alias.exact(NAME, handle_command)
 rune.alias.exact(SHORT, handle_command)
 
--- Safe initialization around asynchronous charname deliveries
-if charname.get() then 
-  load_for(charname.get()) 
+if charname.get() then
+  load_for(charname.get())
 end
 
 charname.on_change(function(old, new)
-  if new and new ~= "" then 
-    pcall(load_for, new) 
+  if new and new ~= "" then
+    pcall(load_for, new)
   end
 end)
 
--- Compute and store load time before printing the entry line
 LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
-
--- Print a single standardized initialization message
-say(string.format("v%s loaded (%s for help)", VERSION, SHORT))
+say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))

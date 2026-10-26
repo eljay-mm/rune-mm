@@ -1,11 +1,12 @@
 -- Filename: eljayPlugins/herbAliases.lua
 -- Purpose: Provides short aliases for Herbalism mixing, throwing and eating.
--- Version: 1.13
--- Date: 2026-Oct-25
+-- Version: 1.14
+-- Date: 2026-Oct-26
 --[[
 - Confirm the configured h* actions and mixture names in game.
 ]]
 -- Changelog:
+--   1.14 Add case-insensitive literal substring filtering to list.
 --   1.13 Align command documentation and help output with project conventions.
 --   1.12 Remove the "mix" prefix from the list display and fit list rows within 74 characters.
 --   1.11 Strip the leading "a " and trailing " herbal mixture" from mixture names in the list.
@@ -25,13 +26,14 @@
 --   * Registers short aliases for mixing and using herbal mixtures.
 --   * Optional numeric quantities are passed to mix commands; validated target text is passed to use commands.
 --   * The list and picker show each common mix, its m* and h* aliases, use details, command, and power range.
+--   * The list accepts an optional case-insensitive literal substring filter matching aliases, use details, commands, mixtures, and power ranges.
 --   * Each m* alias has a matching h* alias; unconfigured h* aliases prompt for their herb details.
 --   * Selecting an item in the picker sends its mix command and reopens the picker.
 --   * Press Esc to close the picker.
 --
 -- Commands (type without "/"; "herb" is a short alias for "herbAliases"):
 --   herbAliases             show this help
---   herbAliases list        list common mixes and power ranges
+--   herbAliases list [text] list common mixes; optionally filter by literal text
 --   herbAliases pick        open the searchable mix picker
 --   herbAliases on|off      enable / disable the aliases
 --   herbAliases debug       toggle debug messages
@@ -45,7 +47,7 @@ local LOAD_STARTED = os.clock()
 -- Command names: full command and short alias.
 local NAME = "herbAliases"
 local SHORT = "herb"
-local VERSION = "1.13"
+local VERSION = "1.14"
 local BINDING_COUNT = 38
 
 local STORE_ENABLED = "eljayPlugins." .. NAME .. ".enabled"
@@ -142,7 +144,7 @@ local function showHelp()
   rune.echo(H.title(NAME .. " (alias: " .. SHORT .. ")"))
   rune.echo(H.section("Commands"))
   rune.echo(H.line(NAME, "show this help"))
-  rune.echo(H.line(SHORT .. " list", "list common mixes and power ranges"))
+  rune.echo(H.line(SHORT .. " list [text]", "filter common mixes and power ranges"))
   rune.echo(H.line(SHORT .. " pick", "open the searchable mix picker"))
   rune.echo(H.line(SHORT .. " on|off", "enable / disable the aliases"))
   rune.echo(H.line(SHORT .. " debug", "toggle debug messages"))
@@ -181,12 +183,15 @@ local function cyan(value)
   return ok and styled or value
 end
 
-local function listMixAliases()
+local function listMixAliases(filter)
+  filter = (filter or ""):lower()
+  local shown = 0
+
   rune.echo(H.title("Herbalism common mixes"))
   rune.echo(
     fit("mix", 8) ..
     fit("use", 8) ..
-    fit("howol;l", 6) ..
+    fit("how", 6) ..
     fit("mixture", 21) ..
     fit("mix command", 21) ..
     "power"
@@ -212,17 +217,31 @@ local function listMixAliases()
       end
     end
 
-    -- Remove "mix" from this display only; mixCommand remains unchanged.
     local displayCommand = mixCommand(mix):gsub("^mix%s+", "")
+    local searchable = table.concat({
+      mix.alias,
+      hAlias,
+      use,
+      mixture,
+      displayCommand,
+      mix.power,
+    }, " "):lower()
 
-    rune.echo(
-      cyan(fit(mix.alias, 8)) ..
-      cyan(fit(hAlias, 8)) ..
-      fit(use, 6) ..
-      fit(mixture, 21) ..
-      fit(displayCommand, 21) ..
-      mix.power
-    )
+    if filter == "" or searchable:find(filter, 1, true) then
+      shown = shown + 1
+      rune.echo(
+        cyan(fit(mix.alias, 8)) ..
+        cyan(fit(hAlias, 8)) ..
+        fit(use, 6) ..
+        fit(mixture, 21) ..
+        fit(displayCommand, 21) ..
+        mix.power
+      )
+    end
+  end
+
+  if shown == 0 then
+    rune.echo("No common mixes match '" .. filter .. "'.")
   end
 end
 
@@ -270,7 +289,7 @@ local function runCommand(args)
   if subcommand == "" or subcommand == "help" then
     showHelp()
   elseif subcommand == "list" then
-    listMixAliases()
+    listMixAliases(trim(rest))
   elseif subcommand == "pick" then
     showPicker()
   elseif subcommand == "on" then

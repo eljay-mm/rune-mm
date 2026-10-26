@@ -1,11 +1,12 @@
 -- Filename: eljayPlugins/numPadBindings.lua
 -- Purpose: Provides numpad bindings for movement, looking, and door commands.
--- Version: 2.8
--- Date: 2026-Oct-19
+-- Version: 2.9
+-- Date: 2026-Oct-26
 --[[
 - Consider adding configurable bindings if more layouts are needed.
 ]]
 -- Changelog:
+--   2.9  Add literal substring filtering to the list command.
 --   2.8  Measure load time with os.clock().
 --   2.7  Guard load-time measurement when rune.time() is unavailable.
 --   2.6  Measure load time with rune.time().
@@ -24,13 +25,15 @@
 --   * Numpad add and subtract send "down" and "up" in each available layer.
 --   * Bindings use fixed commands built at load time; no game output is used.
 --   * Typing "numPadBindings" or "npb" alone shows help; on/off controls bindings.
+--   * "numPadBindings list [text]" lists bindings, optionally filtered by a
+--     case-insensitive literal substring in the key or command.
 --   * Debug output is off by default; state is saved with rune.store.
 --
 -- Commands (type without "/"; "npb" is a short alias for "numPadBindings"):
 --   numPadBindings                 show this help
 --   npb                            show this help
 --   numPadBindings on|off          enable / disable the bindings
---   numPadBindings list            show every binding
+--   numPadBindings list [text]     list bindings, optionally filtered
 --   numPadBindings debug on|off    enable / disable debug messages
 --
 -- Tweaks (top of file):
@@ -43,7 +46,7 @@ local LOAD_STARTED = os.clock()
 
 local NAME = "numPadBindings"
 local SHORT = "npb"
-local VERSION = "2.8"
+local VERSION = "2.9"
 
 rune.config.set("numpad", true)
 
@@ -176,7 +179,7 @@ local function show_summary()
   help_row("section", "Commands")
   help_row("line", NAME .. " / " .. SHORT, "show this help")
   help_row("line", SHORT .. " on|off", "enable / disable the bindings")
-  help_row("line", SHORT .. " list", "show every binding")
+  help_row("line", SHORT .. " list [text]", "list bindings; optional filter")
   help_row("line", SHORT .. " debug on|off", "enable / disable debug messages")
   help_row("line", SHORT .. " ", "short alias for " .. NAME)
   help_row("section", "Layers")
@@ -186,17 +189,34 @@ local function show_summary()
   footer()
 end
 
-local function show_list()
+local function show_list(filter)
+  local needle = tostring(filter or ""):lower()
+  local shown = 0
+
   help_row("title", "numPadBindings")
+
   for _, binding in ipairs(bindings) do
-    help_row("line", binding[1], "-> " .. binding[2])
+    local key = binding[1]
+    local command = binding[2]
+    local searchable = (key .. " " .. command):lower()
+
+    if needle == "" or searchable:find(needle, 1, true) then
+      help_row("line", key, "-> " .. command)
+      shown = shown + 1
+    end
   end
+
+  if shown == 0 then
+    help_row("line", "No bindings match: " .. tostring(filter))
+  end
+
   footer()
 end
 
 local function run_command_impl(arg_text)
+  local text = tostring(arg_text or "")
   local words = {}
-  for word in tostring(arg_text or ""):gmatch("%S+") do
+  for word in text:gmatch("%S+") do
     words[#words + 1] = word:lower()
   end
 
@@ -209,7 +229,8 @@ local function run_command_impl(arg_text)
     end
     say("accelerators " .. action)
   elseif action == "list" then
-    show_list()
+    local filter = text:match("^%s*%S+%s*(.-)%s*$")
+    show_list(filter)
   elseif action == "debug" then
     if words[2] == "on" then
       debug_on = true

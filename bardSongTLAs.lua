@@ -1,12 +1,13 @@
 -- Filename: eljayPlugins/bardSongTLAs.lua
 -- Purpose: Provide three-letter aliases for bard songs.
--- Version: 2.10
--- Date: 2026-Oct-25
+-- Version: 2.11
+-- Date: 2026-Oct-26
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
+--   2.11  Added case-insensitive filtering to the list subcommand.
 --   2.10  Standardized command names, settings writes, and help output.
 --   2.9   Removed the Song aliases section from help.
 --   2.8   Moved the short alias after the debug command in help and removed
@@ -27,19 +28,19 @@ TODO:
 --   * Each row maps a TLA to a bard song, e.g. "bfi" -> play 'fireball'.
 --   * Songs are grouped as in 'help music': Peace, Martial, and Versatile.
 --   * One alias matches all TLAs; add a song by adding a row to the table.
---   * The list subcommand shows configured TLAs grouped by song type.
+--   * The list subcommand shows songs by type, filtered by TLA or song name.
 --   * Only curated song names are sent; user-supplied text is not forwarded.
 --   * When disabled, song aliases do nothing; settings persist in rune.store.
 --
 -- Commands (type without "/"; short alias: bard):
---   bardSongTLAs                 show this help
---   bardSongTLAs list            show all configured TLAs
---   bardSongTLAs on|off          enable / disable the song aliases
---   bardSongTLAs debug on|off    enable / disable debug messages
---   bard                          short alias for bardSongTLAs
---   bard list                    show all configured TLAs
---   bard on|off                  enable / disable the song aliases
---   bard debug on|off            enable / disable debug messages
+--   bardSongTLAs                       show this help
+--   bardSongTLAs list [text]           list songs; optionally filter
+--   bardSongTLAs on|off                enable / disable the song aliases
+--   bardSongTLAs debug on|off          enable / disable debug messages
+--   bard                               short alias for bardSongTLAs
+--   bard list [text]                   list songs; optionally filter
+--   bard on|off                        enable / disable the song aliases
+--   bard debug on|off                  enable / disable debug messages
 --
 -- Tweaks (top of file):
 --   * songs  TLA-to-song mappings
@@ -51,7 +52,7 @@ local LOAD_STARTED = os.clock()
 local NAME = "bardSongTLAs"
 local SHORT = "bard"
 
-local VERSION = "2.10"
+local VERSION = "2.11"
 local SETTINGS_KEY = "bardSongTLAs.settings"
 
 local enabled = true
@@ -208,7 +209,7 @@ local function help()
     rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
     rune.echo(H.section("Commands"))
     rune.echo(H.line(NAME, "show this help"))
-    rune.echo(H.line(SHORT .. " list", "show all configured TLAs"))
+    rune.echo(H.line(SHORT .. " list [text]", "list songs; optionally filter"))
     rune.echo(H.line(SHORT .. " on|off", "enable / disable song aliases"))
     rune.echo(H.line(SHORT .. " debug on|off", "enable / disable debug"))
     rune.echo(H.line(SHORT, "short alias for " .. NAME))
@@ -218,29 +219,53 @@ local function help()
 
   rune.echo(NAME .. "  (alias: " .. SHORT .. ")")
   rune.echo("  " .. NAME .. "              show this help")
-  rune.echo("  " .. SHORT .. " list         show all configured TLAs")
+  rune.echo("  " .. SHORT .. " list [text]  list songs; optionally filter")
   rune.echo("  " .. SHORT .. " on|off       enable / disable song aliases")
   rune.echo("  " .. SHORT .. " debug on|off enable / disable debug")
-  rune.echo("  " .. SHORT .. "                   short alias for " .. NAME)
+  rune.echo("  " .. SHORT .. "              short alias for " .. NAME)
   rune.echo(footer)
 end
 
-local function show_song_list()
+local function show_song_list(filter)
+  filter = (filter or ""):lower():match("^%s*(.-)%s*$")
+
   local groups = {
     { title = "Peace songs", first = 1, last = 11 },
     { title = "Martial songs", first = 12, last = 24 },
     { title = "Versatile songs", first = 25, last = #songs },
   }
 
-  say("configured song TLAs:")
+  local shown = 0
+  say(filter == "" and "configured song TLAs:" or
+    "configured song TLAs matching '" .. filter .. "':")
+
   for _, group in ipairs(groups) do
-    rune.echo(group.title .. ":")
+    local group_rows = {}
+
     for i = group.first, group.last do
       local entry = songs[i]
       if entry then
-        rune.echo("  " .. styled_tla(entry[1]) .. "  " .. entry[2])
+        local tla = entry[1]
+        local song_name = entry[2]
+        if filter == ""
+          or tla:lower():find(filter, 1, true)
+          or song_name:lower():find(filter, 1, true) then
+          group_rows[#group_rows + 1] = entry
+        end
       end
     end
+
+    if #group_rows > 0 then
+      rune.echo(group.title .. ":")
+      for _, entry in ipairs(group_rows) do
+        rune.echo("  " .. styled_tla(entry[1]) .. "  " .. entry[2])
+        shown = shown + 1
+      end
+    end
+  end
+
+  if shown == 0 then
+    rune.echo("  no matching songs")
   end
 end
 
@@ -265,8 +290,9 @@ local function handle_command(args)
     return
   end
 
-  if text == "list" then
-    show_song_list()
+  local filter = text:match("^list%s*(.-)$")
+  if filter ~= nil then
+    show_song_list(filter)
     return
   end
 

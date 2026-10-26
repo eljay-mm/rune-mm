@@ -1,12 +1,13 @@
 -- Filename: eljayPlugins/mapperShortKeys.lua
 -- Purpose: Mapper shortcut aliases for common locations and the Iron Worm hand-in.
--- Version: 2.11
--- Date: 2026-Oct-25
+-- Version: 2.12
+-- Date: 2026-Oct-26
 --[[
 TODO:
-- insert planning notes here between revisions.
+- Confirm the configured room IDs and Iron Worm hand-in sequence in game.
 ]]
 -- Changelog:
+--   2.12 Add case-insensitive literal substring filtering to list.
 --   2.11 Add available shortcut comments to the list output.
 --   2.10 Add a list command that displays registered aliases in cyan.
 --   2.9  Use exact bare-command aliases without the ignored name option.
@@ -25,7 +26,7 @@ TODO:
 --   * Exact bare-command aliases route mapper shortcuts through lookup tables.
 --   * Prefix shortcuts send mapper commands; fixed shortcuts go to saved room IDs.
 --   * wo handles the Iron Worm trip, purchase, and token hand-in.
---   * msk list displays all registered aliases and their meanings.
+--   * msk list [text] displays registered aliases and meanings, optionally filtered by a case-insensitive literal substring.
 --   * Shortcuts are kept in one table below, grouped by area.
 --   * No triggers or network calls; enabled and debug settings use rune.store.
 --   * Settings and helpstyle are loaded on first use, not at startup.
@@ -34,7 +35,7 @@ TODO:
 --
 -- Commands (type without "/"; "msk" is a short alias for "mapperShortKeys"):
 --   mapperShortKeys / msk       show this help
---   msk list                    display all registered aliases and their meanings
+--   msk list [text]             list aliases; optionally filter by literal text
 --   msk on|off                  enable / disable shortcut aliases
 --   msk debug on|off            enable / disable debug messages
 --   mapf/mapg/mapb/mapw <text>  mapper nearby / goto / bookmark / where
@@ -51,7 +52,7 @@ local SHORT = "msk"
 
 local LOAD_STARTED = os.clock()
 
-local VERSION      = "2.11"
+local VERSION      = "2.12"
 local SETTINGS_KEY = "mapperShortKeys.settings"
 local IRON_WORM    = 10636
 
@@ -277,12 +278,24 @@ local function alias_meaning(alias)
   return "shortcut alias"
 end
 
-local function show_aliases()
+local function show_aliases(filter)
+  filter = trim(filter):lower()
+
   local aliases = {}
   for _, alias in ipairs(registered) do
-    aliases[#aliases + 1] = alias
+    local meaning = alias_meaning(alias)
+    local searchable = (alias .. " " .. meaning):lower()
+
+    if filter == "" or searchable:find(filter, 1, true) then
+      aliases[#aliases + 1] = alias
+    end
   end
   table.sort(aliases)
+
+  if #aliases == 0 then
+    rune.echo("No registered aliases match '" .. filter .. "'.")
+    return
+  end
 
   rune.echo(cyan("Registered aliases") .. " (" .. #aliases .. ")")
   for _, alias in ipairs(aliases) do
@@ -301,7 +314,7 @@ local function show_help()
 
   local status = string.format(
     "v%s  enabled=%s debug=%s aliases=%d  load=%dms",
-    VERSION, tostring(enabled), tostring(debug_on), alias_count, load_ms
+    VERSION, onoff(enabled), onoff(debug_on), alias_count, load_ms
   )
 
   local styled = H
@@ -315,11 +328,11 @@ local function show_help()
       emit(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
       emit(H.section("Commands"))
       emit(H.line(NAME, "show this help"))
-      emit(H.line(SHORT .. " list", "display all registered aliases and their meanings"))
+      emit(H.line(SHORT .. " list [text]", "list aliases; optional literal text filter"))
       emit(H.line(SHORT .. " on|off", "enable / disable shortcut aliases"))
       emit(H.line(SHORT .. " debug on|off", "enable / disable debug messages"))
       emit(H.section("Shortcuts"))
-      emit(H.line("mapf/mapg/mapb/mapw <text>", "mapper nearby / goto / bookmark / where"))
+      emit(H.line("mapf/mapg/mapb/mapw <text>", "mapper commands"))
       emit(H.line("mapi", "mapper roominfo"))
       emit(H.line("wo <item>", "Iron Worm purchase and token hand-in"))
       emit(H.line("room aliases", "mapper goto fixed rooms (r0, r1, r2 ...)"))
@@ -333,7 +346,7 @@ local function show_help()
   end
 
   rune.echo(NAME .. "  (alias: " .. SHORT .. ")")
-  rune.echo(SHORT .. " list                   display all registered aliases and their meanings")
+  rune.echo(SHORT .. " list [text]           list aliases; optional literal text filter")
   rune.echo(SHORT .. " on|off                 enable / disable shortcuts")
   rune.echo(SHORT .. " debug on|off           enable / disable debug")
   rune.echo("mapf/mapg/mapb/mapw <text>  mapper commands")
@@ -345,39 +358,38 @@ local function show_help()
 end
 
 local function handle_command(args)
-  local text = trim(args):lower()
-  local command = text:match("^(%S*)") or ""
-  local value = text:match("^%S+%s*(.*)$") or ""
+  local text = trim(args)
+  local command, rest = text:match("^(%S+)%s*(.-)$")
+  command = (command or ""):lower()
 
-  if command == "list" and value == "" then
-    show_aliases()
-    return
-  end
-
-  if command == "on" or command == "off" then
-    local value_on = command == "on"
+  if command == "" or command == "help" then
+    show_help()
+  elseif command == "list" then
+    show_aliases(rest)
+  elseif command == "on" then
     update_settings(function(settings)
-      settings.enabled = value_on
+      settings.enabled = true
     end)
     say("shortcuts are " .. onoff(enabled))
-    return
-  end
-
-  if command == "debug" then
-    if value ~= "on" and value ~= "off" then
+  elseif command == "off" then
+    update_settings(function(settings)
+      settings.enabled = false
+    end)
+    say("shortcuts are " .. onoff(enabled))
+  elseif command == "debug" then
+    local setting = trim(rest):lower()
+    if setting ~= "on" and setting ~= "off" then
       show_help()
       return
     end
 
-    local value_on = value == "on"
     update_settings(function(settings)
-      settings.debug = value_on
+      settings.debug = setting == "on"
     end)
     say("debug is " .. onoff(debug_on))
-    return
+  else
+    show_help()
   end
-
-  show_help()
 end
 
 local function iron_worm(args)
@@ -388,9 +400,10 @@ local function iron_worm(args)
     return
   end
 
-  -- Reject command separators and control characters in the input.
-  if item:find("[;%c]") then
-    say("item text cannot contain semicolons or control characters")
+  -- Keep item text to a conservative set of characters; reject command
+  -- separators, quotes, and control characters.
+  if not item:match("^[%w _%-']+$") then
+    say("item text contains unsupported characters")
     return
   end
 
@@ -438,7 +451,6 @@ local function handler(alias)
 end
 
 local function register(alias)
-  -- Exact aliases take the phrase and callback; do not pass a name option.
   rune.alias.exact(alias, handler(alias))
   registered[#registered + 1] = alias
   alias_count = alias_count + 1

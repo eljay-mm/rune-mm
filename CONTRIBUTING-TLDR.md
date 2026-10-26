@@ -25,6 +25,7 @@ Lua plugins for the Rune client, designed for horstgs’ Materia Magica configur
 
 - Put each plugin directly in `eljayPlugins/`, named `eljayPlugins/<camelName>.lua`. Do not nest plugin files.
 - Use a short, descriptive camelCase name.
+- Keep every plugin file, companions included, under 16,000 bytes. Move rarely used code into a companion file in `eljayPlugins/` (for example `asciiMapColours.lua`, `spdxyPlaces.lua`) that the plugin `require`s on first use. A companion follows the same header and help rules as a plugin and is not listed in `PLUGINS`.
 - Start every plugin with this header: Filename, Purpose, Version and Date—in that order—then exactly one `[[ ]]` TODO block (placeholder if nothing is planned), then Changelog, a bulleted How it works, Commands and Tweaks. Use `--` line comments everywhere else.
 
 ```lua
@@ -44,14 +45,14 @@ TODO:
 --
 -- Commands (type without "/"; "xyz" is a short alias for "<camelName>"):
 --   <camelName>            show this help
---   <xyz> on|off     enable / disable the trigger(s)
---   <xyz> debug      toggle debug messages (default off)
+--   <camelName> on|off     enable / disable the trigger(s)
+--   <camelName> debug      toggle debug messages (default off)
 --
 -- Tweaks (top of file):
 --   * LOOKUP_CMD   what it controls
 --
 ```
-- The “How it works” summary must match the Purpose and actual behavior. Preserve any “Inspired by” note and mention required plugins or external aliases.
+- The “How it works” summary must match the Purpose and actual behavior. Preserve any “Inspired by” note and mention required plugins or external aliases. List any required export command (for example `export TERM=xterm-256color`) there too.
 - List all commands, the short alias, and any top-of-file tweakable constants.
 
 ### Commands, toggles and help
@@ -77,9 +78,10 @@ TODO:
 - Save settings with `rune.store`, wrapping calls in `pcall`. Don’t add separate `.txt` configuration files without a clear need.
 - Before each write, read the latest store table inside the write operation, mutate it, and save it. Never base a write on a long-lived cached table. After saving, refresh any in-memory cache; use that cache for reads only.
 
-### Style
+### Style and `basicAliases.lua`
 
 - Keep aliases and triggers on one row where possible; prefer readable, maintainable Lua.
+- Do not add `ct`, `at`, `ft`, `reply`, `talk_alias` helpers or signature helpers to `basicAliases.lua`.
 
 ### Cross-platform support
 
@@ -94,6 +96,7 @@ TODO:
 - Never build shell commands from unsanitized text; reduce input to expected characters first.
 - For network calls, use short connect and total timeouts, cache results, skip repeat lookups, and back off after failures.
 - Avoid endless loops; `pcall` cannot stop them. Defer slow work such as network calls, shell commands and large file reads so startup stays within Rune’s 5-second watchdog.
+- Each `rune.alias.exact` registration costs about 0.8 ms; with many aliases use one regex dispatcher, and load `helpstyle` and settings on first use.
 - Prefer anchored triggers; escape literal text, avoid large unanchored patterns on every incoming line, and build lookups once at load.
 - Prefer `io.popen` over temp files where possible; avoid predictable temp names.
 - Never log or echo secrets. Keep log folders private where possible and exclude `logs/` from git.
@@ -108,8 +111,8 @@ TODO:
 
 ### Pre-flight checklist
 
-- [ ] File is directly in `eljayPlugins/` with the correct name.
-- [ ] Header has the required sections, commands and tweaks; exactly one TODO block; no other block comments.
+- [ ] File is directly in `eljayPlugins/` with the correct name and under 16,000 bytes; companions are not listed in `PLUGINS`.
+- [ ] Header has the required sections, commands and tweaks; exactly one TODO block; no other block comments; any required export command is listed.
 - [ ] Purpose, “How it works” and behavior agree; preserve “Inspired by” notes.
 - [ ] Changelog is current.
 - [ ] Full and short bare commands use `rune.alias.exact`; bare commands show help.
@@ -120,6 +123,7 @@ TODO:
 - [ ] Store writes use fresh data and refresh the read-only cache.
 - [ ] Character-name handling uses `charname.lua` and safely handles `nil` before login.
 - [ ] Platform support works or limitations are documented.
+- [ ] No forbidden aliases or helpers were added to `basicAliases.lua`.
 - [ ] Versioning follows policy and all version values match.
 - [ ] Plugin is registered in `initEljay.lua` and documented in the README.
 - [ ] Heavy startup work is deferred; debug logging is guarded.

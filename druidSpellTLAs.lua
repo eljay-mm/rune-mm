@@ -1,18 +1,22 @@
 -- Filename: eljayPlugins/druidSpellTLAs.lua
 -- Purpose: Druid spells with three-letter acronyms (TLAs).
--- Version: 2.7
--- Date: 2026-Oct-20
+-- Version: 2.8
+-- Date: 2026-Oct-26
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
---   2.7  Removed the spell-alias section from help; added a list subcommand that displays
---        every TLA, the command it sends, and its analogue, grouping equivalent commands.
---   2.6  Command renamed druidSpellTLAs with druid as the short alias; one-row loader line;
---        all spell TLAs now share a single alias; duplicate-TLA check; settings no longer
---        re-saved on load.
---   2.5  Added enabled/debug toggles and persisted settings; aliases respect the enabled state.
+--   2.8  Added optional case-insensitive literal substring filtering to
+--        list, matching aliases, commands, and analogues.
+--   2.7  Removed the spell-alias section from help; added a list subcommand that
+--        displays every TLA, the command it sends, and its analogue, grouping
+--        equivalent commands.
+--   2.6  Command renamed druidSpellTLAs with druid as the short alias; one-row
+--        loader line; all spell TLAs now share a single alias; duplicate-TLA
+--        check; settings no longer re-saved on load.
+--   2.5  Added enabled/debug toggles and persisted settings; aliases respect
+--        the enabled state.
 --
 -- How it works:
 --   * Each row in the spells table maps a shorthand alias to a verb + element,
@@ -20,13 +24,14 @@ TODO:
 --   * A bare spell alias sends "<verb> <element>"; an optional target is appended once.
 --   * TLAs come from analogue spell names or direct d + i/e + element-initial forms.
 --   * All spell TLAs are matched by one alias built from the table.
---   * Use "druid list" to display spell aliases, commands, and analogues.
+--   * Use "druid list [text]" to display aliases, commands, and analogues;
+--     optional text matches those fields as a case-insensitive literal substring.
 --   * When disabled, spell aliases do nothing; settings persist in rune.store.
 --
 -- Commands (type without "/"; "druid" is a short alias for "druidSpellTLAs"):
 --   druidSpellTLAs                show this help
 --   druid                         short alias for druidSpellTLAs
---   druidSpellTLAs list           list spell aliases and analogues
+--   druidSpellTLAs list [text]    list aliases; optionally filter by text
 --   druidSpellTLAs on|off         enable / disable all druid TLAs
 --   druidSpellTLAs debug on|off   enable / disable debug messages
 --
@@ -39,7 +44,7 @@ local LOAD_STARTED = os.clock()
 local NAME = "druidSpellTLAs"
 local SHORT = "druid"
 
-local VERSION = "2.7"
+local VERSION = "2.8"
 local SETTINGS_KEY = "druidSpellTLAs.settings"
 local LOAD_MS = 0
 
@@ -65,11 +70,28 @@ local function load_settings()
 end
 
 local function save_settings()
-  if rune and rune.store and type(rune.store.set) == "function" then
-    pcall(rune.store.set, SETTINGS_KEY, {
-      enabled = enabled,
-      debug = debug_enabled,
-    })
+  if not (rune and rune.store
+      and type(rune.store.get) == "function"
+      and type(rune.store.set) == "function") then
+    return
+  end
+
+  local ok, settings = pcall(rune.store.get, SETTINGS_KEY)
+  if not ok or type(settings) ~= "table" then
+    settings = {}
+  end
+
+  settings.enabled = enabled
+  settings.debug = debug_enabled
+
+  local saved = pcall(rune.store.set, SETTINGS_KEY, settings)
+  if saved then
+    if type(settings.enabled) == "boolean" then
+      enabled = settings.enabled
+    end
+    if type(settings.debug) == "boolean" then
+      debug_enabled = settings.debug
+    end
   end
 end
 
@@ -278,42 +300,55 @@ local function help()
   rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
   rune.echo(H.section("Commands"))
   rune.echo(H.line(NAME, "show this help"))
-  rune.echo(H.line(SHORT .. " list", "list spell aliases and analogues"))
+  rune.echo(H.line(SHORT .. " list [text]", "list aliases; optional filter"))
   rune.echo(H.line(SHORT .. " on|off", "enable / disable all druid TLAs"))
   rune.echo(H.line(SHORT .. " debug on|off", "enable / disable debug messages"))
   rune.echo(H.line(SHORT, "short alias for " .. NAME))
   rune.echo(H.foot(string.format(
     "v%s  enabled=%s debug=%s bindings=3  load=%dms",
     VERSION,
-    tostring(enabled),
-    tostring(debug_enabled),
+    onoff(enabled),
+    onoff(debug_enabled),
     LOAD_MS
   )))
 end
 
-local function list_aliases()
+local function list_aliases(filter)
+  filter = (filter or ""):lower()
+
   local groups = {}
   local group_order = {}
 
   for _, alias in ipairs(names) do
     local row = lookup[alias]
     local key = row.verb .. " " .. row.element
-    local group = groups[key]
+    local element_analogues = analogues[row.element]
+    local analogue = element_analogues and element_analogues[row.verb] or "—"
 
-    if not group then
-      local element_analogues = analogues[row.element]
-      local analogue = element_analogues and element_analogues[row.verb] or "—"
+    local alias_matches = alias:lower():find(filter, 1, true) ~= nil
+    local command_matches = key:lower():find(filter, 1, true) ~= nil
+    local analogue_matches = analogue:lower():find(filter, 1, true) ~= nil
 
-      group = {
-        aliases = {},
-        command = key,
-        analogue = analogue,
-      }
-      groups[key] = group
-      group_order[#group_order + 1] = key
+    if filter == "" or alias_matches or command_matches or analogue_matches then
+      local group = groups[key]
+
+      if not group then
+        group = {
+          aliases = {},
+          command = key,
+          analogue = analogue,
+        }
+        groups[key] = group
+        group_order[#group_order + 1] = key
+      end
+
+      group.aliases[#group.aliases + 1] = alias
     end
+  end
 
-    group.aliases[#group.aliases + 1] = alias
+  if #group_order == 0 then
+    say("no spell aliases match '" .. filter .. "'")
+    return
   end
 
   rune.echo(H.title("Druid spell aliases"))
@@ -331,11 +366,11 @@ local function command(args, _ctx)
   local subcommand = text:match("^(%S*)") or ""
   local rest = text:match("^%S+%s*(.*)$") or ""
 
-  if subcommand == "on" then
+  if subcommand == "on" and rest == "" then
     enabled = true
     save_settings()
     say("enabled")
-  elseif subcommand == "off" then
+  elseif subcommand == "off" and rest == "" then
     enabled = false
     save_settings()
     say("disabled")
@@ -350,14 +385,14 @@ local function command(args, _ctx)
     end
     save_settings()
     say("debug " .. onoff(debug_enabled))
-  elseif subcommand == "list" and rest == "" then
-    list_aliases()
+  elseif subcommand == "list" then
+    list_aliases(rest)
   else
     help()
   end
 end
 
--- Bare commands are aliases; rune.command.add creates slash commands.
+-- Bare command aliases.
 rune.alias.exact(NAME, command)
 rune.alias.exact(SHORT, command)
 

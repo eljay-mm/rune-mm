@@ -1,12 +1,14 @@
 -- Filename: eljayPlugins/basicAliases.lua
 -- Purpose: Provides shared aliases and automatic responses for all characters
--- Version: 2.17
--- Date: 2026-Oct-24
+-- Version: 2.18
+-- Date: 2026-Oct-26
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
+--   2.18  Added list [text] with case-insensitive literal substring filtering
+--        by alias name or mapped command.
 --   2.17  Removed rrl and rrr; research aliases are handled by
 --        researchNotesPicker.lua.
 --   2.16  Clarified help rows and rejected control characters in special-alias
@@ -33,6 +35,8 @@ TODO:
 --     switches the group, and its state is saved with rune.store.
 --   * Simple aliases are rows in one lookup table served by a regex
 --     dispatcher. Helper P() wraps skill aliases as plan '...'.
+--   * list [text] shows aliases; an optional filter matches alias names and
+--     mapped commands as a case-insensitive literal substring.
 --   * Commands are chained with ";" inside a single rune.send string.
 --   * Commands are typed without a / prefix. basicAliases is the full command
 --     and basic is the short alias; typing either alone shows help.
@@ -41,6 +45,7 @@ TODO:
 --   basicAliases                 show this help
 --   basicAliases on|off          enable or disable the triggers
 --   basicAliases debug on|off    show or hide debug messages
+--   basicAliases list [text]     list aliases; optionally filter by text
 --   basic                        short alias for basicAliases
 --
 -- Tweaks (top of file):
@@ -52,7 +57,7 @@ local LOAD_STARTED = os.clock()
 local NAME = "basicAliases"
 local SHORT = "basic"
 
-local VERSION = "2.17"
+local VERSION = "2.18"
 local GROUP = NAME
 local SETTINGS_KEY = "basicAliases.settings"
 local debugOn = false
@@ -425,6 +430,7 @@ local function help()
     emit(H.line(NAME, "show this help"))
     emit(H.line(SHORT .. " on|off", "enable or disable triggers"))
     emit(H.line(SHORT .. " debug on|off", "show or hide debug messages"))
+    emit(H.line(SHORT .. " list [text]", "list aliases; optionally filter"))
     emit(H.line(SHORT, "short alias for " .. NAME))
     emit(H.foot(status))
   end)
@@ -434,13 +440,51 @@ local function help()
     rune.echo("  " .. NAME .. "                 show this help")
     rune.echo("  " .. SHORT .. " on|off          enable or disable triggers")
     rune.echo("  " .. SHORT .. " debug on|off    show or hide debug messages")
+    rune.echo("  " .. SHORT .. " list [text]     list aliases; optionally filter")
     rune.echo("  " .. SHORT .. "                 short alias for " .. NAME)
     rune.echo(status)
   end
 end
 
+local function list_aliases(filter)
+  filter = (filter or ""):lower()
+
+  local found = 0
+  for _, key in ipairs(keys) do
+    local entry = map[key]
+    local target = type(entry) == "string" and entry or ""
+
+    -- Plain substring searches make filter text literal, not a Lua pattern.
+    if filter == ""
+        or key:lower():find(filter, 1, true)
+        or target:lower():find(filter, 1, true) then
+      say(key .. " -> " .. target)
+      found = found + 1
+    end
+  end
+
+  if found == 0 then
+    say("no aliases match '" .. filter .. "'")
+  else
+    say(tostring(found) .. " alias" .. (found == 1 and "" or "es"))
+  end
+end
+
 local function command(args)
-  local text = tostring(args or ""):lower():match("^%s*(.-)%s*$")
+  local raw = tostring(args or ""):match("^%s*(.-)%s*$")
+
+  if raw == "list" then
+    list_aliases("")
+    return
+  end
+
+  local list_filter = raw:match("^list%s+(.+)$")
+  if list_filter ~= nil then
+    list_aliases(list_filter)
+    return
+  end
+
+  local text = raw:lower()
   local option, value, extra = text:match("^(%S*)%s*(%S*)%s*(.-)$")
 
   if extra ~= "" then

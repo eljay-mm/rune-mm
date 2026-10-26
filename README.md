@@ -11,8 +11,8 @@ The plugins are written to work on Linux, macOS and Windows; see [Windows notes]
 
 - The Rune client (https://runemud.com and https://github.com/mmcdole/rune).
 - horstgs' Rune configuration (https://github.com/horstgs/rune-materiamagica-public) for Materia Magica. It provides `helpstyle`, used by the
-  plugins' help screens, and the mapper modules (`mapper.lua` and friends), which
-  `spdxyCoordinates` uses only as a fallback outside the wilderness.
+  plugins' help screens, and the mapper (`mapper.lua` and friends) that some plugins
+  build on.
 - A terminal that supports OSC 52 (clipboard) and OSC 8 (hyperlinks). Ghostty does; open
   links with **Ctrl+Shift+click**. For clipboard copies, Ghostty needs
   `clipboard-write = allow` in its config.
@@ -131,6 +131,9 @@ To enable it again, remove the `--`. Things to know:
 | `vitalsChanges.lua`       | Shows HP, SP and ST changes in the main window.                                                                      |
 
 `initEljay.lua` is the loader, not a plugin; see [Disabling a plugin](#disabling-a-plugin).
+`spdxyPlaces.lua` is not a plugin either: it holds the town and clan hall data plus the
+name lookup, `nearby` and waypoint code for `spdxyCoordinates`, which loads it on first
+use. Keep it in `eljayPlugins`, but do not add it to the `PLUGINS` list.
 
 Each plugin's header comment has its full "How it works" description, its commands and
 its changelog. Typing a plugin's command on its own prints a help summary.
@@ -152,6 +155,8 @@ Every plugin follows the same house style (the full guidelines are in
   `spdxyCoordinates` and `spdxy`, or `crystalLocator` and `crystal`.
 - **Output:** one row on load, with the plugin name as a coloured prefix.
 - **Naming:** `eljayPlugins/<camelName>.lua`, no prefix.
+- **Size:** each file stays under 16000 bytes. Large data or rarely used code moves into a
+  helper module that is loaded on first use, as `spdxyCoordinates` does with `spdxyPlaces`.
 - **Compatibility:** plugins avoid platform-specific calls where they can, so they run on
   Linux, macOS and Windows.
 

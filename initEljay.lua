@@ -81,7 +81,7 @@ rune_build_layout()
 local PLUGINS = {
   "annwnQuestSearch",
   "asciiMapPane",
-  "asciiMapColours",
+  "asciiMapColours", -- support module only
   "bardSongTLAs",
   "basicAliases",
   "characterLog",
@@ -96,6 +96,7 @@ local PLUGINS = {
   "highlights",
   "highlightCustom",
   "jmcSolver",
+  "lootableTracker",
   "mapperShortKeys",
 --  "megaQuestSearch",
   "missingAffects",
@@ -104,6 +105,7 @@ local PLUGINS = {
   "researchNotesPicker",
   "shopListPicker",
   "spdxyCoordinates",
+  "spdxyPlaces", -- support module only
   "spellTLAs",
   "statusTray",
   "vitalsChanges",

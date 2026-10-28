@@ -11,8 +11,8 @@ The plugins are written to work on Linux, macOS and Windows; see [Windows notes]
 
 - The Rune client (https://runemud.com and https://github.com/mmcdole/rune).
 - horstgs' Rune configuration (https://github.com/horstgs/rune-materiamagica-public) for Materia Magica. It provides `helpstyle`, used by the
-  plugins' help screens, and the mapper (`mapper.lua` and friends) that some plugins
-  build on.
+  plugins' help screens, `charname.lua` (the shared character-name module), and the
+  mapper (`mapper.lua` and friends) that some plugins build on.
 - A terminal that supports OSC 52 (clipboard) and OSC 8 (hyperlinks). Ghostty does; open
   links with **Ctrl+Shift+click**. For clipboard copies, Ghostty needs
   `clipboard-write = allow` in its config.
@@ -83,7 +83,7 @@ plugin:
 To enable it again, remove the `--`. Things to know:
 
 - Each plugin loads under `pcall`, so one that fails is skipped and the plugins after it
-  still load. At start-up `initEljay` prints one row, `[initEljay] v2.3  loaded N/M plugins`,
+  still load. At start-up `initEljay` prints one row, `[initEljay] vX.Y  loaded N/M plugins`,
   and only if something broke it adds a `failed to load <name>: <error>` row per failed
   plugin. You only need to disable a plugin yourself if you don't want it.
 - A plugin only runs if it is listed in `PLUGINS`. A `.lua` file that is present but not
@@ -91,8 +91,8 @@ To enable it again, remove the `--`. Things to know:
 - The list is alphabetical. Only move a plugin lower if it depends on another one having
   loaded first.
 - Plugins that provide an on/off command (for example `hangmanSolver on|off` or
-  `spdxyCoordinates on|off`) can also be switched off for the current session without
-  editing any file; see each plugin's header comment or help screen.
+  `spdxyCoordinates on|off`) can be switched off and on without editing any file; the
+  state is remembered across restarts. See each plugin's help screen.
 - If Rune stops at start-up with a timeout ("runaway loop"), a plugin is stuck in an
   endless loop, which `pcall` cannot catch. Set `DEBUG = true` at the top of
   `initEljay.lua`: it appends `loading <name>` and `ok <name>` lines to
@@ -133,7 +133,7 @@ To enable it again, remove the `--`. Things to know:
 `initEljay.lua` is the loader, not a plugin; see [Disabling a plugin](#disabling-a-plugin).
 `spdxyPlaces.lua` is not a plugin either: it holds the town and clan hall data plus the
 name lookup, `nearby` and waypoint code for `spdxyCoordinates`, which loads it on first
-use. Keep it in `eljayPlugins`, but do not add it to the `PLUGINS` list.
+use. Keep it in `eljayPlugins` and list it in `PLUGINS` too, as with any companion file.
 
 Each plugin's header comment has its full "How it works" description, its commands and
 its changelog. Typing a plugin's command on its own prints a help summary.
@@ -143,10 +143,10 @@ its changelog. Typing a plugin's command on its own prints a help summary.
 Every plugin follows the same house style (the full guidelines are in
 [CONTRIBUTING.md](CONTRIBUTING.md)):
 
-- **Header:** `Filename`, `Purpose`, `Version`, `Date`, a short changelog, then a
-  "How it works" section.
+- **Header:** `Filename`, `Purpose`, `Version`, `Date`, a TODO block, a short changelog,
+  then "How it works", "Commands" and "Tweaks" sections.
 - **Help:** typing a plugin's command on its own prints a summary using `helpstyle`; the
-  last row shows the plugin's version and current settings.
+  last row shows the plugin's version, current settings and load time.
 - **Toggles:** a debug toggle (off by default) and an on/off toggle for the plugin's
   triggers.
 - **Settings:** saved with `rune.store`, not in separate config files.
@@ -164,9 +164,9 @@ Older plugins are being brought up to this standard as they are revised.
 
 ## Windows notes
 
-- `hangmanSolver.lua` (v2.3) works on Windows: it uses `curl.exe`, which is included with
+- `hangmanSolver.lua` works on Windows: it uses `curl.exe`, which is included with
   current versions of Windows 10 and 11, and `cmd.exe` quoting.
-- `characterLog.lua` (v2.4) works on Windows: it creates its log folder with `cmd.exe`'s
+- `characterLog.lua` works on Windows: it creates its log folder with `cmd.exe`'s
   `mkdir` (Linux and macOS use `mkdir -p` with a private umask). Two differences:
   - A config path containing `"` or `%` is refused with a message, because it cannot be
     quoted safely for `cmd.exe`.
@@ -175,7 +175,7 @@ Older plugins are being brought up to this standard as they are revised.
 - Logs keep ANSI colour codes by default (`charlog raw on`). Open them in a viewer that
   understands ANSI colours, or run `charlog raw off` for plain text. On Linux and macOS
   `less -R` works.
-- `initEljay.lua` (v2.3) needs nothing special on Windows: its debug progress file goes
+- `initEljay.lua` needs nothing special on Windows: its debug progress file goes
   to your `TEMP` folder automatically (`TMPDIR` on Linux and macOS, `/tmp` as a last
   resort), and its install line is the same as on Linux.
 - Clipboard features (`clipCommandOutput` and the link and clipboard helpers) need a
@@ -191,5 +191,5 @@ Older plugins are being brought up to this standard as they are revised.
 ## Credits
 
 - [Rune](https://runemud.com) by mmcdole (https://github.com/mmcdole/rune).
-- Base Materia Magica configuration, `mapper.lua` and `helpstyle` by horstgs (https://github.com/horstgs/rune-materiamagica-public).
+- Base Materia Magica configuration, `mapper.lua`, `helpstyle` and `charname.lua` by horstgs (https://github.com/horstgs/rune-materiamagica-public).
 - Many plugins began as conversions of MUSHclient XML plugins by Elbereth, Enelya, Ferdinand, Oona, or Ruthgul.

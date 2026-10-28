@@ -1,10 +1,12 @@
 -- Filename: eljayPlugins/spdxyCoordinates.lua
 -- Purpose: Walks to sextant coordinates, towns and clan halls, including unmapped wilderness
--- Version: 3.7
--- Date: 2026-Oct-25
+-- Version: 3.8
+-- Date: 2026-Oct-27
 --[[
 - insert planning notes here between revisions.
 ]]
+--   3.8  Detect repeated coordinates, avoid the incoming step, penalize revisits,
+--        follow obstacles clockwise on loop recovery, and prefer learned paved roads.
 --   3.7  Under 16000 bytes: name lookup, nearby and waypoints moved to spdxyPlaces.lua
 --        (loaded on first use); mapper fallback, find, here and manual pause removed;
 --        waypoint saves re-read rune.store first.
@@ -13,28 +15,22 @@
 --
 -- How it works:
 --   * Inspired by the MUSHclient plugin by Ruthgul.
---   * Each GMCP Room.Info gives coord.x/y. After every move the plugin recomputes the
---     shortest way to the target (the world wraps) and sends ONE compass step: a
---     diagonal while both axes are off, then straight. Knockbacks need no handling.
---   * Blocked steps are remembered per room and walked around. Water and combat
---     pause the walk; teleports and entering a building abort it. One combined
---     trigger watches for those lines, enabled only while walking.
+--   * Each GMCP Room.Info gives coord.x/y. The plugin sends one compass step at a time.
+--   * Traversed rooms and links are learned; known paved-road routes are preferred.
+--     Unknown routes use coordinate-based walking until the map learns more.
+--   * Blocked steps and revisited rooms are avoided when possible. Water and combat
+--     pause the walk; teleports and entering a building abort it.
 --   * Towns, worldgates, clan halls, nearby and waypoints live in spdxyPlaces.lua,
 --     loaded on first use (keep it out of initEljay's PLUGINS). Your plane only.
---   * Waypoints, the last destination and the last start live in rune.store.
+--   * Waypoints, the last destination, the last start, and the learned map live in rune.store.
 --   * Works in the wilds only. `nearby [x, y]` alone equals `spdxy nearby [x, y]`.
 
 local T0, load_ms = os.clock(), 0
-
--- Command names: full command and short alias.
-local NAME = "spdxyCoordinates"
-local SHORT = "spdxy"
-local VERSION = "3.7"
-
-local K_ON, K_DBG, K_WP, K_LAST, K_ORG = "spdxy.enabled", "spdxy.debug", "spdxy.places", "spdxy.last", "spdxy.origin"
+local NAME, SHORT, VERSION = "spdxyCoordinates", "spdxy", "3.8"
+local K_ON, K_DBG, K_WP, K_LAST, K_ORG, K_MAP =
+  "spdxy.enabled", "spdxy.debug", "spdxy.places", "spdxy.last", "spdxy.origin", "spdxy.map"
 local MAX_X, MAX_Y, MAX_WP = 2299, 1499, 100
 local GROUP, WATCH = "spdxy-walk", "spdxy-watch"
--- zone (lowercase) -> plane letter, as used by the rows in spdxyPlaces.lua
 local ZONES = { ["alyria"] = "a", ["faerie plane wilderness"] = "f",
   ["great alyrian underground"] = "u", ["sigil underground"] = "s", ["chat rooms wilderness"] = "c" }
 local OLDP = { alyria = "a", faerie = "f", underground = "u", sug = "s" }
@@ -79,6 +75,54 @@ local on_line
 local armed = false
 local TRIG = [[^(?:You cannot move in that direction|You would surely need a grappling|You can't go there while mounted|You need a sailing vessel to go|The .+ (?:is|are) closed\.|The water current is too swift|You would need a (?:sailing vessel or|water-breathing)|A swirling vortex of sound|You hear a peal of thunder|A sudden, strong gust|Your mount is sitting|Not while you are in combat)]]
 
+-- Learned map: only confirmed, traversed links are used for road routing.
+local MAP = get(K_MAP)
+MAP.nodes = type(MAP.nodes) == "table" and MAP.nodes or {}
+local function mapkey(x, y, zone) return tostring(zone) .. ":" .. key(x, y) end
+local function save_room(x, y, zone, terrain)
+  local k = mapkey(x, y, zone)
+  local n = MAP.nodes[k] or { links = {} }
+  n.x, n.y, n.zone, n.terrain = x, y, zone, tostring(terrain or "")
+  n.links = type(n.links) == "table" and n.links or {}
+  MAP.nodes[k] = n
+  return k
+end
+local function link_rooms(a, dir, b)
+  if not (a and b and dir and IDX[dir]) then return end
+  local an, bn = MAP.nodes[a], MAP.nodes[b]
+  if not (an and bn) then return end
+  an.links[dir] = b
+  bn.links[DIRS[((IDX[dir] + 3) % 8) + 1][1]] = a
+  put(K_MAP, MAP)
+end
+
+-- Dijkstra over known links. Entering a paved-road room costs less than other terrain.
+local function road_step(from, goal, zone)
+  if not (from and MAP.nodes[from] and MAP.nodes[goal]) then return end
+  local cost, first, done = { [from] = 0 }, {}, {}
+  while true do
+    local u, best
+    for k, v in pairs(cost) do
+      if not done[k] and (not best or v < best) then u, best = k, v end
+    end
+    if not u then return end
+    if u == goal then return first[u] end
+    done[u] = true
+    local node = MAP.nodes[u]
+    for dir, v in pairs(node.links or {}) do
+      local nextn = MAP.nodes[v]
+      if nextn and tostring(nextn.zone) == tostring(zone) and not done[v] then
+        local stepcost = tostring(nextn.terrain):lower() == "paved road" and 1 or 5
+        local nc = best + stepcost
+        if cost[v] == nil or nc < cost[v] then
+          cost[v] = nc
+          first[v] = u == from and dir or first[u]
+        end
+      end
+    end
+  end
+end
+
 local function triggers(on)
   if on and not armed then
     rune.trigger.regex(TRIG, on_line, { name = "spdxy-walk-lines", group = GROUP })
@@ -98,13 +142,23 @@ end
 -- Walking ----------------------------------------------------------------------
 local function pick(x, y, want, exits, bad)
   local best, bs
+  local heading = S.dir and IDX[S.dir]
   for i, d in ipairs(DIRS) do
     local n = d[1]
+    local nx, ny = x + d[2], y + d[3]
+    local visits = S.visits[key(nx, ny)] or 0
     if not (bad and bad[n]) and not (exits and not exits[n]) then
-      local df = math.abs(i - want)
-      if df > 4 then df = 8 - df end
-      local nx, ny = x + d[2], y + d[3]
-      local sc = df * 2 + (S.visits[key(nx, ny)] or 0) * 3 + dist(nx, ny, S.tx, S.ty) * 0.01
+      local sc
+      if S.clockwise and heading then
+        local turn = (i - heading) % 8
+        local rank = ({ [1] = 0, [0] = 1, [7] = 2, [2] = 3,
+          [6] = 4, [3] = 5, [5] = 6, [4] = 7 })[turn]
+        sc = rank * 100 + visits * 20 + dist(nx, ny, S.tx, S.ty) * 0.01
+      else
+        local df = math.abs(i - want)
+        if df > 4 then df = 8 - df end
+        sc = df * 2 + visits * 20 + dist(nx, ny, S.tx, S.ty) * 0.01
+      end
       if not bs or sc < bs then best, bs = n, sc end
     end
   end
@@ -122,7 +176,13 @@ local function advance()
   local dx, dy, k = delta(x, S.tx, MAX_X), delta(y, S.ty, MAX_Y), key(x, y)
   local want = HEAD[sign(dx) .. "," .. sign(dy)]
   if S.steps >= S.max or not want then return abort("walk aborted at " .. k .. " (step limit).") end
-  local dir = pick(x, y, want, last.exits, S.bad[k])
+
+  local dir = road_step(S.map_from, S.map_target, S.zone)
+  if dir and not (S.bad[k] and S.bad[k][dir]) and not (last.exits and not last.exits[dir]) then
+    dbg("known-map route: taking %s", dir)
+  else
+    dir = pick(x, y, want, last.exits, S.bad[k])
+  end
   if not dir then return pause("no usable exit from " .. k .. ".") end
   S.pending, S.from, S.dir, S.at = true, k, dir, os.time()
   S.steps = S.steps + 1
@@ -148,8 +208,13 @@ local function walk_to(tx, ty)
   if S then cleanup() end
   put(K_ORG, { x = last.x, y = last.y, p = pl })
   local n = dist(last.x, last.y, tx, ty)
+  local mk = mapkey(last.x, last.y, last.zone)
+  local target = mapkey(tx, ty, last.zone)
   S = { tx = tx, ty = ty, zone = last.zone, visits = { [key(last.x, last.y)] = 1 },
-    bad = {}, steps = 0, retries = 0, max = n * 2 + 200, t0 = os.time() }
+    bad = {}, steps = 0, retries = 0, max = n * 2 + 200, t0 = os.time(),
+    map_from = mk, map_target = target }
+  save_room(last.x, last.y, last.zone, last.terrain)
+  put(K_MAP, MAP)
   triggers(true)
   say(("walking from %d, %d to %d, %d (~%d steps)..."):format(last.x, last.y, tx, ty, n))
   rune.timer.every(1, function()
@@ -167,13 +232,26 @@ rune.gmcp.on("Room.Info", function(d)
   if type(d) ~= "table" then return end
   local c = type(d.coord) == "table" and d.coord or {}
   last.x, last.y, last.zone, last.exits = tonumber(c.x), tonumber(c.y), d.zone or d.area, nil
-  for k in pairs(type(d.exits) == "table" and d.exits or {}) do   -- compass exits only
+  last.terrain = d.terrain
+  for k in pairs(type(d.exits) == "table" and d.exits or {}) do
     k = tostring(k):lower()
     if IDX[k] then last.exits = last.exits or {}; last.exits[k] = true end
   end
+  if not last.x then
+    if S then abort("room without coordinates; walk aborted.") end
+    return
+  end
+
+  local here = save_room(last.x, last.y, last.zone, last.terrain)
+  if S then
+    if S.pending and key(last.x, last.y) == S.from then return end
+    if S.pending and S.map_from then link_rooms(S.map_from, S.dir, here) end
+  end
+  put(K_MAP, MAP)
+
   if not S then return end
-  if not last.x then return abort("room without coordinates; walk aborted.") end
   local k = key(last.x, last.y)
+  S.map_from = here
   if S.pending and k == S.from then return end
   S.pending, S.retries = false, 0
   if S.paused then return end
@@ -182,7 +260,14 @@ rune.gmcp.on("Room.Info", function(d)
     abort("entered '" .. tostring(last.zone) .. "'; stepping back, walk aborted.")
     return rune.send(back)
   end
-  S.visits[k] = (S.visits[k] or 0) + 1
+  local visits = S.visits[k] or 0
+  if visits > 0 and S.from and S.dir then
+    S.clockwise = true
+    S.bad[S.from] = S.bad[S.from] or {}
+    S.bad[S.from][S.dir] = true
+    dbg("loop: revisited %s; clockwise recovery, avoiding %s from %s", k, S.dir, S.from)
+  end
+  S.visits[k] = visits + 1
   advance()
 end, { name = "spdxy-room-info" })
 
@@ -203,12 +288,11 @@ on_line = function(_, ctx)
 end
 
 -- Commands ---------------------------------------------------------------------
-local function parse(s)   -- "x, y" or "x y"
+local function parse(s)
   local a, b = s:match("^(-?%d+)%s*,%s*(-?%d+)$")
   if not a then a, b = s:match("^(-?%d+)%s+(-?%d+)$") end
   return tonumber(a), tonumber(b)
 end
-
 
 -- Names, nearby and waypoints live in spdxyPlaces.lua, loaded on first use.
 local L

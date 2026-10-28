@@ -1,24 +1,22 @@
 -- Filename: eljayPlugins/eqdbResultsPicker.lua
 -- Purpose: Turns equipment search results into a picker for repeat item lookups.
--- Version: 1.3
--- Date: 2026-Oct-25
+-- Version: 1.5
+-- Date: 2026-Oct-27
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
---   1.3  Standardized settings storage and command/help behavior.
---   1.2  Matched repository command, help, load-time, and loader conventions.
---   1.1  Added toggles and persistent settings.
---   1.0  Picker over equipment search results that reopens after selection.
+--   1.5  Recognizes extended eqdb search headings.
+--   1.4  Brought header, help, settings, and load behavior up to standards.
 --
 -- How it works:
---   * A span trigger collects lines from the search header through the footer.
+--   * A span trigger collects lines from an eqdb search heading through its footer.
 --   * Result lines are parsed and their hashes are offered in a Rune picker.
 --   * Selecting an item sends its lookup command; the picker can reopen.
 --   * The last result set can be reopened with the show option.
 --
--- Commands (type without "/"; "erp" is a short alias for "eqdbResultsPicker"):
+-- Commands (type without "/"):
 --   eqdbResultsPicker      show this help
 --   erp show               re-open the picker with the last results
 --   erp on|off             enable / disable the results trigger
@@ -27,7 +25,7 @@ TODO:
 --   erp debug [on|off]     toggle debug messages (default off)
 --   erp                    short alias for eqdbResultsPicker
 --
--- Tweaks (top of file):
+-- Tweaks:
 --   * LOOKUP_CMD   command sent for a selected item
 --   * MAX_LINES    maximum lines collected for one search
 --   * REOPEN_DELAY delay before reopening the picker, in seconds
@@ -36,18 +34,25 @@ local LOAD_STARTED = os.clock()
 local LOAD_MS = 0
 
 -- Command names: full command and short alias.
-local NAME  = "eqdbResultsPicker"
+local NAME = "eqdbResultsPicker"
 local SHORT = "erp"
 
-local VERSION      = "1.3"
-local LOOKUP_CMD   = "check eqlookup"
-local MAX_LINES    = 200
+local VERSION = "1.5"
+local LOOKUP_CMD = "check eqlookup"
+local MAX_LINES = 200
 local REOPEN_DELAY = 0.05
 
+local H
 local style = rune.style
-local H = require("helpstyle")
 
--- Settings are stored together in rune.store under the plugin name.
+local settings_loaded = false
+local settings = {}
+local enabled = true
+local auto_open = true
+local keep_open = true
+local debug_on = false
+local last_items = {}
+
 local function read_settings()
     local ok, value = pcall(function()
         return rune.store.get(NAME)
@@ -59,19 +64,30 @@ local function read_settings()
     return {}
 end
 
-local settings = read_settings()
-
-local function stored_boolean(key, default)
-    local value = settings[key]
-    if type(value) == "boolean" then return value end
-    return default
+local function setting_or(value, key, fallback)
+    if type(value[key]) == "boolean" then
+        return value[key]
+    end
+    return fallback
 end
 
-local enabled    = stored_boolean("enabled", true)
-local auto_open  = stored_boolean("auto", true)
-local keep_open  = stored_boolean("keep", true)
-local debug_on   = stored_boolean("debug", false)
-local last_items = {}
+local function apply_settings(value)
+    settings = value
+    enabled = setting_or(value, "enabled", true)
+    auto_open = setting_or(value, "auto", true)
+    keep_open = setting_or(value, "keep", true)
+    debug_on = setting_or(value, "debug", false)
+end
+
+local function ensure_settings()
+    if settings_loaded then return end
+    apply_settings(read_settings())
+    settings_loaded = true
+end
+
+local function ensure_helpstyle()
+    if not H then H = require("helpstyle") end
+end
 
 local function update_settings(mutate)
     local ok, fresh = pcall(function()
@@ -83,7 +99,9 @@ local function update_settings(mutate)
     pcall(function()
         rune.store.set(NAME, fresh)
     end)
-    settings = fresh
+
+    apply_settings(fresh)
+    settings_loaded = true
 end
 
 local function say(message)
@@ -91,7 +109,9 @@ local function say(message)
 end
 
 local function dbg(message)
-    if debug_on then say(style.dim("debug: " .. message)) end
+    if debug_on then
+        say(style.dim("debug: " .. message))
+    end
 end
 
 local function onoff(value)
@@ -178,12 +198,16 @@ open_picker = function(items)
     end
 end
 
-rune.trigger.regex("^\\s*--- Searching for ---\\s*$", function(matches, ctx)
+-- Match classic and extended eqdb search headings.
+rune.trigger.regex("^\\s*-+\\s*Searching for.*-+\\s*$", function(matches, ctx)
+    ensure_settings()
     if not enabled then return end
 
     local items = build_items(ctx.lines)
     last_items = items
-    if auto_open and #items > 0 then open_picker(items) end
+    if auto_open and #items > 0 then
+        open_picker(items)
+    end
 end, {
     name = NAME,
     span = {
@@ -193,6 +217,7 @@ end, {
 })
 
 local function show_help()
+    ensure_helpstyle()
     rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
     rune.echo(H.section("Commands"))
     rune.echo(H.line(NAME, "show this help"))
@@ -203,18 +228,19 @@ local function show_help()
     rune.echo(H.line(SHORT .. " debug [on|off]", "toggle debug messages"))
     rune.echo(H.line(SHORT, "short alias for " .. NAME))
     rune.echo(H.foot(string.format(
-        "v%s  enabled=%s auto=%s keep=%s debug=%s triggers=1 load=%dms",
-        VERSION, tostring(enabled), tostring(auto_open), tostring(keep_open),
-        tostring(debug_on), LOAD_MS)))
-end
-
-local function set_value(key, value)
-    update_settings(function(fresh)
-        fresh[key] = value
-    end)
+        "v%s  enabled=%s auto=%s keep=%s debug=%s bindings=2 triggers=1 load=%dms",
+        VERSION,
+        onoff(enabled),
+        onoff(auto_open),
+        onoff(keep_open),
+        onoff(debug_on),
+        LOAD_MS
+    )))
 end
 
 local function handle(args)
+    ensure_settings()
+
     args = (args or ""):gsub("^%s+", ""):gsub("%s+$", "")
     local word, rest = args:match("^(%S+)%s*(.-)$")
     word = word and word:lower() or ""
@@ -225,20 +251,24 @@ local function handle(args)
     elseif word == "show" then
         open_picker(last_items)
     elseif word == "on" or word == "off" then
-        enabled = word == "on"
-        set_value("enabled", enabled)
+        update_settings(function(fresh)
+            fresh.enabled = word == "on"
+        end)
         say("trigger " .. onoff(enabled))
     elseif word == "auto" then
-        auto_open = resolve(auto_open, rest)
-        set_value("auto", auto_open)
+        update_settings(function(fresh)
+            fresh.auto = resolve(setting_or(fresh, "auto", true), rest)
+        end)
         say("auto-open picker: " .. onoff(auto_open))
     elseif word == "keep" then
-        keep_open = resolve(keep_open, rest)
-        set_value("keep", keep_open)
+        update_settings(function(fresh)
+            fresh.keep = resolve(setting_or(fresh, "keep", true), rest)
+        end)
         say("keep picker open after selecting: " .. onoff(keep_open))
     elseif word == "debug" then
-        debug_on = resolve(debug_on, rest)
-        set_value("debug", debug_on)
+        update_settings(function(fresh)
+            fresh.debug = resolve(setting_or(fresh, "debug", false), rest)
+        end)
         say("debug: " .. onoff(debug_on))
     else
         say("unknown option '" .. word .. "'")
@@ -255,4 +285,4 @@ rune.alias.exact(SHORT, function(args, ctx)
 end)
 
 LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
-say(string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT))
+say(string.format("v%s loaded (%s for help)", VERSION, NAME))

@@ -1,32 +1,30 @@
 -- Filename: eljayPlugins/vitalsChanges.lua
 -- Purpose: Shows hp/sp/st losses and gains in the main window (GMCP-driven).
--- Version: 2.7
--- Date: 2026-Oct-19
+-- Version: 2.8
+-- Date: 2026-Oct-26
 --[[
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
---   2.7  Brought to repository standard: persistent debug state, exact bare
---        command aliases, standardized help and load-time reporting.
---   2.6  Added vitalsChanges command with vitals alias, toggles, help and
---        loader line.
+--   2.8  Standardized command names, help, settings writes and header.
+--   2.7  Added persistent debug state, exact bare command aliases, help and
+--        load-time reporting.
 --
 -- How it works:
 --   * Inspired by the MUSHclient plugin by Ruthgul.
---   * Listens for GMCP vitals (Char.Vitals, plus fallback packages) and reads
---     hp/sp/st, accepting several field-name aliases.
---   * Compares complete updates with the previous values and prints changes
---     in the main window, with optional colour.
---   * The first complete update after connecting establishes the baseline;
---     the baseline is reset on disconnect.
+--   * Listens for GMCP vitals packages and accepts several field aliases
+--     for hp, sp and st.
+--   * Compares complete updates with the previous values and prints changes.
+--   * The first complete update establishes the baseline; disconnect resets it.
 --   * Saves output, colour and debug settings in rune.store.
 --
--- Commands (vitals is the short alias for vitalsChanges):
---   vitalsChanges                 show this help
---   vitalsChanges on|off          enable / disable change output
---   vitalsChanges color on|off    enable / disable ANSI colours
---   vitalsChanges debug [on|off]  toggle / set raw GMCP debug output
---   vitalsChanges check           show current values and settings
+-- Commands (type without "/"; "vitals" is a short alias for "vitalsChanges"):
+--   vitalsChanges                    show this help
+--   vitalsChanges on|off             enable / disable change output
+--   vitalsChanges colour on|off      enable / disable ANSI colours
+--   vitalsChanges color on|off       alias for the colour command
+--   vitalsChanges debug [on|off]     toggle / set raw GMCP debug output
+--   vitalsChanges check              show current values and settings
 --
 -- Tweaks (top of file):
 --   PACKAGES  GMCP packages checked for vitals
@@ -35,11 +33,13 @@
 
 local LOAD_STARTED = os.clock()
 
-local H = require("helpstyle")
-
+-- Command names: full command and short alias.
 local NAME = "vitalsChanges"
 local SHORT = "vitals"
-local VERSION = "2.7"
+
+local H = require("helpstyle")
+
+local VERSION = "2.8"
 local SETTINGS_KEY = "vitals.settings"
 
 local PACKAGES = { "Char.Vitals", "Char.Status", "Char.Stats", "Char.Info" }
@@ -86,12 +86,17 @@ local function load_settings()
   end
 end
 
-local function save_settings()
-  pcall(rune.store.set, SETTINGS_KEY, {
-    enabled = enabled,
-    color = use_color,
-    debug = debug_enabled,
-  })
+local function update_settings(mutate)
+  local ok, fresh = pcall(rune.store.get, SETTINGS_KEY)
+  if not ok or type(fresh) ~= "table" then fresh = {} end
+
+  mutate(fresh)
+  local saved_ok = pcall(rune.store.set, SETTINGS_KEY, fresh)
+  if saved_ok then
+    if type(fresh.enabled) == "boolean" then enabled = fresh.enabled end
+    if type(fresh.color) == "boolean" then use_color = fresh.color end
+    if type(fresh.debug) == "boolean" then debug_enabled = fresh.debug end
+  end
 end
 
 local function fmt(label, num)
@@ -146,7 +151,7 @@ local function on_vitals(package)
     local sp = pick(data, "sp")
     local st = pick(data, "st")
 
-    -- Only compare complete snapshots, avoiding mixed/partial updates.
+    -- Only compare complete snapshots, avoiding mixed or partial updates.
     if hp == nil or sp == nil or st == nil then return end
 
     seen_packages[package] = true
@@ -163,22 +168,25 @@ local function on_vitals(package)
 end
 
 local function status_line()
-  return string.format("v%s  enabled=%s color=%s debug=%s  bindings=%d  load=%dms",
+  return string.format(
+    "v%s  enabled=%s colour=%s debug=%s  bindings=%d  load=%dms",
     VERSION,
-    enabled and "true" or "false",
-    use_color and "true" or "false",
-    debug_enabled and "true" or "false",
+    tostring(enabled),
+    tostring(use_color),
+    tostring(debug_enabled),
     #PACKAGES + 3,
-    LOAD_MS)
+    LOAD_MS
+  )
 end
 
 local function show_help()
-  rune.echo(H.title(NAME .. " (alias: " .. SHORT .. ")"))
+  rune.echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
   rune.echo(H.section("Commands"))
-  rune.echo(H.line(NAME, "show this help"))
+  rune.echo(H.line(SHORT, "show this help"))
   rune.echo(H.line(SHORT .. " on|off", "enable / disable change output"))
-  rune.echo(H.line(SHORT .. " color on|off", "enable / disable ANSI colours"))
-  rune.echo(H.line(SHORT .. " debug [on|off]", "toggle / set raw GMCP debug output"))
+  rune.echo(H.line(SHORT .. " colour on|off", "enable / disable ANSI colours"))
+  rune.echo(H.line(SHORT .. " color on|off", "alias for colour on|off"))
+  rune.echo(H.line(SHORT .. " debug [on|off]", "toggle / set raw GMCP debug"))
   rune.echo(H.line(SHORT .. " check", "show current values and settings"))
   rune.echo(H.line(SHORT, "short alias for " .. NAME))
   rune.echo(H.foot(status_line()))
@@ -193,7 +201,7 @@ local function show_check()
 
   say(string.format("hp=%s sp=%s st=%s",
     tostring(cur.hp), tostring(cur.sp), tostring(cur.st)))
-  say(string.format("output=%s color=%s debug=%s packages seen: %s",
+  say(string.format("output=%s colour=%s debug=%s packages seen: %s",
     enabled and "on" or "off",
     use_color and "on" or "off",
     debug_enabled and "on" or "off",
@@ -215,23 +223,21 @@ local function run_command_impl(arg_text)
   local action = words[1] or ""
 
   if action == "on" or action == "off" then
-    enabled = action == "on"
-    save_settings()
+    local value = action == "on"
+    update_settings(function(saved) saved.enabled = value end)
     say("change output " .. action:upper())
-  elseif action == "color" or action == "colour" then
+  elseif action == "colour" or action == "color" then
     local value = parse_toggle(words[2])
     if value == nil then
-      say("usage: " .. NAME .. " color on|off")
+      say("usage: " .. SHORT .. " colour on|off")
     else
-      use_color = value
-      save_settings()
+      update_settings(function(saved) saved.color = value end)
       say("colour " .. (use_color and "ON" or "OFF"))
     end
   elseif action == "debug" then
     local value = parse_toggle(words[2])
     if value == nil then value = not debug_enabled end
-    debug_enabled = value
-    save_settings()
+    update_settings(function(saved) saved.debug = value end)
     say("debug " .. (debug_enabled and "ON" or "OFF"))
   elseif action == "check" then
     show_check()
@@ -266,4 +272,5 @@ end, { name = NAME .. "-disconnected" })
 
 LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
 
+local style = rune.style
 say("v" .. VERSION .. " loaded (" .. NAME .. " or " .. SHORT .. " for help)")

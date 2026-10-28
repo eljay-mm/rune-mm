@@ -15,7 +15,7 @@ Lua plugins for the Rune client, designed for horstgs’ Materia Magica configur
 | Display methods, help rows, bare-command aliases | `annwnQuestSearch.lua` |
 | Loader line and command naming | `eqdbResultsPicker.lua` |
 | Cyan prefix and help footer | `jmcSolver.lua`, `druidSpellTLAs.lua` |
-| Help layout | `autopouch.lua` |
+| Help layout | `gotoAliases.lua` |
 | Character-name API | `charname.lua` |
 | Load-time display | `fauxSextant.lua` |
 
@@ -25,7 +25,7 @@ Lua plugins for the Rune client, designed for horstgs’ Materia Magica configur
 
 - Put each plugin directly in `eljayPlugins/`, named `eljayPlugins/<camelName>.lua`. Do not nest plugin files.
 - Use a short, descriptive camelCase name.
-- Keep every plugin file, companions included, under 16,000 bytes. Move rarely used code into a companion file in `eljayPlugins/` (for example `asciiMapColours.lua`, `spdxyPlaces.lua`) that the plugin `require`s on first use. A companion follows the same header and help rules as a plugin and is not listed in `PLUGINS`.
+- Keep every plugin file, companions included, under 16,000 bytes. Move rarely used code into a companion file in `eljayPlugins/` (for example `spdxyPlaces.lua`) that the plugin `require`s on first use. A companion follows the same header and help rules as a plugin. It must also be listed in `PLUGINS`.
 - Start every plugin with this header: Filename, Purpose, Version and Date—in that order—then exactly one `[[ ]]` TODO block (placeholder if nothing is planned), then Changelog, a bulleted How it works, Commands and Tweaks. Use `--` line comments everywhere else.
 
 ```lua
@@ -43,17 +43,19 @@ TODO:
 -- How it works:
 --   * ...
 --
--- Commands (type without "/"; "xyz" is a short alias for "<camelName>"):
---   <camelName>            show this help
---   <camelName> on|off     enable / disable the trigger(s)
---   <camelName> debug      toggle debug messages (default off)
+-- Commands (type without "/"):
+--   xyz                    show this help
+--   xyz on|off             enable / disable the trigger(s)
+--   xyz debug              toggle debug messages (default off)
+--   xyz                    short alias for <camelName>
 --
 -- Tweaks (top of file):
 --   * LOOKUP_CMD   what it controls
 --
 ```
 - The “How it works” summary must match the Purpose and actual behavior. Preserve any “Inspired by” note and mention required plugins or external aliases. List any required export command (for example `export TERM=xterm-256color`) there too.
-- List all commands, the short alias, and any top-of-file tweakable constants.
+- List every command exactly as the help screen shows it: sections and one row per command, including the short-alias row. Never compress the commands list. List top-of-file tweakable constants under Tweaks.
+- On each update, roll up comments: collapse older changelog entries into one line and keep “How it works” compact.
 
 ### Commands, toggles and help
 
@@ -78,10 +80,10 @@ TODO:
 - Save settings with `rune.store`, wrapping calls in `pcall`. Don’t add separate `.txt` configuration files without a clear need.
 - Before each write, read the latest store table inside the write operation, mutate it, and save it. Never base a write on a long-lived cached table. After saving, refresh any in-memory cache; use that cache for reads only.
 
-### Style and `basicAliases.lua`
+### Style
 
 - Keep aliases and triggers on one row where possible; prefer readable, maintainable Lua.
-- Do not add `ct`, `at`, `ft`, `reply`, `talk_alias` helpers or signature helpers to `basicAliases.lua`.
+- Rune’s Lua is 5.1: no bit operators, `//` or `goto`.
 
 ### Cross-platform support
 
@@ -104,17 +106,17 @@ TODO:
 
 ### Registering and delivering plugins
 
-- Add plugins to the `PLUGINS` list in `initEljay.lua`, alphabetically unless a load dependency requires a different order. Document each plugin in the README table with a shortened version of its Purpose, without commands.
+- Add plugins, and any companion files, to the `PLUGINS` list in `initEljay.lua`, alphabetically unless a load dependency requires a different order. Document each plugin in the README table with a shortened version of its Purpose, without commands.
 - To disable a plugin, comment out or remove its name from `PLUGINS`.
 - Deliver the full `.lua` file with performance and security recommendations, a code-cleanup offer, and a file-size-savings report.
 - Use minor version bumps for normal changes (`3.7` → `3.8`). Bump the major version only with an explicit, justified reason. Keep the header version, `VERSION` constant and footer version consistent.
 
 ### Pre-flight checklist
 
-- [ ] File is directly in `eljayPlugins/` with the correct name and under 16,000 bytes; companions are not listed in `PLUGINS`.
+- [ ] File is directly in `eljayPlugins/` with the correct name and under 16,000 bytes; the plugin and its companions are listed in `PLUGINS`.
 - [ ] Header has the required sections, commands and tweaks; exactly one TODO block; no other block comments; any required export command is listed.
 - [ ] Purpose, “How it works” and behavior agree; preserve “Inspired by” notes.
-- [ ] Changelog is current.
+- [ ] Changelog is current and rolled up; the header’s commands list matches the help screen.
 - [ ] Full and short bare commands use `rune.alias.exact`; bare commands show help.
 - [ ] `NAME` and `SHORT` are defined once and used consistently; help includes the short-alias row before the footer.
 - [ ] On/off and debug on/off controls work, use persistent store state, and have the required defaults.
@@ -123,7 +125,6 @@ TODO:
 - [ ] Store writes use fresh data and refresh the read-only cache.
 - [ ] Character-name handling uses `charname.lua` and safely handles `nil` before login.
 - [ ] Platform support works or limitations are documented.
-- [ ] No forbidden aliases or helpers were added to `basicAliases.lua`.
 - [ ] Versioning follows policy and all version values match.
 - [ ] Plugin is registered in `initEljay.lua` and documented in the README.
 - [ ] Heavy startup work is deferred; debug logging is guarded.

@@ -318,6 +318,15 @@ A("ab", "auction bid")
 A("ai", "auction identify")
 A("aw", "alliance where")
 
+-- in-game help information (filtered)
+A("daily", "he _filter daily 2115")
+-- to explore: 
+-- help _descripition_onlly
+-- help _random
+-- help _search
+-- help _tag
+
+
 -- Aliases that take a required argument (forge, setslave)
 
 local function safe(text)

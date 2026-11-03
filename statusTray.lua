@@ -1,71 +1,72 @@
 -- Filename: eljayPlugins/statusTray.lua
--- Purpose: Compact bottom-row status bar: CRYSTAL x y | QUEST | SEXTANT x y | TELL
--- Version: 1.10
--- Date: 2026-Oct-25
+-- Purpose: Compact bottom-row status bar: CRYSTAL x y | SEXTANT x y | TELL
+-- Version: 1.14
+-- Date: 2026-Nov-02
 --[[
 Todo:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
---   1.10 Size pass (24,722 -> under 16,000 bytes): table-driven set/clear
---        commands and setters, one colour helper, shorter header and help
---        text; help command rows use the short alias; "toggle enabled"
---        removed (use on|off).
---   1.9  Standard pass: exact aliases, emit(), NAME/SHORT, load time in the
---        footer, lazy helpstyle, read-modify-write saves, "off" also disables
---        the tell trigger and the input hook.
---   1.8  Bare commands as aliases (rune.command.add only makes slash
---        commands); multi-word tell speakers; IGNORED_SPEAKERS list.
---   1.3-1.7  TELL indicator (red on an incoming tell); cached bar text.
---   1.0-1.2  Bottom-row bar with CRYSTAL, QUEST and SEXTANT.
+--   1.14 TELL also clears when you answer ("You tell <name> '...", formation
+--        tells excluded) and on comms show|toggle|all.
+--   1.0-1.13 Bottom-row bar, TELL indicator with sender name, exact aliases,
+--        cached text, read-modify-write saves, lazy helpstyle, load time.
 --
 -- How it works:
---   * Registers one bar, "status_tray", and wraps rune.ui.layout (once) so
---     it is appended to column layouts; an existing layout is rebuilt once.
---   * The bar shows: CRYSTAL x y | QUEST <text> | SEXTANT x y | TELL.
---     Missing coordinates show "--"; quest defaults to OFF. TELL reads
---     "TELL (none)" normally and a red "TELL Received" after a tell.
+--   * Registers the bar "status_tray" and wraps rune.ui.layout (once) so it
+--     is appended to column layouts; an existing layout is rebuilt once.
+--   * The bar shows: CRYSTAL x y | SEXTANT x y | TELL. Missing coordinates
+--     show "--". TELL reads "TELL (none)" normally and a red "TELL Received
+--     from <sender>" after a tell (the latest sender is shown).
 --   * Other plugins can require("eljayPlugins/statusTray") and call
---     set_crystal/clear_crystal, set_sextant/clear_sextant, set_quest,
---     set_tell/clear_tell, set_enabled and get_state.
---   * A trigger on "<speaker> tells you '<message>'" (one- or multi-word
---     speaker, except those in IGNORED_SPEAKERS) turns TELL on; an input
---     hook turns it off when "comms tell", "comms clear" or "reply" is typed.
---     Neither changes the game text. "statusTray off" disables both.
---   * The bar text is cached and rebuilt only when a value changes; SEXTANT
---     is re-read from rune.store at most once a second (fauxSextant).
+--     set_/clear_ crystal, sextant and tell (set_tell(value, sender)) and
+--     set_enabled.
+--   * A trigger on "<sender> tells you '..." (any sender, except those in
+--     IGNORED_SPEAKERS) turns TELL on. It turns off when the game echoes
+--     "You tell <name> '..." (your answer; formation tells excluded) or when
+--     you type reply or comms tell|clear|show|toggle|all. The game text is
+--     never changed. "tray off" disables all three registrations.
+--   * The bar text is cached; SEXTANT is re-read from rune.store at most
+--     once a second (fauxSextant writes it).
 --   * Values are stripped of control characters and length-limited. Saves
 --     write one field into the latest stored table; debug is never saved.
---   * Commands (bare, no slash): "statusTray" alone shows help; short alias
---     "tray". on|off, debug on|off, set|clear crystal|sextant|quest|tell,
---     show. The help footer shows version, settings and load time.
+--   * Commands are typed bare (no slash) and match the help output:
+--
+--     statusTray  (alias: tray)
+--     Commands
+--       statusTray                  show this help
+--       tray on|off                 enable / disable bar and tell tracking
+--       tray debug on|off           toggle debug messages (default off)
+--       tray set crystal <x> <y>    set crystal coords
+--       tray set sextant <x> <y>    set sextant coords
+--       tray set tell <text>        set tell text (shown red)
+--       tray clear <field>          crystal, sextant or tell
+--       tray show                   echo current bar text
+--       tray                        short alias for statusTray
+--     v1.11  enabled=true  debug=false  load=<n>ms
 
 local t0 = os.clock()
 
-local VERSION = "1.10"
+local VERSION = "1.14"
 local SETTINGS_KEY = "statustray.settings"
 local BAR_NAME = "status_tray"
-local MAX_COORD, MAX_TEXT = 16, 24 -- longest stored coordinate part / text
+local MAX_COORD, MAX_TEXT = 16, 24 -- longest coordinate part / text
 
 -- Command names: full command and short alias.
 local NAME = "statusTray"
 local SHORT = "tray"
 
--- Speakers whose tells must NOT turn TELL on (case-insensitive).
+-- Senders whose tells must NOT turn TELL on (case-insensitive).
 local IGNORED_SPEAKERS = { "The imp", "Wrinkled Leccinum" }
 
 local state = {
-    enabled = true,
-    debug = false,  -- never persisted
-    crystal = nil,  -- "x y" or nil
-    quest = "OFF",
-    sextant = nil,  -- "x y" or nil
-    tell = "OFF",   -- "ON", "OFF" or short text
+    enabled = true, debug = false, -- debug is never persisted
+    crystal = nil, sextant = nil,  -- "x y" or nil
+    tell = "OFF", sender = nil,    -- "ON"/"OFF"/short text; last tell sender
 }
 local load_ms = 0
 local cache = { text = nil, dirty = true, synced = 0 }
 
--- Output helpers
 local function color(name, text)
     local st = rune.style
     if st ~= nil then
@@ -87,7 +88,6 @@ local function dbg(msg)
     if state.debug then say("debug: " .. tostring(msg)) end
 end
 
--- Input helpers
 -- Strip control characters (including ESC), trim, limit the length.
 local function clean(v, max)
     local s = tostring(v)
@@ -139,17 +139,20 @@ local function load_settings()
     if type(t.enabled) == "boolean" then state.enabled = t.enabled end
     if type(t.crystal) == "string" then state.crystal = pair(t.crystal) end
     if type(t.sextant) == "string" then state.sextant = pair(t.sextant) end
-    if type(t.quest) == "string" then state.quest = clean(t.quest, MAX_TEXT) end
     if type(t.tell) == "string" then state.tell = clean(t.tell, MAX_TEXT) end
+    if type(t.sender) == "string" and t.sender ~= "" then
+        state.sender = clean(t.sender, MAX_TEXT)
+    end
 end
 
--- Read-modify-write: change one field of the latest stored table, save,
--- then refresh the local copy.
-local function save_field(key, value)
+-- Read-modify-write on the latest stored table; refreshes the local copy.
+local function save_field(key, value, key2, value2)
     local ok, saved = pcall(rune.store.get, SETTINGS_KEY)
     local t = (ok and type(saved) == "table") and saved or {}
     t[key] = value
+    if key2 then t[key2] = value2 end
     t.debug = nil
+    t.quest = nil -- obsolete field from earlier versions
     if pcall(rune.store.set, SETTINGS_KEY, t) then adopt_sextant(t) end
 end
 
@@ -162,17 +165,17 @@ end
 local function build_text()
     local tell, v = "TELL (none)", tostring(state.tell or "OFF")
     if v == "ON" then
-        tell = color("red", "TELL Received")
+        tell = color("red", "TELL Received"
+            .. (state.sender and " from " .. state.sender or ""))
     elseif v ~= "OFF" then
         tell = color("red", "TELL " .. v) -- custom text from "set tell"
     end
     return "CRYSTAL " .. (state.crystal or "--")
-        .. " | QUEST " .. tostring(state.quest or "OFF")
         .. " | SEXTANT " .. (state.sextant or "--")
         .. " | " .. tell
 end
 
--- Runs about 4x a second: real work only on change. force re-reads the store.
+-- Runs ~4x a second; real work only on change (force re-reads the store).
 local function render_one(force)
     local now = os.time()
     if force or now ~= cache.synced then
@@ -243,7 +246,7 @@ function M.set_debug(on)
     state.debug = (on == true)
 end
 
--- Each setter sanitises its input, then saves and refreshes only on change.
+-- Setters sanitise input; they save and refresh only on change.
 local function make_setter(key, norm)
     return function(...)
         local v = norm(...)
@@ -258,55 +261,66 @@ end
 
 M.set_crystal = make_setter("crystal", pair)
 M.set_sextant = make_setter("sextant", pair)
-M.set_quest = make_setter("quest", norm_text)
-M.set_tell = make_setter("tell", norm_text)
+
+-- set_tell(value, sender): the sender is only kept while the value is "ON".
+function M.set_tell(v, sender)
+    v = norm_text(v)
+    local who = nil
+    if v == "ON" and sender ~= nil then
+        who = clean(sender, MAX_TEXT)
+        if who == "" then who = nil end
+    end
+    if state.tell ~= v or state.sender ~= who then
+        state.tell, state.sender = v, who
+        save_field("tell", v, "sender", who)
+        refresh()
+        dbg("tell -> " .. v .. (who and " from " .. who or ""))
+    end
+end
 
 function M.clear_crystal() M.set_crystal(nil) end
 function M.clear_sextant() M.set_sextant(nil) end
-function M.clear_quest() M.set_quest(nil) end
 function M.clear_tell() M.set_tell(nil) end
-
-function M.get_state()
-    sync_sextant_from_store()
-    return {
-        enabled = state.enabled, debug = state.debug,
-        crystal = state.crystal, quest = state.quest,
-        sextant = state.sextant, tell = state.tell,
-    }
-end
 
 -- Tell tracking
 -- Names make /reload replace these registrations.
-local TELL_TRIGGER, TELL_HOOK = "statustray-tell-on", "statustray-tell-off"
+local TELL_IN, TELL_OUT, TELL_HOOK =
+    "statustray-tell-on", "statustray-tell-answered", "statustray-tell-off"
 
 local ignored = {} -- lower-cased lookup built once
 for _, who in ipairs(IGNORED_SPEAKERS) do
     ignored[tostring(who):lower()] = true
 end
 
--- Typed commands that clear TELL (input is lower-cased before matching).
+-- Typed input that clears TELL: "reply", or "comms <sub>" for these subs.
+local CLEAR_SUB = { tell = true, clear = true, show = true, toggle = true, all = true }
 local function is_clear_command(s)
-    return s:find("^%s*comms%s+tell%f[%W]") ~= nil
-        or s:find("^%s*comms%s+clear%f[%W]") ~= nil
-        or s:find("^%s*reply%f[%W]") ~= nil
+    local w, sub = s:match("^%s*(%a+)%s*(%a*)")
+    return w == "reply" or (w == "comms" and CLEAR_SUB[sub] == true)
 end
 
 local function install_tell_tracking()
-    -- Nothing from the line is stored or echoed; it passes through unchanged.
-    rune.trigger.regex("^(.+) tells you '(.+)'$", function(_, ctx)
-        if state.tell ~= "ON" and state.enabled then
+    rune.trigger.regex("^.+ tells you '", function(_, ctx)
+        if state.enabled then
             local line = ctx and ctx.line and ctx.line:clean() or ""
             local speaker = line:match("^(.-) tells you '")
-            if speaker and ignored[speaker:lower()] then
-                dbg("tell ignored")
-            else
-                M.set_tell("ON")
+            if not speaker or (speaker:sub(1, 8) ~= "You tell"
+                and not ignored[speaker:lower()]) then
+                M.set_tell("ON", speaker)
             end
         end
         return nil
-    end, { name = TELL_TRIGGER })
+    end, { name = TELL_IN })
 
-    -- The typed input passes through, so the game still receives it.
+    -- Your own answer clears the flag (not formation tells).
+    rune.trigger.regex("^You tell .+ '", function(_, ctx)
+        if state.tell ~= "OFF" and state.enabled then
+            local line = ctx and ctx.line and ctx.line:clean() or ""
+            if line:sub(1, 22) ~= "You tell the formation" then M.clear_tell() end
+        end
+        return nil
+    end, { name = TELL_OUT })
+
     rune.hooks.on("input", function(text)
         if state.tell ~= "OFF" and state.enabled and type(text) == "string"
             and is_clear_command(text:lower()) then
@@ -316,19 +330,19 @@ local function install_tell_tracking()
     end, { name = TELL_HOOK })
 end
 
-local okTell, errTell = pcall(install_tell_tracking)
-if not okTell then dbg("tell tracking failed: " .. tostring(errTell)) end
+pcall(install_tell_tracking)
 
--- Switch the trigger and hook with the bar (callbacks also check enabled).
+-- Switch the triggers and hook with the bar.
 apply_enabled = function()
     local verb = state.enabled and "enable" or "disable"
-    pcall(function() rune.trigger[verb](TELL_TRIGGER) end)
+    for _, name in ipairs({ TELL_IN, TELL_OUT }) do
+        pcall(function() rune.trigger[verb](name) end)
+    end
     pcall(function() rune.hooks[verb](TELL_HOOK) end)
 end
 if not state.enabled then apply_enabled() end -- saved as off: stay off
 
 -- Help
--- Version first, no plugin name, one footer row, load time last.
 local function status_line()
     return string.format("v%s  enabled=%s  debug=%s  load=%dms",
         VERSION, tostring(state.enabled), tostring(state.debug), load_ms)
@@ -344,7 +358,6 @@ local function get_helpstyle()
     return H_cache or nil
 end
 
--- Rows stay within 76 characters (the footer excepted).
 local function help_commands()
     return {
         { NAME, "show this help" },
@@ -352,9 +365,8 @@ local function help_commands()
         { SHORT .. " debug on|off", "toggle debug messages (default off)" },
         { SHORT .. " set crystal <x> <y>", "set crystal coords" },
         { SHORT .. " set sextant <x> <y>", "set sextant coords" },
-        { SHORT .. " set quest <text>", "set quest status (short)" },
         { SHORT .. " set tell <text>", "set tell text (shown red)" },
-        { SHORT .. " clear <field>", "crystal, sextant, quest or tell" },
+        { SHORT .. " clear <field>", "crystal, sextant or tell" },
         { SHORT .. " show", "echo current bar text" },
         { SHORT, "short alias for " .. NAME },
     }
@@ -363,7 +375,7 @@ end
 -- Build all rows first; print only if all built.
 local function build_help_rows(H, commands)
     local rows = {
-        H.title("statusTray  (alias: tray)"),
+        H.title(NAME .. "  (alias: " .. SHORT .. ")"),
         H.section("Commands"),
     }
     for _, c in ipairs(commands) do rows[#rows + 1] = H.line(c[1], c[2]) end
@@ -381,10 +393,7 @@ local function show_help()
             return
         end
     end
-    emit("Bottom status - CRYSTAL | QUEST | SEXTANT | TELL")
-    for _, c in ipairs(commands) do
-        emit(string.format("  %-30s %s", c[1], c[2]))
-    end
+    for _, c in ipairs(commands) do emit(c[1] .. "  " .. c[2]) end
     emit(status_line())
 end
 
@@ -392,7 +401,6 @@ end
 local SETTERS = {
     crystal = { M.set_crystal, true },  -- { setter, takes "x y" }
     sextant = { M.set_sextant, true },
-    quest = { M.set_quest, false },
     tell = { M.set_tell, false },
 }
 
@@ -417,7 +425,7 @@ local function on_command(args)
     elseif cmd == "set" or cmd == "clear" then
         local s = SETTERS[what]
         if not s then
-            return say("usage: " .. SHORT .. " set|clear crystal|sextant|quest|tell")
+            return say("usage: " .. SHORT .. " set|clear crystal|sextant|tell")
         end
         if cmd == "clear" then
             s[1](nil)

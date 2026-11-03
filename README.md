@@ -127,7 +127,7 @@ To enable it again, remove the `--`. Things to know:
 | `shopListPicker.lua`      | Picker over shop lists (not thesis shops) that buys your selection.                                                  |
 | `spdxyCoordinates.lua`    | Walks to sextant coordinates, towns and clan halls, including unmapped wilderness.                                   |
 | `spellTLAs.lua`           | General spell three-letter aliases, optionally targetable.                                                           |
-| `statusTray.lua`          | Bottom-row status bar showing crystal, quest, sextant and tell indicators.                                           |
+| `statusTray.lua`          | Bottom-row status bar showing crystal, sextant and tell indicators.                                           |
 | `vitalsChanges.lua`       | Shows HP, SP and ST changes in the main window.                                                                      |
 
 `initEljay.lua` is the loader, not a plugin; see [Disabling a plugin](#disabling-a-plugin).

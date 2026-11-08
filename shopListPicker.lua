@@ -1,28 +1,29 @@
 -- Filename: eljayPlugins/shopListPicker.lua
--- Purpose: Turns a shop's item list into a searchable picker with identify and buy actions, for repeat purchases (thesis shops excluded).
--- Version: 1.12
--- Date: 2026-Nov-01
+-- Purpose: Turns a shop's or quest shop's item list into a searchable picker with identify and buy actions, for repeat purchases (thesis shops excluded).
+-- Version: 1.13
+-- Date: 2026-Nov-08
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
---   1.12 Menu label and wording say Identify instead of Info.
---   1.11 The identify command is now "shop identify <n>" everywhere; id is the default mode.
---   1.10 Added a persistent mode: menu (action menu), buy (direct "shop buy <n>") or id (direct "shop identify <n>").
---   1.9  Selecting an item opens an action menu: "shop identify <n>" first (default), then "shop buy <n>", then Back.
+--   1.13 Quest shops ("quest list", cost in qp) are captured too; commands become "quest identify <n>" and
+--        "quest buy <n>" for them (the list type follows the cost currency, see KINDS).
+--   1.9-1.12  Action menu (Identify default, Buy, Back), persistent mode menu|buy|id (default id), "shop identify".
 --   1.0-1.8  New plugin (based on researchNotesPicker.lua v1.7, opposite trigger), persistent on/off and debug,
 --        slp short alias, item cap, repository baseline, other-currency shops, one regex alias row.
 --
 -- How it works:
---   * Watches shop-list rows and collects the item number, name, level, amount and cost (gold or any other
+--   * Watches shop-list rows and collects the item number, name, level, amount and cost (gold, qp or any other
 --     currency), then opens a picker after 0.4 seconds of silence.
+--   * The list type comes from the cost currency: qp rows belong to the quest shop ("quest identify <n>",
+--     "quest buy <n>"); every other currency uses the normal shop ("shop identify <n>", "shop buy <n>").
 --   * Skips rows whose item name starts with "A thesis pertaining to", leaving research lists to researchNotesPicker.
 --   * The mode decides what selecting an item does (default id, saved in rune.store):
---       menu  opens a small action menu: Identify ("shop identify <number>", default), Buy ("shop buy <number>"), Back.
+--       menu  opens a small action menu: Identify (default), Buy, Back.
 --             Identify keeps the menu open so you can buy right after reading; Buy and Back return to the list.
---       buy   sends "shop buy <number>" at once and returns to the list.
---       id    sends "shop identify <number>" at once and returns to the list.
+--       buy   sends "<shop|quest> buy <number>" at once and returns to the list.
+--       id    sends "<shop|quest> identify <number>" at once and returns to the list.
 --     Esc finishes in every mode.
 --   * Typing in the picker fuzzy-filters by item name, number or cost. At most 200 rows are kept.
 --   * Only digits captured from a shop row are sent to the server. Shop output is not gagged.
@@ -41,7 +42,8 @@ TODO:
 -- Tweaks (top of file):
 --   * DEBOUNCE   seconds of silence after the last shop row before opening the picker
 --   * MAX_ITEMS  maximum number of captured rows
---   * ACTIONS    action menu entries in order (label, server command, again = stay on the menu afterwards)
+--   * ACTIONS    action menu entries in order (label, verb, again = stay on the menu afterwards, mode)
+--   * KINDS      cost currency -> command word (qp = quest); any other currency uses "shop"
 
 local LOAD_STARTED = os.clock()
 
@@ -49,17 +51,20 @@ local LOAD_STARTED = os.clock()
 local NAME = "shopListPicker"
 local SHORT = "slp"
 
-local VERSION = "1.12" -- Keep in sync with the Version line in the header.
+local VERSION = "1.13" -- Keep in sync with the Version line in the header.
 
 local DEBOUNCE = 0.4
 local THESIS = "A thesis pertaining to"
 local MAX_ITEMS = 200
 
--- Action menu: the first entry is the default. The item number is appended to cmd.
+-- Action menu: the first entry is the default. The server command is "<kind> <verb> <number>".
 local ACTIONS = {
-  { label = "Identify", cmd = "shop identify", again = true, mode = "id" },
-  { label = "Buy", cmd = "shop buy", again = false, mode = "buy" },
+  { label = "Identify", verb = "identify", again = true, mode = "id" },
+  { label = "Buy", verb = "buy", again = false, mode = "buy" },
 }
+
+-- Cost currency -> command word. Any other currency uses the normal shop.
+local KINDS = { qp = "quest" }
 
 -- Modes: what selecting an item does, and the hint shown in the picker title.
 local MODES = {
@@ -105,6 +110,7 @@ end
 
 -- State.
 local items = {}
+local kind = "shop"   -- command word of the captured list ("shop" or "quest")
 local finished = true
 local open_timer
 local reopen_timer
@@ -132,17 +138,18 @@ local function item_name(num)
   return "#" .. num
 end
 
-local function run(cmd, num)
+local function run(verb, num)
   if not tostring(num):match("^%d+$") then return end
-  dbg(cmd .. " " .. num)
-  rune.send(cmd .. " " .. num)
+  local cmd = kind .. " " .. verb .. " " .. num
+  dbg(cmd)
+  rune.send(cmd)
 end
 
 -- Action menu for one item: Identify (default), Buy, Back.
 open_actions = function(num)
   local menu = {}
   for i, a in ipairs(ACTIONS) do
-    menu[i] = { text = a.label, desc = a.cmd .. " " .. num, value = tostring(i) }
+    menu[i] = { text = a.label, desc = kind .. " " .. a.verb .. " " .. num, value = tostring(i) }
   end
   menu[#menu + 1] = { text = "Back", desc = "return to the item list", value = "back" }
 
@@ -155,7 +162,7 @@ open_actions = function(num)
         later(open_picker)
         return
       end
-      run(a.cmd, num)
+      run(a.verb, num)
       if a.again then
         later(function() open_actions(num) end)
       else
@@ -175,7 +182,8 @@ open_picker = function()
 
   dbg("opening picker with " .. #items .. " items")
   local ok, err = pcall(rune.ui.picker.show, {
-    title = "Shop (" .. settings().mode .. ") - " .. MODES[settings().mode] .. ", Esc to finish",
+    title = kind:sub(1, 1):upper() .. kind:sub(2) .. " (" .. settings().mode .. ") - "
+      .. MODES[settings().mode] .. ", Esc to finish",
     items = items,
     match_description = true,
     on_select = function(value)
@@ -185,7 +193,7 @@ open_picker = function()
         return
       end
       for _, a in ipairs(ACTIONS) do
-        if a.mode == mode then run(a.cmd, value) end
+        if a.mode == mode then run(a.verb, value) end
       end
       later(open_picker)
     end,
@@ -195,7 +203,8 @@ open_picker = function()
 end
 
 -- Capture shop rows: "  N) <item>  <level>  <amount|No limit>  [ <cost> <currency>]".
--- The currency is gold in most shops ("[ 656 gold]") or another token ("[ 1 Divusmors-essence]").
+-- The currency is gold in most shops ("[ 656 gold]"), qp in the quest shop ("[ 300 qp]") or another
+-- token ("[ 1 Divusmors-essence]").
 -- Thesis rows are filtered in the callback.
 rune.trigger.regex(
   "^\\s*(\\d+)\\)\\s+(.+?)\\s+(\\d+)\\s+(No limit|\\d+)\\s+\\[\\s*([\\d,]+)\\s+([^\\]]+?)\\s*\\]",
@@ -210,6 +219,7 @@ rune.trigger.regex(
 
     if finished then
       items = {}
+      kind = KINDS[currency] or "shop"
       finished = false
     end
 
@@ -242,8 +252,8 @@ local function show_help()
   rune.echo(H.line(SHORT .. " mode menu|buy|id", "menu, direct buy or direct identify"))
   rune.echo(H.line(SHORT .. " debug on|off", "enable / disable debug messages"))
   rune.echo(H.line(SHORT, "short alias for " .. NAME))
-  rune.echo(H.foot(string.format("v%s  enabled=%s mode=%s debug=%s  items=%d  load=%dms",
-    VERSION, tostring(c.enabled), c.mode, tostring(c.debug), #items, LOAD_MS)))
+  rune.echo(H.foot(string.format("v%s  enabled=%s mode=%s debug=%s  list=%s items=%d  load=%dms",
+    VERSION, tostring(c.enabled), c.mode, tostring(c.debug), kind, #items, LOAD_MS)))
 end
 
 local function set_enabled(on)

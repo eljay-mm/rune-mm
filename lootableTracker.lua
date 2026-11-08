@@ -1,12 +1,15 @@
 -- Filename: eljayPlugins/lootableTracker.lua
 -- Purpose: Track lootable reset times and show when items are ready again.
--- Version: 1.0
--- Date: 2026-Oct-27
+-- Version: 1.2
+-- Date: 2026-Nov-07
 --[[
-TODO:
+Todo:
 - Verify Rune GMCP and game-command API names against the installed client.
 ]]
 -- Changelog:
+--   1.2  Removed "list -i"; list always shows indexes.
+--   1.1  Brought to standard: loader line, one regex alias, fresh-store
+--        saves, lazy helpstyle, GMCP Room.Info handler, parse fixes.
 --   1.0  Converted the lootable tracker to a Rune Lua plugin.
 --
 -- How it works:
@@ -16,18 +19,21 @@ TODO:
 --   * Stores tracked lootables per character using charname.lua.
 --
 -- Commands (type without "/"):
---   lootableTracker             show this help
---   loot on|off                 enable / disable tracking triggers
---   loot debug on|off           enable / disable debug messages
---   loot list                   show tracked lootables
---   loot list -i                show indexes for editing
---   loot add n:<name> z:<zone> r:<room> rn:<room number>
---                               add a lootable
---   loot remove <index>         remove a lootable
---   loot rename <index> [name]  rename a lootable
---   loot force <index> <time>   set its next available time
---   loot offset <hours>         adjust parsed reset time
---   loot                       short alias for lootableTracker
+--   lootableTracker  (alias: loot)
+--   Commands
+--     lootableTracker      show this help
+--     loot on|off          enable / disable tracking triggers
+--     loot debug on|off    enable / disable debug messages
+--     loot list            show tracked lootables (with indexes)
+--     loot add n:<name> z:<zone> r:<room> rn:<num>
+--                          add a lootable
+--     loot remove <index>  remove a lootable
+--     loot rename <index> <name>
+--                          rename a lootable
+--     loot force <index> <unix time>
+--                          set its next available time
+--     loot offset <hours>  adjust parsed reset time
+--     loot                 short alias for lootableTracker
 --
 -- Tweaks (top of file):
 --   DEFAULT_OFFSET   hours added to the game's displayed reset time
@@ -38,10 +44,9 @@ local LOAD_STARTED = os.clock()
 local NAME  = "lootableTracker"
 local SHORT = "loot"
 
-local VERSION = "1.0"
+local VERSION = "1.2"
 local DEFAULT_OFFSET = 1
 
-local H = require("helpstyle")
 local charname = require("charname")
 
 local enabled = true
@@ -49,50 +54,54 @@ local debug_on = false
 local lootables = {}
 local offset = DEFAULT_OFFSET
 local room_context = nil
+local last_room = nil
 local LOAD_MS = 0
+local TRIGGERS = 2
 
 local STORE_PREFIX = NAME .. ".settings"
 
 local DEFAULT_LOOTABLES = {
-  {
-    name = "Archon Box",
-    zone = "Lowangen",
-    room = "Far End of the Dungeon",
-    room_number = "16149",
-  },
-  {
-    name = "Archon Box",
-    zone = "Palace of Diocletian",
+  { name = "Archon Box", zone = "Lowangen",
+    room = "Far End of the Dungeon", room_number = "16149" },
+  { name = "Archon Box", zone = "Palace of Diocletian",
     room = "Exploring the Confusing Catacomb Passages",
-    room_number = "29314",
-  },
-  {
-    name = "Archon Box",
-    zone = "Beneath A Trellis",
-    room = "A Poorly-Concealed Cache",
-    room_number = "80434",
-  },
-  {
-    name = "Manuals Shelf",
-    zone = "Genauras",
-    room = "A Dirty House",
-    room_number = "235989",
-  },
-  {
-    name = "Safe of Sin",
-    zone = "safe_of_sin_const",
-    room = "",
-    room_number = "",
-  },
+    room_number = "29314" },
+  { name = "Archon Box", zone = "Beneath A Trellis",
+    room = "A Poorly-Concealed Cache", room_number = "80434" },
+  { name = "Manuals Shelf", zone = "Genauras",
+    room = "A Dirty House", room_number = "235989" },
+  { name = "Safe of Sin", zone = "safe_of_sin_const",
+    room = "", room_number = "" },
 }
 
 local function echo(text)
   rune.echo(text)
 end
 
+-- Cyan text via rune.style; plain text if the style API is missing.
+local function paint(text)
+  local s = rune.style
+  if s then
+    if s.cyan then
+      local ok, r = pcall(s.cyan, text)
+      if ok and r then return r end
+    end
+    if s.paint then
+      local ok, r = pcall(s.paint, "cyan", text)
+      if ok and r then return r end
+    end
+  end
+  return text
+end
+
+-- Single-row message with the coloured plugin name prefix.
+local function say(text)
+  echo(paint("[" .. NAME .. "] ") .. text)
+end
+
 local function debug(text)
   if debug_on then
-    echo("[" .. NAME .. "] " .. text)
+    say(text)
   end
 end
 
@@ -110,10 +119,12 @@ local function copy_defaults()
   return result
 end
 
+-- Read the stored table fresh, let mutate() change it, save it back, then
+-- refresh the in-memory copies. Returns true when the save worked.
 local function save_settings(mutate)
   local name = charname.get()
   if not name or name == "" then
-    echo("Character name is not available yet; settings were not saved.")
+    say("Character name is not available yet; settings were not saved.")
     return false
   end
 
@@ -124,17 +135,28 @@ local function save_settings(mutate)
   end
 
   mutate(fresh)
-  local saved = pcall(rune.store.set, key, fresh)
-  if not saved then
-    echo("Could not save loot tracker settings.")
+  if not pcall(rune.store.set, key, fresh) then
+    say("Could not save loot tracker settings.")
     return false
   end
 
-  lootables = type(fresh.lootables) == "table" and fresh.lootables or lootables
+  if type(fresh.lootables) == "table" then
+    lootables = fresh.lootables
+  end
   offset = tonumber(fresh.offset) or DEFAULT_OFFSET
   enabled = fresh.enabled ~= false
   debug_on = fresh.debug == true
   return true
+end
+
+-- Change the stored lootable list (fresh copy) and refresh the cache.
+local function save_lootables(change)
+  return save_settings(function(data)
+    if type(data.lootables) ~= "table" then
+      data.lootables = copy_defaults()
+    end
+    change(data.lootables)
+  end)
 end
 
 local function load_settings()
@@ -143,8 +165,7 @@ local function load_settings()
     return
   end
 
-  local key = charname.key(STORE_PREFIX)
-  local ok, stored = pcall(rune.store.get, key)
+  local ok, stored = pcall(rune.store.get, charname.key(STORE_PREFIX))
   if ok and type(stored) == "table" then
     lootables = type(stored.lootables) == "table"
       and stored.lootables or copy_defaults()
@@ -161,17 +182,21 @@ end
 
 -- Keep client-specific GMCP access in this helper.
 local function current_room()
-  if rune.gmcp and rune.gmcp.get then
-    local ok, info = pcall(rune.gmcp.get, "room.info")
-    if ok and type(info) == "table" then
-      return {
-        zone = tostring(info.zone or ""),
-        name = tostring(info.name or ""),
-        number = tostring(info.num or info.number or ""),
-      }
+  local info = last_room
+  if not info and rune.gmcp and rune.gmcp.get then
+    local ok, got = pcall(rune.gmcp.get, "room.info")
+    if ok and type(got) == "table" then
+      info = got
     end
   end
-  return nil
+  if type(info) ~= "table" then
+    return nil
+  end
+  return {
+    zone = tostring(info.zone or ""),
+    name = tostring(info.name or ""),
+    number = tostring(info.num or info.number or ""),
+  }
 end
 
 -- Keep client-specific game command sending in this helper.
@@ -179,7 +204,8 @@ local function send_game_command(command)
   if rune.send then
     rune.send(command)
   else
-    echo("Unable to send game command (Rune send API unavailable): " .. command)
+    say("Unable to send game command (Rune send API unavailable): "
+      .. command)
   end
 end
 
@@ -193,12 +219,9 @@ local function timer_string(timestamp)
     return "ready now"
   end
 
-  local days = math.floor(diff / 86400)
-  local hours = math.floor(diff / 3600) % 24
-  local minutes = math.floor(diff / 60) % 60
-  local seconds = diff % 60
   return string.format("%d days, %02d hours, %02d minutes, %02d seconds",
-    days, hours, minutes, seconds)
+    math.floor(diff / 86400), math.floor(diff / 3600) % 24,
+    math.floor(diff / 60) % 60, diff % 60)
 end
 
 local function compact_timer(timestamp)
@@ -211,48 +234,40 @@ local function compact_timer(timestamp)
     return "ready now"
   end
 
-  local days = math.floor(diff / 86400)
-  local hours = math.floor(diff / 3600) % 24
-  local minutes = math.floor(diff / 60) % 60
-  local seconds = diff % 60
-
   return string.format("%dd %02d:%02d:%02d",
-    days, hours, minutes, seconds)
+    math.floor(diff / 86400), math.floor(diff / 3600) % 24,
+    math.floor(diff / 60) % 60, diff % 60)
 end
 
-local function cyan(text)
-  if rune.style and rune.style.paint then
-    return rune.style.paint("cyan", text)
-  end
-  return text
-end
+local MONTHS = {
+  Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6,
+  Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12,
+}
 
+-- Parses "Tue Oct 27 14:03:21 2026" and adds the offset in hours.
 local function parse_game_time(text)
-  local day, month_text, hour, minute, second, year =
-    text:match("%a+ (%a+) (%d+) (%d+):(%d+):(%d+) (%d+)")
+  local month_text, day, hour, minute, second, year =
+    text:match("%a+ (%a+)%s+(%d+) (%d+):(%d+):(%d+) (%d+)")
 
-  local months = {
-    Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6,
-    Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12,
-  }
-  local month = months[month_text]
+  local month = MONTHS[month_text]
   if not (day and month and year) then
     return nil
   end
 
-  return os.time({
+  local stamp = os.time({
     year = tonumber(year),
     month = month,
     day = tonumber(day),
-    hour = (tonumber(hour) + offset) % 24,
+    hour = tonumber(hour),
     min = tonumber(minute),
     sec = tonumber(second),
   })
+  return stamp and (stamp + math.floor(offset * 3600)) or nil
 end
 
-local function show_list(indexes)
+local function show_list()
   if #lootables == 0 then
-    echo("No lootables are being tracked.")
+    say("No lootables are being tracked.")
     return
   end
 
@@ -267,33 +282,36 @@ local function show_list(indexes)
       place = tostring(item.zone) .. " / " .. tostring(item.room)
     end
 
-    echo(string.format("%d. %s — %s",
-      i, cyan(compact_timer(item.next_available)), display_name))
+    echo(string.format("%d. %s - %s",
+      i, paint(compact_timer(item.next_available)), display_name))
     echo("   " .. place)
-  end
-
-  if not indexes then
-    echo("Use '" .. SHORT .. " list -i' to see indexes for rename/remove.")
   end
 end
 
+-- helpstyle is loaded on first use to keep load time low.
 local function help()
+  local ok, H = pcall(require, "helpstyle")
+  if not ok or type(H) ~= "table" then
+    echo(NAME .. "  (alias: " .. SHORT .. ")  - helpstyle unavailable")
+    return
+  end
+
   echo(H.title(NAME .. "  (alias: " .. SHORT .. ")"))
   echo(H.section("Commands"))
   echo(H.line(NAME, "show this help"))
   echo(H.line(SHORT .. " on|off", "enable / disable tracking triggers"))
   echo(H.line(SHORT .. " debug on|off", "enable / disable debug messages"))
-  echo(H.line(SHORT .. " list", "show tracked lootables"))
-  echo(H.line(SHORT .. " list -i", "show indexes for editing"))
-  echo(H.line(SHORT .. " add n:<name> z:<zone> r:<room> rn:<number>",
+  echo(H.line(SHORT .. " list", "show tracked lootables (with indexes)"))
+  echo(H.line(SHORT .. " add n:<name> z:<zone> r:<room> rn:<num>",
     "add a lootable"))
   echo(H.line(SHORT .. " remove <index>", "remove a lootable"))
-  echo(H.line(SHORT .. " rename <index> [name]", "rename a lootable"))
-  echo(H.line(SHORT .. " force <index> <time>", "set its next available time"))
+  echo(H.line(SHORT .. " rename <index> <name>", "rename a lootable"))
+  echo(H.line(SHORT .. " force <index> <unix time>",
+    "set its next available time"))
   echo(H.line(SHORT .. " offset <hours>", "adjust parsed reset time"))
   echo(H.line(SHORT, "short alias for " .. NAME))
   echo(H.foot(string.format("v%s  enabled=%s debug=%s  triggers=%d  load=%dms",
-    VERSION, tostring(enabled), tostring(debug_on), 2, LOAD_MS)))
+    VERSION, tostring(enabled), tostring(debug_on), TRIGGERS, LOAD_MS)))
 end
 
 local function valid_index(value)
@@ -321,95 +339,113 @@ local function handle_command(args)
       data.enabled = value
     end)
     enabled = value
-    echo(NAME .. " tracking " .. (value and "enabled." or "disabled."))
+    say("Tracking " .. (value and "enabled." or "disabled."))
 
   elseif action == "debug" then
     local setting = rest:lower()
     if setting ~= "on" and setting ~= "off" then
-      echo("Usage: " .. SHORT .. " debug on|off")
+      say("Usage: " .. SHORT .. " debug on|off")
       return
     end
-    debug_on = setting == "on"
+    local value = setting == "on"
     save_settings(function(data)
-      data.debug = debug_on
+      data.debug = value
     end)
-    echo(NAME .. " debug " .. setting .. ".")
+    debug_on = value
+    say("Debug " .. setting .. ".")
 
   elseif action == "list" then
-    show_list(rest == "-i")
+    show_list()
 
   elseif action == "offset" then
     local value = tonumber(rest)
     if not value then
-      echo("Usage: " .. SHORT .. " offset <hours>")
+      say("Usage: " .. SHORT .. " offset <hours>")
       return
     end
-    offset = value
     save_settings(function(data)
       data.offset = value
     end)
-    echo("Loot time offset set to " .. tostring(value) .. " hours.")
+    offset = value
+    say("Loot time offset set to " .. tostring(value) .. " hours.")
 
   elseif action == "add" then
     local name, zone, room, room_number =
       rest:match("^n:(.-)%s+z:(.-)%s+r:(.-)%s+rn:(.-)$")
     if not name then
-      echo("Usage: " .. SHORT .. " add n:<name> z:<zone> r:<room> rn:<number>")
+      say("Usage: " .. SHORT
+        .. " add n:<name> z:<zone> r:<room> rn:<num>")
       return
     end
-    table.insert(lootables, {
-      name = name,
-      zone = zone,
-      room = room,
-      room_number = room_number,
-      next_available = nil,
-    })
-    save_settings(function(data)
-      data.lootables = lootables
-    end)
-    echo("Added lootable: " .. name)
+    if save_lootables(function(list)
+      table.insert(list, {
+        name = name,
+        zone = zone,
+        room = room,
+        room_number = room_number,
+        next_available = nil,
+      })
+    end) then
+      say("Added lootable: " .. name)
+    end
 
   elseif action == "remove" then
     local index = valid_index(rest)
     if not index then
-      echo("Invalid index; use '" .. SHORT .. " list -i'.")
+      say("Invalid index; use '" .. SHORT .. " list'.")
       return
     end
-    table.remove(lootables, index)
-    save_settings(function(data)
-      data.lootables = lootables
-    end)
-    echo("Lootable removed.")
+    if save_lootables(function(list)
+      table.remove(list, index)
+    end) then
+      say("Lootable removed.")
+    end
 
   elseif action == "rename" then
     local number, new_name = rest:match("^(%d+)%s*(.-)$")
     local index = valid_index(number)
     if not index or new_name == "" then
-      echo("Usage: " .. SHORT .. " rename <index> <new name>")
+      say("Usage: " .. SHORT .. " rename <index> <name>")
       return
     end
-    lootables[index].name = new_name
-    save_settings(function(data)
-      data.lootables = lootables
-    end)
-    echo("Lootable renamed.")
+    if save_lootables(function(list)
+      if list[index] then
+        list[index].name = new_name
+      end
+    end) then
+      say("Lootable renamed.")
+    end
 
   elseif action == "force" then
     local number, value = rest:match("^(%d+)%s+(%d+)$")
     local index = valid_index(number)
     if not index or not value then
-      echo("Usage: " .. SHORT .. " force <index> <unix timestamp>")
+      say("Usage: " .. SHORT .. " force <index> <unix time>")
       return
     end
-    lootables[index].next_available = tonumber(value)
-    save_settings(function(data)
-      data.lootables = lootables
-    end)
-    echo("Lootable time updated.")
+    if save_lootables(function(list)
+      if list[index] then
+        list[index].next_available = tonumber(value)
+      end
+    end) then
+      say("Lootable time updated.")
+    end
 
   else
     help()
   end
+end
+
+-- Index of the tracked lootable that belongs to this room, or nil.
+local function match_item(room)
+  for i, item in ipairs(lootables) do
+    if item.room_number == room.number
+      or (item.zone == "safe_of_sin_const"
+        and room.number == room_context) then
+      return i
+    end
+  end
+  return nil
 end
 
 local function on_reset_time(line)
@@ -422,30 +458,28 @@ local function on_reset_time(line)
     return
   end
 
-  local room = current_room()
   local timestamp = parse_game_time(text)
   if not timestamp then
-    echo("Could not parse loot reset time: " .. text)
+    say("Could not parse loot reset time: " .. text)
     return
   end
 
-  if room then
-    for _, item in ipairs(lootables) do
-      if item.room_number == room.number
-        or (item.zone == "safe_of_sin_const"
-          and room.number == room_context) then
-        item.next_available = timestamp
-        save_settings(function(data)
-          data.lootables = lootables
-        end)
-        echo(item.name .. " can be looted again in "
-          .. timer_string(timestamp) .. ".")
-        return
-      end
-    end
+  local room = current_room()
+  local index = room and match_item(room)
+  if not index then
+    debug("Reset time received, but no tracked lootable matched the room.")
+    return
   end
 
-  debug("Reset time received, but no tracked lootable matched the current room.")
+  local item = lootables[index]
+  if save_lootables(function(list)
+    if list[index] then
+      list[index].next_available = timestamp
+    end
+  end) then
+    say(item.name .. " can be looted again in "
+      .. timer_string(timestamp) .. ".")
+  end
 end
 
 local function on_loot_message(line)
@@ -459,35 +493,41 @@ local function on_loot_message(line)
   end
 
   local room = current_room()
+  if not room then
+    debug("Loot message received, but the current room is unknown.")
+    return
+  end
+
   if container == "a safe belonging to the Commissioner of Sin" then
-    room_context = room and room.number or nil
+    room_context = room.number
   end
 
-  if room then
-    for _, item in ipairs(lootables) do
-      if item.room_number == room.number
-        or (item.zone == "safe_of_sin_const" and room_context == room.number) then
-        send_game_command("take stuff '" .. container:gsub("'", "") .. "'")
-        return
-      end
-    end
-
-    echo("Untracked lootable: " .. container .. " (" .. room.zone .. ")")
-    echo("Add it with: " .. SHORT .. " add n:" .. container
-      .. " z:" .. room.zone .. " r:" .. room.name .. " rn:" .. room.number)
+  if match_item(room) then
+    send_game_command("take stuff '" .. (container:gsub("'", "")) .. "'")
+    return
   end
+
+  say("Untracked lootable: " .. container .. " (" .. room.zone .. ")")
+  say("Add it with: " .. SHORT .. " add n:" .. container
+    .. " z:" .. room.zone .. " r:" .. room.name .. " rn:" .. room.number)
 end
 
 load_settings()
-LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
 
-rune.alias.exact(NAME, function(args)
-  handle_command(args)
-end)
-
-rune.alias.exact(SHORT, function(args)
-  handle_command(args)
-end)
+-- One regex alias covers both the full command and the short alias.
+rune.alias.regex("^(?:" .. NAME .. "|" .. SHORT .. ")(?:\\s+(.*))?$",
+  function(matches)
+    local args = ""
+    if type(matches) == "table" then
+      args = matches[2] or matches[1] or ""
+    elseif type(matches) == "string" then
+      args = matches
+    end
+    -- Drop the command word if the whole line was passed back.
+    args = args:gsub("^%s*" .. NAME .. "%f[%s%z]", "")
+      :gsub("^%s*" .. SHORT .. "%f[%s%z]", "")
+    handle_command(args)
+  end)
 
 -- Use Rune's contains triggers; pass the cleaned incoming line to handlers.
 rune.trigger.contains("You can loot this again at", function(matches, ctx)
@@ -498,6 +538,18 @@ rune.trigger.contains("You gently pry ", function(matches, ctx)
   on_loot_message(ctx.line:clean())
 end)
 
+-- Track the current room from GMCP Room.Info (get() is only a fallback).
+if rune.gmcp and rune.gmcp.on then
+  if rune.gmcp.subscribe then
+    pcall(rune.gmcp.subscribe, "Room")
+  end
+  pcall(rune.gmcp.on, "Room.Info", function(data)
+    if type(data) == "table" then
+      last_room = data
+    end
+  end, { name = NAME })
+end
+
 if charname.on_change then
   charname.on_change(function(_, new)
     if new and new ~= "" then
@@ -506,12 +558,8 @@ if charname.on_change then
   end)
 end
 
-local function load_message(text)
-  if rune.style and rune.style.paint and rune.say then
-    rune.say(rune.style.paint("cyan", "[" .. NAME .. "] ") .. text)
-  else
-    echo("[" .. NAME .. "] " .. text)
-  end
-end
+LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
 
-load_message("v" .. VERSION .. " loaded (" .. SHORT .. " for help)")
+-- Loader line: single row, coloured plugin name prefix.
+echo(paint("[" .. NAME .. "] ") .. "v" .. VERSION .. " loaded ("
+  .. NAME .. " or " .. SHORT .. " for help)")

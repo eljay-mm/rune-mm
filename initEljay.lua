@@ -3,6 +3,7 @@
 -- Version: 2.4
 -- Date: 2026-Oct-13
 -- Changelog:
+--   2.4b - manual edits to adapt to new horstgs updates 2026-11-09
 --   2.4  Compatibility fix for rune.style usage and kept the single-row status summary.
 --   2.3  Header brought to current format; single-row load summary with coloured [initEljay] prefix;
 --        cross-platform progress file (TMPDIR/TEMP/tmp); failures collected and reported once.
@@ -61,11 +62,11 @@ function rune_build_layout()
                               title = rune.map_title or "Map",
                               hidden = rune.map_hidden == true
                                   or rune.pane.is_hidden("map") or false },
-                                  { type = "pane", name = "eljayPlugins/asciiMapPane", size = "1fr", border = "full",
-                          title = rune.asciimap_title or "asciiMap",
-                          hidden = rune.pane.is_hidden("eljayPlugins/asciiMapPane") or false },
+                                  { type = "pane", name = "quests", size = "1fr", border = "full",
+                          title = rune.asciimap_title or "Quests",
+                          hidden = rune.pane.is_hidden("quests") or false },
                         }},
-                        
+
                     }},
                 }},
             }},
@@ -80,8 +81,8 @@ rune_build_layout()
 
 local PLUGINS = {
   "annwnQuestSearch",
-  "asciiMapPane",
-  "asciiMapColours", -- support module only
+--  "asciiMapPane",
+--  "asciiMapColours", -- support module only
   "bardSongTLAs",
   "basicAliases",
   "characterLog",

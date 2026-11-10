@@ -102,6 +102,9 @@ To enable it again, remove the `--`. Things to know:
 
 ## Plugins
 
+This table documents the plugin files in the repository. `initEljay.lua` determines
+which ones load; plugins commented out in its `PLUGINS` list are not enabled by default.
+
 | Plugin                    | What it does                                                                                                         |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `annwnQuestSearch.lua`    | Looks up the quest you are reading about on annwn.info, as a clipboard copy and clickable link.                      |
@@ -119,7 +122,9 @@ To enable it again, remove the `--`. Things to know:
 | `highlights.lua`          | Highlights notable items and mobs in game output for easy recognition based on static config for all characters.     |
 | `highlightCustom.lua`     | Highlight words and phrases in game output on the fly per-character.                                                 |
 | `jmcSolver.lua`           | Solves the Joint Magical Consortium mirror puzzle locally and lists every solution.                                  |
+| `lootableTracker.lua`     | Tracks lootable reset times and shows when items are ready again.                                                    |
 | `mapperShortKeys.lua`     | Keyboard shortcuts for mapper.                                                                                       |
+| `megaQuestSearch.lua`     | Looks up a quest by Quest ID on the Megaleios wiki; this is an optional tool outside the MM-specific focus.          |
 | `missingAffects.lua`      | Shows which wanted affects are missing from your current affects.                                                    |
 | `numPadBindings.lua`      | Numpad movement, look and door keys.                                                                                 |
 | `oocWikiSearch.lua`       | Searches the Materia Magica OOC wiki.                                                                                |
@@ -127,13 +132,17 @@ To enable it again, remove the `--`. Things to know:
 | `shopListPicker.lua`      | Picker over shop lists (not thesis shops) that buys your selection.                                                  |
 | `spdxyCoordinates.lua`    | Walks to sextant coordinates, towns and clan halls, including unmapped wilderness.                                   |
 | `spellTLAs.lua`           | General spell three-letter aliases, optionally targetable.                                                           |
-| `statusTray.lua`          | Bottom-row status bar showing crystal, sextant and tell indicators.                                           |
+| `statusTray.lua`          | Bottom-row status bar showing crystal, sextant and tell indicators.                                                  |
 | `vitalsChanges.lua`       | Shows HP, SP and ST changes in the main window.                                                                      |
 
 `initEljay.lua` is the loader, not a plugin; see [Disabling a plugin](#disabling-a-plugin).
-`spdxyPlaces.lua` is not a plugin either: it holds the town and clan hall data plus the
-name lookup, `nearby` and waypoint code for `spdxyCoordinates`, which loads it on first
-use. Keep it in `eljayPlugins` and list it in `PLUGINS` too, as with any companion file.
+`spdxyPlaces.lua` is a support module, not a plugin: it holds the town and clan hall data
+plus the name lookup, `nearby` and waypoint code for `spdxyCoordinates`, which loads it
+on first use. Keep it in `eljayPlugins`; do not add it to `PLUGINS`.
+
+`myExamplePlugin.lua` is an example/template, not a ready-to-use plugin, so it is not
+included in the table or loader list. `initEljay-splitScreen.lua` is an alternate loader,
+not a plugin.
 
 Each plugin's header comment has its full "How it works" description, its commands and
 its changelog. Typing a plugin's command on its own prints a help summary.

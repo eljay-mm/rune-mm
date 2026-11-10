@@ -112,8 +112,8 @@ local PLUGINS = {
   "oocWikiSearch",
   "researchNotesPicker",
   "shopListPicker",
-  "spdxyCoordinates",
-  "spdxyPlaces", -- support module only
+  -- "spdxyCoordinates",
+  -- "spdxyPlaces", -- support module only
   "spellTLAs",
   "statusTray",
   "vitalsChanges",

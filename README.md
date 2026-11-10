@@ -25,13 +25,13 @@ Your Rune config directory is `~/.config/rune`. Put the plugins in its `eljayPlu
 git clone https://github.com/eljay-mm/rune-mm.git ~/.config/rune/eljayPlugins
 ```
 
-Then append this line to `~/.config/rune/init.lua`:
+Then append this line to `~/.config/rune/personal.lua`, within the bottom section entitled 'after= function ()' and before 'end,':
 
 ```
 require("eljayPlugins/initEljay")
 ```
 
-To update later: `cd ~/.config/rune/eljayPlugins && git pull`, then restart Rune.
+To update later: `cd ~/.config/rune/eljayPlugins && git pull`, then restart Rune or /reload.
 
 ## Installation: Windows (download ZIP)
 
@@ -78,7 +78,7 @@ plugin:
    }
    ```
 
-3. Save the file and restart Rune (or reload your config).
+3. Save the file and restart Rune (or /reload to reload your config).
 
 To enable it again, remove the `--`. Things to know:
 

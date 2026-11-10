@@ -25,7 +25,7 @@ Your Rune config directory is `~/.config/rune`. Put the plugins in its `eljayPlu
 git clone https://github.com/eljay-mm/rune-mm.git ~/.config/rune/eljayPlugins
 ```
 
-Then append this line to `~/.config/rune/personal.lua`, within the bottom section entitled 'after= function ()' and before 'end,':
+Then append this line to `~/.config/rune/personal.lua`, within the bottom section entitled `after= function ()` and before `end,`:
 
 ```
 require("eljayPlugins/initEljay")
@@ -56,14 +56,14 @@ To update later: `cd ~/.config/rune/eljayPlugins && git pull`, then restart Rune
    require("eljayPlugins/initEljay")
    ```
 
-6. Restart Rune.
+6. Restart Rune or /reload.
 
 To update, download a fresh ZIP and copy the new `.lua` files over the old ones.
 
 ## Disabling a plugin
 
 `initEljay.lua` loads every plugin named in its `PLUGINS` list, in order. To disable a
-plugin:
+plugin, either turn it off using the command syntax (e.g. `shopListPicker off`), or:
 
 1. Open `eljayPlugins/initEljay.lua` in a text editor.
 
@@ -124,7 +124,7 @@ which ones load; plugins commented out in its `PLUGINS` list are not enabled by 
 | `jmcSolver.lua`           | Solves the Joint Magical Consortium mirror puzzle locally and lists every solution.                                  |
 | `lootableTracker.lua`     | Tracks lootable reset times and shows when items are ready again.                                                    |
 | `mapperShortKeys.lua`     | Keyboard shortcuts for mapper.                                                                                       |
-| `megaQuestSearch.lua`     | Looks up a quest by Quest ID on the Megaleios wiki; this is an optional tool outside the MM-specific focus.          |
+| `megaQuestSearch.lua`     | Looks up a quest by Quest ID on the Megaleios wiki.                                                                  |
 | `missingAffects.lua`      | Shows which wanted affects are missing from your current affects.                                                    |
 | `numPadBindings.lua`      | Numpad movement, look and door keys.                                                                                 |
 | `oocWikiSearch.lua`       | Searches the Materia Magica OOC wiki.                                                                                |
@@ -138,7 +138,7 @@ which ones load; plugins commented out in its `PLUGINS` list are not enabled by 
 `initEljay.lua` is the loader, not a plugin; see [Disabling a plugin](#disabling-a-plugin).
 `spdxyPlaces.lua` is a support module, not a plugin: it holds the town and clan hall data
 plus the name lookup, `nearby` and waypoint code for `spdxyCoordinates`, which loads it
-on first use. Keep it in `eljayPlugins`; do not add it to `PLUGINS`.
+on first use. Keep it in `eljayPlugins`.
 
 `myExamplePlugin.lua` is an example/template, not a ready-to-use plugin, so it is not
 included in the table or loader list. `initEljay-splitScreen.lua` is an alternate loader,

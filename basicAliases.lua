@@ -1,12 +1,13 @@
 -- Filename: eljayPlugins/basicAliases.lua
 -- Purpose: Provides shared aliases and automatic responses for all characters
--- Version: 2.18
--- Date: 2026-Oct-26
+-- Version: 2.19
+-- Date: 2026-Nov-09
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
+--   2.19  Updated some aliases & triggers.
 --   2.18  Added list [text] with case-insensitive literal substring filtering
 --        by alias name or mapped command.
 --   2.17  Removed rrl and rrr; research aliases are handled by
@@ -167,7 +168,7 @@ A("l5", "look in tanbluck")
 A("lg", "look in 'a goldweave bag'")
 A("le", "look in 'a bag embroidered with silver runes'")
 A("lr", "look in 'an earthen bag'")
-A("lm", "look in gnomish")
+A("lm", "look in miners")
 A("lb", "look in bag")
 A("lp", "look in pouch")
 A("lt", "look in trunk")
@@ -179,13 +180,17 @@ A("lv", "look valuable")
 A("lrt", "look rootbag")
 A("ta", "take all corpse")
 A("tl", "take all lootable")
-A("tc", "take crystal")
 A("tt", "take all.tourm corpse")
 A("tg", "take gold corpse")
 A("fha", "take bernadette miner;eat bernadette")
 A("ir", "inventory reorder")
 A("tl19g", "take all community; take all princely")
 A("tl19r", "take all community; take all reclassing")
+
+-- Crystal quests
+
+A("tc", "take crystal")
+A("cc", "give tadamir Tadamir;drop crystalQuest;sac crystalQuest")
 
 -- Basics / utility
 
@@ -302,7 +307,7 @@ P("hb", "headbutt")
 P("pfr", "frothing rage")
 P("bm", "blood in your mouth")
 
--- Quests / recall / auction / alliance / inventory
+-- Quests / recall / auction / inventory
 
 A("ql", "quest list")
 A("qr", "quest request")
@@ -316,15 +321,14 @@ A("if", "inventory search")
 A("al", "auction list")
 A("ab", "auction bid")
 A("ai", "auction identify")
-A("aw", "alliance where")
 
 -- in-game help information (filtered)
-A("daily", "he _filter daily 2115")
+A("dq", "he _filter daily 2115")
 -- to explore: 
--- help _descripition_onlly
--- help _random
--- help _search
--- help _tag
+	-- help _description_only
+	-- help _random
+	-- help _search
+	-- help _tag
 
 
 -- Aliases that take a required argument (forge, setslave)

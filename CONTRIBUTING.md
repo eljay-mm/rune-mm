@@ -15,8 +15,7 @@ This repository (https://github.com/eljay-mm/rune-mm) is a collection of Lua plu
 | Display method (`paint`/`say`, `H.*` rows, bare-command aliases) | `annwnQuestSearch.lua` |
 | Loader line, command name plus short alias | `eqdbResultsPicker.lua` |
 | Cyan `[pluginName] ` prefix via `rune.style`; help footer with the version first | `jmcSolver.lua` (prefix also `druidSpellTLAs.lua`) |
-| Help layout | `gotoAliases.lua` |
-| Load time in the help footer | `fauxSextant.lua` |
+| Help layout and load time in the footer | `gotoAliases.lua` |
 
 ## Required conventions
 
@@ -25,7 +24,7 @@ This repository (https://github.com/eljay-mm/rune-mm) is a collection of Lua plu
 - Put each plugin file directly in `eljayPlugins/`. The repository root *is* that directory once cloned into `~/.config/rune/eljayPlugins`, so files sit at the top level of the repo, never nested
 - Use the filename format: `eljayPlugins/<camelName>.lua`
 - Keep the plugin name in the same style as the rest of the repo: short, camel-cased, and descriptive
-- Keep every plugin file, companions included, under 16,000 bytes. If a plugin would exceed that, move rarely used code into a companion file in `eljayPlugins/` (for example `spdxyPlaces.lua`) that the main plugin `require`s on first use. A companion follows the same header and help rules as a plugin. It must also be listed in `PLUGINS`
+- Keep every plugin file, companions included, under 16,000 bytes. If a plugin would exceed that, move rarely used code into a companion file in `eljayPlugins/` that the main plugin `require`s on first use. A companion follows the same header and help rules as a plugin. It must also be listed in `PLUGINS`
 
 ### Header format
 
@@ -179,6 +178,7 @@ end
 - Keep aliases and triggers on a single row each where possible
 - Prefer readable, maintainable Lua
 - Rune's Lua is 5.1: no bit operators, `//` or `goto`
+- Give regex aliases and triggers stable names through the `name` option (for example `{ name = NAME }`), never generated ones
 
 ## Cross-platform
 

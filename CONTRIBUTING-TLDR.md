@@ -15,9 +15,8 @@ Lua plugins for the Rune client, designed for horstgs’ Materia Magica configur
 | Display methods, help rows, bare-command aliases | `annwnQuestSearch.lua` |
 | Loader line and command naming | `eqdbResultsPicker.lua` |
 | Cyan prefix and help footer | `jmcSolver.lua`, `druidSpellTLAs.lua` |
-| Help layout | `gotoAliases.lua` |
+| Help layout and load-time display | `gotoAliases.lua` |
 | Character-name API | `charname.lua` |
-| Load-time display | `fauxSextant.lua` |
 
 ## Required conventions
 
@@ -25,7 +24,7 @@ Lua plugins for the Rune client, designed for horstgs’ Materia Magica configur
 
 - Put each plugin directly in `eljayPlugins/`, named `eljayPlugins/<camelName>.lua`. Do not nest plugin files.
 - Use a short, descriptive camelCase name.
-- Keep every plugin file, companions included, under 16,000 bytes. Move rarely used code into a companion file in `eljayPlugins/` (for example `spdxyPlaces.lua`) that the plugin `require`s on first use. A companion follows the same header and help rules as a plugin. It must also be listed in `PLUGINS`.
+- Keep every plugin file, companions included, under 16,000 bytes. Move rarely used code into a companion file in `eljayPlugins/` that the plugin `require`s on first use. A companion follows the same header and help rules as a plugin. It must also be listed in `PLUGINS`.
 - Start every plugin with this header: Filename, Purpose, Version and Date—in that order—then exactly one `[[ ]]` TODO block (placeholder if nothing is planned), then Changelog, a bulleted How it works, Commands and Tweaks. Use `--` line comments everywhere else.
 
 ```lua
@@ -84,6 +83,7 @@ TODO:
 
 - Keep aliases and triggers on one row where possible; prefer readable, maintainable Lua.
 - Rune’s Lua is 5.1: no bit operators, `//` or `goto`.
+- Give regex aliases and triggers stable names through the `name` option (for example `{ name = NAME }`), never generated ones.
 
 ### Cross-platform support
 

@@ -35,10 +35,10 @@ To update later: `cd ~/.config/rune/eljayPlugins && git pull`, then restart Rune
 
 ## Installation: Windows (download ZIP)
 
-1. Find your Rune config folder, the folder that already contains your `init.lua` from
-   horstgs' configuration. Depending on how Rune was set up this is typically
-   `%USERPROFILE%\.config\rune` or `%APPDATA%\rune`. (The client exposes the path to
-   plugins as `rune.config_dir`.)
+1. Find your Rune config folder, the folder that already contains `init.lua` and
+   `personal.lua` from horstgs' configuration. Depending on how Rune was set up this
+   is typically `%USERPROFILE%\.config\rune` or `%APPDATA%\rune`. (The client exposes
+   the path to plugins as `rune.config_dir`.)
 
 2. On the repository page, choose **Code > Download ZIP**, or open
    `https://github.com/eljay-mm/rune-mm/archive/refs/heads/main.zip`.
@@ -49,8 +49,9 @@ To update later: `cd ~/.config/rune/eljayPlugins && git pull`, then restart Rune
    files from `rune-mm-main` into it. The files must sit directly in `eljayPlugins`, for
    example `...\rune\eljayPlugins\initEljay.lua`, not in a nested `rune-mm-main` folder.
 
-5. Open `init.lua` in a text editor (Notepad is fine) and add this line at the end.
-   Use forward slashes, even on Windows:
+5. Open `personal.lua` in a text editor (Notepad is fine) and add this line within the
+   bottom section entitled `after= function ()`, before `end,`. Use forward slashes,
+   even on Windows:
 
    ```
    require("eljayPlugins/initEljay")
@@ -72,7 +73,7 @@ plugin, either turn it off using the command syntax (e.g. `shopListPicker off`),
 
    ```
    local PLUGINS = {
-     "fauxSextant",
+     "eqdbResultsPicker",
      -- "hangmanSolver",
      "highlights",
    }
@@ -91,7 +92,7 @@ To enable it again, remove the `--`. Things to know:
 - The list is alphabetical. Only move a plugin lower if it depends on another one having
   loaded first.
 - Plugins that provide an on/off command (for example `hangmanSolver on|off` or
-  `spdxyCoordinates on|off`) can be switched off and on without editing any file; the
+  `shopListPicker on|off`) can be switched off and on without editing any file; the
   state is remembered across restarts. See each plugin's help screen.
 - If Rune stops at start-up with a timeout ("runaway loop"), a plugin is stuck in an
   endless loop, which `pcall` cannot catch. Set `DEBUG = true` at the top of
@@ -112,10 +113,8 @@ which ones load; plugins commented out in its `PLUGINS` list are not enabled by 
 | `basicAliases.lua`        | General-purpose aliases and triggers for all characters.                                                             |
 | `characterLog.lua`        | Per-character, per-day session logging, named from GMCP.                                                             |
 | `clipCommandOutput.lua`   | Copies the output of a command to the clipboard.                                                                     |
-| `crystalLocator.lua`      | Locates crystals by sending a scroll's map block to the OOC crystal finder.                                          |
 | `druidSpellTLAs.lua`      | Druid invoke and evoke spells with three-letter acronyms.                                                            |
 | `eqdbResultsPicker.lua`   | Turns equipment search results into a picker that runs `eqlookup`.                                                   |
-| `fauxSextant.lua`         | Sextant coordinate display built from GMCP data.                                                                     |
 | `gotoAliases.lua`         | Aliases to run to gates, quest masters, banks, post offices and other places in the town you are in.                 |
 | `hangmanSolver.lua`       | Solves hangman puzzles using an online solver (needs `curl`).                                                        |
 | `herbAliases.lua`         | Provides short aliases for Herbalism mixing, throwing and eating.                                                    |
@@ -126,19 +125,13 @@ which ones load; plugins commented out in its `PLUGINS` list are not enabled by 
 | `mapperShortKeys.lua`     | Keyboard shortcuts for mapper.                                                                                       |
 | `megaQuestSearch.lua`     | Looks up a quest by Quest ID on the Megaleios wiki.                                                                  |
 | `missingAffects.lua`      | Shows which wanted affects are missing from your current affects.                                                    |
-| `numPadBindings.lua`      | Numpad movement, look and door keys.                                                                                 |
 | `oocWikiSearch.lua`       | Searches the Materia Magica OOC wiki.                                                                                |
 | `researchNotesPicker.lua` | Searchable picker over the research thesis list, built for repeat purchases, which handles your notes automatically. |
-| `shopListPicker.lua`      | Picker over shop lists (not thesis shops) that buys your selection.                                                  |
-| `spdxyCoordinates.lua`    | Walks to sextant coordinates, towns and clan halls, including unmapped wilderness.                                   |
+| `shopListPicker.lua`      | Picker over shop lists (not thesis shops), including quest shops, that identifies or buys your selection.            |
 | `spellTLAs.lua`           | General spell three-letter aliases, optionally targetable.                                                           |
-| `statusTray.lua`          | Bottom-row status bar showing crystal, sextant and tell indicators.                                                  |
 | `vitalsChanges.lua`       | Shows HP, SP and ST changes in the main window.                                                                      |
 
 `initEljay.lua` is the loader, not a plugin; see [Disabling a plugin](#disabling-a-plugin).
-`spdxyPlaces.lua` is a support module, not a plugin: it holds the town and clan hall data
-plus the name lookup, `nearby` and waypoint code for `spdxyCoordinates`, which loads it
-on first use. Keep it in `eljayPlugins`.
 
 `myExamplePlugin.lua` is an example/template, not a ready-to-use plugin, so it is not
 included in the table or loader list. `initEljay-splitScreen.lua` is an alternate loader,
@@ -161,11 +154,11 @@ Every plugin follows the same house style (the full guidelines are in
 - **Settings:** saved with `rune.store`, not in separate config files.
 - **Commands:** defined without a `/` prefix, so you type `clip`, not `/clip`. A plugin's
   main command is named after the plugin and may have a short alias, for example
-  `spdxyCoordinates` and `spdxy`, or `crystalLocator` and `crystal`.
+  `lootableTracker` and `loot`, or `characterLog` and `charlog`.
 - **Output:** one row on load, with the plugin name as a coloured prefix.
 - **Naming:** `eljayPlugins/<camelName>.lua`, no prefix.
 - **Size:** each file stays under 16000 bytes. Large data or rarely used code moves into a
-  helper module that is loaded on first use, as `spdxyCoordinates` does with `spdxyPlaces`.
+  helper module that is loaded on first use.
 - **Compatibility:** plugins avoid platform-specific calls where they can, so they run on
   Linux, macOS and Windows.
 

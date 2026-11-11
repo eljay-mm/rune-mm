@@ -112,6 +112,8 @@ local state = {
   last    = nil,                         -- last solved { P = puzzle, res = result }
   pick    = nil,                         -- index of the solution the player picked (or the only one)
   plan    = nil,                         -- armed auto-drop plan
+  sweep   = false,                       -- `sweep` pickup mode, send `get all` once per square
+  sweepAt = nil,                         -- last grid used by `sweep`
   pendingAt = 0,                         -- os.time() when `solve` started waiting
   placed  = {},                          -- mirrors this plugin dropped ({ x, y, t }), for `undo`
   job     = nil,                         -- coroutine of a solve running in slices
@@ -199,7 +201,7 @@ end
 local function refreshTrigger()
   if not canSwitch then return end
   local plan = state.plan
-  local want = not not (enabled and (state.pending or cap.look or cap.inv or (plan and plan.remaining > 0)))
+  local want = not not (enabled and (state.pending or cap.look or cap.inv or state.sweep or (plan and plan.remaining > 0)))
   if want ~= trigOn and trySwitch(want) then
     trigOn = want
     dbg("Line trigger " .. (want and "on" or "off"))
@@ -506,13 +508,11 @@ local function search(P, hmap, target, extraAllowed)
 end
 
 -- Visit order for a solution's squares: nearest next square (Manhattan) starting at A-1;
--- also returns the walk length and the number of rows involved, used to break ties between equally good solutions
+-- also returns the walk length, used to break ties between equally good solutions
 local function walkOrder(list)
   local left, out, total = {}, {}, 0
   for i, s in ipairs(list) do left[i] = s end
   local cx, cy = 1, 1
-  local rows = {}
-  rows[cy] = true
   while #left > 0 do
     local bi, bd = 1, nil
     for i, s in ipairs(left) do
@@ -522,12 +522,9 @@ local function walkOrder(list)
     local s = table.remove(left, bi)
     out[#out + 1] = s
     total = total + bd
-    rows[s.y] = true
     cx, cy = s.x, s.y
   end
-  local count = 0
-  for _ in pairs(rows) do count = count + 1 end
-  return out, total, count
+  return out, total
 end
 
 -- Returns { ok = true, solutions = { {list, n, missing = {type = n}, nmiss}, ... } } or { ok = false, why = "..." }
@@ -557,8 +554,8 @@ local function solvePuzzle(P)
           local short = n - (P.owned[t] or 0)
           if short > 0 then missing[t] = short; nmiss = nmiss + short end
         end
-        local _, walk, rows = walkOrder(sol)
-        entries[#entries + 1] = { list = sol, n = #sol, missing = missing, nmiss = nmiss, rows = rows, walk = walk, idx = #entries + 1 }
+        local _, walk = walkOrder(sol)
+        entries[#entries + 1] = { list = sol, n = #sol, missing = missing, nmiss = nmiss, walk = walk, idx = #entries + 1 }
       end
     end
   end
@@ -610,7 +607,6 @@ local function solvePuzzle(P)
     if sa ~= sb then return sa end
     if a.n ~= b.n then return a.n < b.n end
     if a.nmiss ~= b.nmiss then return a.nmiss < b.nmiss end
-    if a.rows ~= b.rows then return a.rows < b.rows end
     if a.walk ~= b.walk then return a.walk < b.walk end
     return a.idx < b.idx
   end)
@@ -783,7 +779,7 @@ local function armPlan(res, idx, force)
   if not entry then return end
   local entries = {}
   for i, s in ipairs((walkOrder(entry.list))) do entries[i] = { x = s.x, y = s.y, t = s.t } end
-  state.plan = { entries = entries, remaining = #entries, at = nil, idx = idx, started = os.time() }
+  state.plan = { entries = entries, remaining = #entries, at = nil, idx = idx, started = os.time(), mode = "drop" }
   refreshTrigger()
   say(string.format("Auto-drop armed (solution %d): walk to %s - each mirror is dropped on arrival (%s stop cancels)",
     idx, table.concat(planLeft(state.plan), ", "), NAME))
@@ -826,6 +822,7 @@ local function confirmDrop(t)
         end
       end)
       if plan.remaining == 0 then
+        state.plan = nil
         if undo then
           say(paint("green", "All mirrors are picked up"))
         else
@@ -1034,6 +1031,8 @@ function Show.undo()
     say("No mirrors to pick up - none were dropped by " .. NAME .. " this session")
     return
   end
+  state.sweep = false
+  state.sweepAt = nil
   local list = walkOrder(state.placed)
   local entries = {}
   for i, p in ipairs(list) do entries[i] = { x = p.x, y = p.y, t = p.t } end
@@ -1055,6 +1054,38 @@ end
 function Show.last()
   local last = state.last
   if last then showResult(last.P, last.res, false) else say("Nothing solved yet - run: " .. NAME .. " solve") end
+end
+
+function Show.sweep(arg)
+  local on = arg and arg:match("^%s*(%S+)") or nil
+  if on then
+    on = ({ on = true, off = false })[on:lower()]
+    if on == nil then
+      say("Usage: " .. SHORT .. " sweep [on|off]")
+      return
+    end
+    state.sweep = on
+    state.sweepAt = nil
+    if on then
+      state.plan = nil
+      refreshTrigger()
+      say("Sweep pickup armed: every square you enter will send `get all` until it is toggled off")
+    else
+      refreshTrigger()
+      say("Sweep pickup off")
+    end
+    return
+  end
+  state.sweep = not state.sweep
+  state.sweepAt = nil
+  if state.sweep then
+    state.plan = nil
+    refreshTrigger()
+    say("Sweep pickup on: every square you enter will send `get all` until it is toggled off")
+  else
+    refreshTrigger()
+    say("Sweep pickup off")
+  end
 end
 
 -- Solve the captured console look + mirror lines
@@ -1240,7 +1271,8 @@ local function showHelp()
   row(SHORT .. " arm [n]", "drop mirrors as you reach each grid square")
   row(SHORT .. " plan", "show placed and still-to-place mirrors")
   row(SHORT .. " undo", "pick up the mirrors you dropped")
-  row(SHORT .. " stop", "cancel auto-drop")
+  row(SHORT .. " sweep [on|off]", "pick up all mirrors on each square until toggled off")
+  row(SHORT .. " stop", "cancel auto-drop or sweep")
   section("Info:")
   row(SHORT .. " rules", "show the rules the solver assumes")
   row(SHORT .. " selftest", "solve two built-in puzzles, check answers")
@@ -1298,7 +1330,21 @@ local function onLine(_, ctx)
   if state.pending or state.plan then expireStale() end
 
   -- Idle fast path: every line this plugin reacts to when nothing is captured contains "You" or "Grid"
-  if not (cap.look or cap.inv or state.pending or state.plan) and not text:find("You", 1, true) then return end
+  if not (cap.look or cap.inv or state.pending or state.plan or state.sweep) and not text:find("You", 1, true) then return end
+
+  if state.sweep and not state.plan then
+    local gc, gr = text:match(GRID)
+    if gc then
+      local x = gc:upper():byte() - 64
+      local y = tonumber(gr)
+      local key = x .. "," .. y
+      if key ~= state.sweepAt then
+        state.sweepAt = key
+        rune.send("get all")
+        dbg("Sweep: get all at " .. cellName(x, y))
+      end
+    end
+  end
 
   local S = state.plan and Show
   if S then
@@ -1378,6 +1424,8 @@ local function setEnabled(on)
     cap.look, cap.inv = nil, nil
     state.pending = false
     state.plan, state.job = nil, nil
+    state.sweep = false
+    state.sweepAt = nil
   end
   refreshTrigger()
   say("Trigger " .. (on and "on" or "off"))
@@ -1394,18 +1442,25 @@ local commands = {
   arm      = Show.arm,
   plan     = Show.plan,
   undo     = Show.undo,
+  sweep    = Show.sweep,
   last     = Show.last,
   rules    = Tools.rules,
   selftest = Tools.selftest,
   stop     = function()
     if state.job then state.job = nil; say("Solving cancelled") end
+    if state.sweep then
+      state.sweep = false
+      state.sweepAt = nil
+      refreshTrigger()
+      say("Sweep cancelled")
+    end
     if state.plan then
       local word = (state.plan.mode == "undo") and "Pick-up" or "Auto-drop"
       state.plan = nil
       refreshTrigger()
       say(word .. " cancelled")
     else
-      say("Auto-drop is not armed")
+      if not state.sweep then say("Auto-drop is not armed") end
     end
   end,
   debug    = function(arg)

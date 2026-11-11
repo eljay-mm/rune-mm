@@ -1,11 +1,14 @@
 -- Filename: eljayPlugins/jmcSolver.lua
 -- Purpose: Joint Magical Consortium (JMC) projectile puzzle - standalone solver (no website, no network).
--- Version: 1.16
--- Date: 2026-Oct-26
+-- Version: 1.19
+-- Date: 2026-Nov-11
 --[[
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
+--   1.19 Sweep follows the real wording ("You take 2 of an angled mirror rotated ..."), and forgets the grid square when you leave the grid.
+--   1.18 `sweep on|off`: takes everything (cfg.sweepcmd) whenever a mirror lies on the ground, for a full restart.
+--   1.17 Solutions are listed by the fewest rows to walk (from A-1, sweeping upwards), then mirror count; a wider candidate pool is searched so the simplest walks are found.
 --   1.16 Dropped mirrors survive a reload (rune.store); `plan` draws the map with progress; an unchanged puzzle reuses the last result; clearer map errors and a stale-look warning.
 --   1.15 Walking order starts at A-1; the armed plan has an overall 15 minute limit (cfg.puzzletimeout) instead of an idle one.
 --   1.14 `undo`: picks the mirrors you dropped back up from the floor as you reach each square (cfg.getcmd).
@@ -26,7 +29,10 @@
 --     by its angle; map edge, obstacle (X) and launcher stop it; it is delivered on entering the receiver after enough
 --     distinct gates (#; 3, or all if fewer, `gates`); mirrors go on cells in `place` (. # X), never launcher/receiver.
 --   * Solutions using only mirrors you carry come first, marked `*` (up to `maxm` mirrors, the fewest plus `more`);
---     fewer-mirror answers needing ones you lack follow, with the missing mirrors named. The search stops at `budget`
+--     answers needing mirrors you lack follow, with the missing mirrors named. Within each group the simplest walk
+--     comes first: the fewest rows to walk from A-1 (the squares are visited sweeping upwards, so that is the highest
+--     row needed minus 1), then the fewest mirrors, then the fewest columns. A pool of 4 x `alts` solutions is found
+--     and the best `alts` are listed. The search stops at `budget`
 --     steps or `timelimit` seconds, whichever comes first.
 --   * One solution is shown as the map with the mirrors drawn in plus a list like "90cw at C-12" (column letter - row
 --     number, row 1 at the bottom); several are numbered one-liners and `jmc pick <n>` chooses one. The shown or picked
@@ -35,9 +41,12 @@
 --     the plugin sends `drop <keyword>` (90clock, 45clock, 90counter, 45counter) and counts it off when the game
 --     confirms. It never moves you; `look` on a planned square drops its mirror if you armed while standing there.
 --   * A solve that gets no reply gives up after `pendtimeout` s; an armed plan is dropped `puzzletimeout` s (15 min)
---     after it was armed. Squares are listed in walking order (nearest next, starting at A-1); shorter walks win ties.
+--     after it was armed. Squares are listed in walking order (rows swept upwards from A-1).
 --   * `jmc undo` reverses it: for each mirror dropped this session it sends `get <keyword>` on arriving at its square
 --     (cfg.getcmd) and counts it off when the game says "You get/take/pick up an angled mirror ...".
+--   * `jmc sweep on` is the full restart: while it is on, a mirror on the ground (a line with "angled mirror" that is not
+--     your own pick-up or drop) makes it send `take all` (cfg.sweepcmd), once per arrival. It sends a `look` when started,
+--     forgets the mirrors it records as picked up, and goes off on `stop`, when a plan is armed or after `puzzletimeout`.
 --   * `jmc on|off` turns the capture trigger on or off (default on, remembered in rune.store); `jmc debug on|off`
 --     toggles debug messages (default off); `jmc` alone shows the command summary with version, state and load time.
 --
@@ -53,7 +62,8 @@
 --     jmc arm [n]              drop mirrors as you reach each grid square
 --     jmc plan                 show placed and still-to-place mirrors
 --     jmc undo                 pick up the mirrors you dropped
---     jmc stop                 cancel auto-drop
+--     jmc sweep on | off       take all mirrors found on the ground
+--     jmc stop                 cancel auto-drop, pick-up, sweep
 --   Info:
 --     jmc rules                show the rules the solver assumes
 --     jmc selftest             solve two built-in puzzles, check answers
@@ -63,7 +73,7 @@
 local T0 = os.clock()      -- load timer, reported in the help footer
 local LOAD_MS = 0
 
-local VERSION = "1.16"
+local VERSION = "1.19"
 
 -- Command names: full command and short alias.
 local NAME  = "jmcSolver"
@@ -92,7 +102,8 @@ local cfg = {
   alts     = 5,            -- most solutions collected and listed
   copy     = true,         -- copy the shown/picked solution to the clipboard
   autodrop = true,         -- arm the chosen solution for auto-drop
-  getcmd   = "get",        -- pick-up command word for `undo` (followed by e.g. 90clock)
+  sweepcmd = "take all.mirror",   -- command sent by `sweep` when a mirror lies on the ground
+  getcmd   = "take",        -- pick-up command word for `undo` (followed by e.g. 90clock)
   dropcmd  = "drop",       -- drop command word (followed by e.g. 90clock)
   clip     = "auto",       -- auto | osc | wl-copy | xclip | xsel | pbcopy | clip
   budget   = 1500000,      -- search steps per attempt before giving up
@@ -115,6 +126,8 @@ local state = {
   pendingAt = 0,                         -- os.time() when `solve` started waiting
   placed  = {},                          -- mirrors this plugin dropped ({ x, y, t }), for `undo`
   job     = nil,                         -- coroutine of a solve running in slices
+  sweep   = nil,                         -- `sweep` mode is on
+  at      = nil,                         -- last grid square seen while sweeping { x, y }
 }
 local cap = { look = nil, inv = nil }    -- captures in progress
 
@@ -199,7 +212,7 @@ end
 local function refreshTrigger()
   if not canSwitch then return end
   local plan = state.plan
-  local want = not not (enabled and (state.pending or cap.look or cap.inv or (plan and plan.remaining > 0)))
+  local want = not not (enabled and (state.pending or cap.look or cap.inv or (plan and plan.remaining > 0) or state.sweep))
   if want ~= trigOn and trySwitch(want) then
     trigOn = want
     dbg("Line trigger " .. (want and "on" or "off"))
@@ -226,6 +239,11 @@ local function expireStale()
   if state.pending and now - state.pendingAt >= cfg.pendtimeout then
     cap.look, cap.inv, state.pending = nil, nil, false
     say(paint("red", "No reply from the game") .. " - stand at the console and run: " .. NAME .. " solve")
+    refreshTrigger()
+  end
+  if state.sweep and cfg.puzzletimeout > 0 and now - state.sweepStarted >= cfg.puzzletimeout then
+    state.sweep = nil
+    say("Sweep off: puzzle time limit of " .. math.floor(cfg.puzzletimeout / 60) .. " min reached")
     refreshTrigger()
   end
   local plan = state.plan
@@ -311,7 +329,8 @@ local function makePuzzle(rows, lcol, lrow, ldir, rcol, rrow, owned)
     if oa ~= ob then return oa > ob end
     return a < b
   end)
-  P.maxm, P.maxtotal, P.budget, P.maxsol, P.more = cfg.maxm, cfg.maxtotal, cfg.budget, cfg.alts, cfg.more
+  P.maxm, P.maxtotal, P.budget, P.more, P.keep = cfg.maxm, cfg.maxtotal, cfg.budget, cfg.more, cfg.alts
+  P.maxsol = cfg.alts * 4        -- candidates collected; the best `alts` are kept after ranking
   return P
 end
 
@@ -505,28 +524,35 @@ local function search(P, hmap, target, extraAllowed)
   return sols, aborted, nodes
 end
 
--- Visit order for a solution's squares: nearest next square (Manhattan) starting at A-1;
--- also returns the walk length, used to break ties between equally good solutions
+-- Visit order for a solution's squares, starting at A-1: sweep the rows upwards, which walks the fewest rows
+-- possible (highest row - 1), and inside a row cross from the nearer end. Returns order, rows walked, columns walked
 local function walkOrder(list)
-  local left, out, total = {}, {}, 0
-  for i, s in ipairs(list) do left[i] = s end
-  local cx, cy = 1, 1
-  while #left > 0 do
-    local bi, bd = 1, nil
-    for i, s in ipairs(left) do
-      local dist = math.abs(s.x - cx) + math.abs(s.y - cy)
-      if not bd or dist < bd then bi, bd = i, dist end
-    end
-    local s = table.remove(left, bi)
-    out[#out + 1] = s
-    total = total + bd
-    cx, cy = s.x, s.y
+  local byRow, ys = {}, {}
+  for _, s in ipairs(list) do
+    local r = byRow[s.y]
+    if not r then r = {}; byRow[s.y] = r; ys[#ys + 1] = s.y end
+    r[#r + 1] = s
   end
-  return out, total
+  table.sort(ys)
+  local out, rows, cols, cx, cy = {}, 0, 0, 1, 1
+  for _, y in ipairs(ys) do
+    local r = byRow[y]
+    table.sort(r, function(a, b) return a.x < b.x end)
+    local lo, hi = r[1].x, r[#r].x
+    if math.abs(cx - hi) < math.abs(cx - lo) then      -- nearer to the right end: sweep right to left
+      for i = #r, 1, -1 do out[#out + 1] = r[i] end
+      cols, cx = cols + math.abs(cx - hi) + (hi - lo), lo
+    else
+      for i = 1, #r do out[#out + 1] = r[i] end
+      cols, cx = cols + math.abs(cx - lo) + (hi - lo), hi
+    end
+    rows, cy = rows + (y - cy), y
+  end
+  return out, rows, cols
 end
 
 -- Returns { ok = true, solutions = { {list, n, missing = {type = n}, nmiss}, ... } } or { ok = false, why = "..." }
--- Solutions made only of mirrors you carry (nmiss == 0) come first.
+-- Solutions made only of mirrors you carry (nmiss == 0) come first; then the fewest rows to walk.
 local function solvePuzzle(P)
   P.deadline, P.timedOut, P.sliceEnd = os.clock() + cfg.timelimit, false, os.clock() + SLICE
   local hmap, h0 = buildHeuristic(P)
@@ -552,8 +578,9 @@ local function solvePuzzle(P)
           local short = n - (P.owned[t] or 0)
           if short > 0 then missing[t] = short; nmiss = nmiss + short end
         end
-        local _, walk = walkOrder(sol)
-        entries[#entries + 1] = { list = sol, n = #sol, missing = missing, nmiss = nmiss, walk = walk, idx = #entries + 1 }
+        local order, rows, cols = walkOrder(sol)
+        entries[#entries + 1] = { list = sol, order = order, n = #sol, missing = missing, nmiss = nmiss,
+                                  rows = rows, cols = cols, idx = #entries + 1 }
       end
     end
   end
@@ -603,11 +630,13 @@ local function solvePuzzle(P)
   table.sort(entries, function(a, b)
     local sa, sb = (a.nmiss == 0), (b.nmiss == 0)
     if sa ~= sb then return sa end
+    if a.rows ~= b.rows then return a.rows < b.rows end
     if a.n ~= b.n then return a.n < b.n end
     if a.nmiss ~= b.nmiss then return a.nmiss < b.nmiss end
-    if a.walk ~= b.walk then return a.walk < b.walk end
+    if a.cols ~= b.cols then return a.cols < b.cols end
     return a.idx < b.idx
   end)
+  for i = #entries, P.keep + 1, -1 do entries[i] = nil end
   return { ok = true, solutions = entries }
 end
 
@@ -776,7 +805,8 @@ local function armPlan(res, idx, force)
   local entry = res.solutions[idx]
   if not entry then return end
   local entries = {}
-  for i, s in ipairs((walkOrder(entry.list))) do entries[i] = { x = s.x, y = s.y, t = s.t } end
+  for i, s in ipairs(entry.order) do entries[i] = { x = s.x, y = s.y, t = s.t } end
+  if state.sweep then state.sweep = nil; say("Sweep off while the mirrors are dropped") end
   state.plan = { entries = entries, remaining = #entries, at = nil, idx = idx, started = os.time() }
   refreshTrigger()
   say(string.format("Auto-drop armed (solution %d): walk to %s - each mirror is dropped on arrival (%s stop cancels)",
@@ -908,13 +938,13 @@ end
 
 local function placements(entry)
   local out = {}
-  for i, s in ipairs(entry.list) do out[i] = string.format("%s at %s", s.t, cellName(s.x, s.y)) end
+  for i, s in ipairs(entry.order) do out[i] = string.format("%s at %s", s.t, cellName(s.x, s.y)) end
   return out
 end
 
 -- One-line form: "[5] 90cw at A-2, 45ccw at B-2, ..." (+ missing mirrors)
 local function oneLine(entry)
-  local line = string.format("[%d] %s", entry.n, table.concat(placements(entry), ", "))
+  local line = string.format("[%d] %s  (%d rows)", entry.n, table.concat(placements(entry), ", "), entry.rows)
   local miss = missingList(entry)
   if #miss > 0 then line = line .. "  [missing: " .. table.concat(miss, ", ") .. "]" end
   return line
@@ -940,8 +970,8 @@ local function showSolution(P, res, idx)
   if #res.solutions == 1 then
     say(paint("green", string.format("FOUND SOLUTION WITH %d MIRROR(s)", entry.n)))
   else
-    say(paint("green", string.format("SOLUTION %d of %d (%d mirrors)%s", idx, #res.solutions, entry.n,
-      entry.nmiss == 0 and " *" or "")))
+    say(paint("green", string.format("SOLUTION %d of %d (%d mirrors, %d rows)%s", idx, #res.solutions, entry.n,
+      entry.rows, entry.nmiss == 0 and " *" or "")))
   end
   rune.echo("")
   for _, r in ipairs(mapRows(P, entry, true)) do rune.echo(r) end
@@ -1035,6 +1065,68 @@ function Show.undo()
   refreshTrigger()
   say(string.format("Pick-up armed: walk to %s - each mirror is picked up on arrival (%s stop cancels)",
     table.concat(planLeft(state.plan), ", "), NAME))
+end
+
+-- Sweep mode: whenever a mirror lies on the ground, take everything, so the puzzle can start from scratch
+function Show.sweep(arg)
+  local b = ({ on = true, off = false })[(arg or ""):lower():match("^%s*(%S*)")]
+  if b == nil then
+    say("Usage: " .. NAME .. " sweep on|off (sweep is " .. (state.sweep and "on" or "off") .. ")")
+    return
+  end
+  state.sweep, state.sweepStarted, state.sweepFresh = b or nil, os.time(), b
+  if b and state.plan then state.plan = nil; say("Armed plan cancelled while sweeping") end
+  refreshTrigger()
+  if b then
+    say("Sweep on: '" .. cfg.sweepcmd .. "' is sent whenever a mirror lies on the ground (" .. NAME .. " sweep off stops it)")
+    rune.send("look")      -- a look shows what lies on the square you stand on
+  else
+    say("Sweep off")
+  end
+end
+
+-- Called for every line while sweeping: arrivals, pick-ups and mirrors on the ground, e.g. the room lines
+-- "(  2) An angled mirror redirects incoming projectiles 90 degrees clockwise." and replies like
+-- "You take an angled mirror rotated 90 degrees clockwise." / "You take 2 of an angled mirror rotated ..."
+function Show.sweepSee(text)
+  if text:find("^%(%-%-+%)") then      -- the line under a room title: no grid title just before it means we left the grid
+    if not state.gridPrev then state.at = nil end
+    state.gridPrev = false
+    return
+  end
+  local gc, gr = text:match(GRID)
+  if gc then
+    state.at, state.sweepFresh, state.gridPrev = { gc:upper():byte() - 64, tonumber(gr) }, true, true
+    return
+  end
+  local verb = text:match("^%s*You (%a+)")
+  if verb and PICK_VERBS[verb] then      -- a mirror was picked up: forget the one recorded on this square
+    local _, deg, dir = text:match(PICKED)
+    local plan = state.plan
+    if deg and state.at and not (plan and plan.mode == "undo") then
+      local t = deg .. ((dir == "counterclockwise") and "ccw" or "cw")
+      local count = tonumber(text:match("^%s*You %a+ (%d+) of ")) or 1      -- "You take 2 of an angled mirror ..."
+      updatePlaced(function(list)
+        for i = #list, 1, -1 do
+          local p = list[i]
+          if count > 0 and p.x == state.at[1] and p.y == state.at[2] and p.t == t then
+            table.remove(list, i)
+            count = count - 1
+          end
+        end
+      end)
+    end
+    return
+  end
+  if verb == "drop" or verb == "are" or verb == "put" then return end
+  if not text:find("angled mirror", 1, true) then return end
+  local now = os.time()
+  if state.sweepFresh or now - (state.sweepSent or 0) >= 2 then
+    state.sweepFresh, state.sweepSent = false, now
+    say("Sweep: mirror on the ground" .. (state.at and (" at " .. cellName(state.at[1], state.at[2])) or "") ..
+      " - sending '" .. cfg.sweepcmd .. "'")
+    rune.send(cfg.sweepcmd)
+  end
 end
 
 function Show.arm(arg)
@@ -1168,30 +1260,37 @@ local function webKey(items)
 end
 
 function Tools.selftest()
-    local passed = 0
+  local passed = 0
   for _, s in ipairs(SAMPLES) do
     local P, err = makePuzzle(s.rows, s.lcol, s.lrow, s.ldir, s.rcol, s.rrow, s.owned)
     if not P then
       say(paint("red", "FAIL ") .. s.name .. ": " .. tostring(err))
     else
-      P.maxsol = 20
+      P.maxsol, P.keep = 20, 100
       local t0 = os.clock()
       local res = solvePuzzle(P)
-      local first, star, found = nil, false, false
+      local first, star, found, ordered = nil, false, false, true
       if res.ok then
-        first, star = res.solutions[1].n, res.solutions[1].nmiss == 0
+        star = res.solutions[1].nmiss == 0
+        for _, e in ipairs(res.solutions) do
+          if e.nmiss == 0 and (not first or e.n < first) then first = e.n end
+        end
+        for i = 2, #res.solutions do      -- own-mirror answers first, then rows to walk never increase
+          local a, b = res.solutions[i - 1], res.solutions[i]
+          if (a.nmiss ~= 0 and b.nmiss == 0) or ((a.nmiss == 0) == (b.nmiss == 0) and a.rows > b.rows) then ordered = false end
+        end
         local want = webKey(s.web)
         for _, e in ipairs(res.solutions) do
           if solKey(e.list) == want then found = true end
         end
       end
-      if res.ok and first == s.expectFirst and star == s.expectStar and found then
+      if res.ok and first == s.expectFirst and star == s.expectStar and found and ordered then
         passed = passed + 1
-        say(string.format("%s %s: %d solution(s), first = %d mirror(s)%s, website's answer among them (%.2fs)",
-          paint("green", "PASS"), s.name, #res.solutions, first, star and " *" or "", os.clock() - t0))
+        say(string.format("%s %s: %d solution(s), fewest own = %d mirror(s), starred first, ordered by rows, website's answer among them (%.2fs)",
+          paint("green", "PASS"), s.name, #res.solutions, first, os.clock() - t0))
       else
-        say(string.format("%s %s: got %s, expected first = %d mirror(s) *, website's answer listed", paint("red", "FAIL"), s.name,
-          res.ok and (first .. " mirror(s)" .. (star and " *" or "") .. ", " .. (found and "listed" or "website's answer missing")) or tostring(res.why),
+        say(string.format("%s %s: got %s, expected fewest own = %d mirror(s), ordered, website's answer listed", paint("red", "FAIL"), s.name,
+          res.ok and ((first or "?") .. " mirror(s)" .. (star and " *" or "") .. ", " .. (found and "listed" or "website's answer missing") .. (ordered and "" or ", wrong order")) or tostring(res.why),
           s.expectFirst))
       end
     end
@@ -1234,7 +1333,8 @@ local function showHelp()
   row(SHORT .. " arm [n]", "drop mirrors as you reach each grid square")
   row(SHORT .. " plan", "show placed and still-to-place mirrors")
   row(SHORT .. " undo", "pick up the mirrors you dropped")
-  row(SHORT .. " stop", "cancel auto-drop")
+  row(SHORT .. " sweep on | off", "take all mirrors found on the ground")
+  row(SHORT .. " stop", "cancel auto-drop, pick-up, sweep")
   section("Info:")
   row(SHORT .. " rules", "show the rules the solver assumes")
   row(SHORT .. " selftest", "solve two built-in puzzles, check answers")
@@ -1289,10 +1389,10 @@ local function onLine(_, ctx)
   local ln = ctx and ctx.line
   if ln == nil then return end
   local text = cleanLine(ln)
-  if state.pending or state.plan then expireStale() end
+  if state.pending or state.plan or state.sweep then expireStale() end
 
-  -- Idle fast path: every line this plugin reacts to when nothing is captured contains "You" or "Grid"
-  if not (cap.look or cap.inv or state.pending or state.plan) and not text:find("You", 1, true) then return end
+  -- Idle fast path: every line this plugin reacts to when nothing is captured contains "You" (sweeping looks at all)
+  if not (cap.look or cap.inv or state.pending or state.plan or state.sweep) and not text:find("You", 1, true) then return end
 
   local S = state.plan and Show
   if S then
@@ -1331,6 +1431,8 @@ local function onLine(_, ctx)
     if text:find(INV_END) or #cap.inv >= 400 then finishInv() end
     return
   end
+
+  if state.sweep then Show.sweepSee(text) end
 
   if text:find(LOOK_HEADER) then
     cap.look = { text }
@@ -1371,7 +1473,7 @@ local function setEnabled(on)
   if not on then
     cap.look, cap.inv = nil, nil
     state.pending = false
-    state.plan, state.job = nil, nil
+    state.plan, state.job, state.sweep = nil, nil, nil
   end
   refreshTrigger()
   say("Trigger " .. (on and "on" or "off"))
@@ -1388,19 +1490,21 @@ local commands = {
   arm      = Show.arm,
   plan     = Show.plan,
   undo     = Show.undo,
+  sweep    = Show.sweep,
   last     = Show.last,
   rules    = Tools.rules,
   selftest = Tools.selftest,
   stop     = function()
-    if state.job then state.job = nil; say("Solving cancelled") end
+    local did = false
+    if state.job then state.job, did = nil, true; say("Solving cancelled") end
+    if state.sweep then state.sweep, did = nil, true; say("Sweep off") end
     if state.plan then
       local word = (state.plan.mode == "undo") and "Pick-up" or "Auto-drop"
-      state.plan = nil
-      refreshTrigger()
+      state.plan, did = nil, true
       say(word .. " cancelled")
-    else
-      say("Auto-drop is not armed")
     end
+    refreshTrigger()
+    if not did then say("Nothing to stop") end
   end,
   debug    = function(arg)
     local b = ({ on = true, off = false })[(arg or ""):lower():match("^%s*(%S*)")]

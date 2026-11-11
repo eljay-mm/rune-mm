@@ -10,7 +10,7 @@
 --   1.15 Walking order starts at A-1; the armed plan has an overall 15 minute limit (cfg.puzzletimeout) instead of an idle one.
 --   1.14 `undo`: picks the mirrors you dropped back up from the floor as you reach each square (cfg.getcmd).
 --   1.13 Stuck solve and idle plan expire (cfg.pendtimeout, cfg.plantimeout); squares listed in walking order, shorter walks win ties.
---   1.12 Lighter bound calculation (flat arrays, gate-count table, LuaJIT bit library when present); phase B skips impossible extra counts; `copy all` and a duplicate helper removed; `rules` fits 76 [...]
+--   1.12 Lighter bound calculation (flat arrays, gate-count table, LuaJIT bit library when present); phase B skips impossible extra counts; `copy all` and a duplicate helper removed; `rules` fits 76 columns.
 --   1.11 Clipboard method cached; solving runs in short slices via a Rune timer (falls back to one block); the line trigger is switched off while idle (falls back to always on).
 --   1.10 Faster line trigger (cheap idle pre-check, no per-line closure); wall-clock solver limit (cfg.timelimit); comments rolled up; header commands list matches the help output.
 --   1.9  Brought to standard: help rows use the short alias; only the mirror lines of the inventory are kept; single file; removed `again` and `set` (settings live in cfg at the top of the file).
@@ -79,7 +79,7 @@ local GRID        = "^%s*Grid (%a), (%d+) of the Projectile Testing Range"
 local PICKED      = "^You (%a+) .-an angled mirror rotated (%d+) degrees (%a+)"   -- "You get/take/pick up an angled mirror ..."
 local PICK_VERBS  = { get = true, take = true, pick = true, grab = true }
 local MIRROR_KEYS = { ["45cw"] = true, ["90cw"] = true, ["45ccw"] = true, ["90ccw"] = true }
-local DROPPED     = "^You drop an angled mirror rotated (%d+) degrees (%a+)% ."
+local DROPPED     = "^You drop an angled mirror rotated (%d+) degrees (%a+)%."
 
 -- Settings (edit here and reload the plugin)
 local cfg = {
@@ -506,13 +506,11 @@ local function search(P, hmap, target, extraAllowed)
 end
 
 -- Visit order for a solution's squares: nearest next square (Manhattan) starting at A-1;
--- also returns the walk length and the number of rows involved, used to break ties between equally good solutions
+-- also returns the walk length, used to break ties between equally good solutions
 local function walkOrder(list)
   local left, out, total = {}, {}, 0
   for i, s in ipairs(list) do left[i] = s end
   local cx, cy = 1, 1
-  local rows = {}
-  rows[cy] = true
   while #left > 0 do
     local bi, bd = 1, nil
     for i, s in ipairs(left) do
@@ -522,12 +520,9 @@ local function walkOrder(list)
     local s = table.remove(left, bi)
     out[#out + 1] = s
     total = total + bd
-    rows[s.y] = true
     cx, cy = s.x, s.y
   end
-  local count = 0
-  for _ in pairs(rows) do count = count + 1 end
-  return out, total, count
+  return out, total
 end
 
 -- Returns { ok = true, solutions = { {list, n, missing = {type = n}, nmiss}, ... } } or { ok = false, why = "..." }
@@ -557,8 +552,8 @@ local function solvePuzzle(P)
           local short = n - (P.owned[t] or 0)
           if short > 0 then missing[t] = short; nmiss = nmiss + short end
         end
-        local _, walk, rows = walkOrder(sol)
-        entries[#entries + 1] = { list = sol, n = #sol, missing = missing, nmiss = nmiss, rows = rows, walk = walk, idx = #entries + 1 }
+        local _, walk = walkOrder(sol)
+        entries[#entries + 1] = { list = sol, n = #sol, missing = missing, nmiss = nmiss, walk = walk, idx = #entries + 1 }
       end
     end
   end
@@ -610,7 +605,6 @@ local function solvePuzzle(P)
     if sa ~= sb then return sa end
     if a.n ~= b.n then return a.n < b.n end
     if a.nmiss ~= b.nmiss then return a.nmiss < b.nmiss end
-    if a.rows ~= b.rows then return a.rows < b.rows end
     if a.walk ~= b.walk then return a.walk < b.walk end
     return a.idx < b.idx
   end)

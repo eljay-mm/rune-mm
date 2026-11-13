@@ -1,12 +1,15 @@
 -- Filename: eljayPlugins/characterLog.lua
 -- Purpose: Per-character, per-day session logging via rune.log (GMCP name)
--- Version: 2.12
--- Date: 2026-Oct-26
+-- Version: 2.13
+-- Date: 2026-Nov-13
 --[[
 - insert planning notes here between revisions.
 ]]
 --
 -- Changelog:
+--   2.13 Session marker moved from rune.store (a disk write every 30s that
+--        stalled past the watchdog) to rune.session (in memory, survives
+--        /reload); heartbeat and marker age removed.
 --   2.12 Back under 16000 bytes; adopt_name forward-declared (was an
 --        accidental global); resume check merged; help title/row kept.
 --   2.11 Reload resume deferred to the first timer tick; debug persisted.
@@ -22,9 +25,10 @@
 --   * On load/login one row is printed: the full log path, which
 --     includes the character name.
 --   * Lines seen before the name is known are buffered, then written.
---   * Reload-safe: a session marker (name + time) is refreshed in
---     rune.store every 30s; a fresh one is resumed on the first timer
---     tick after load, taking over a log already running for it.
+--   * Reload-safe: the character name is kept in rune.session (memory
+--     only, survives /reload, no disk writes) and cleared on disconnect;
+--     the first timer tick after load resumes it and takes over a log
+--     already running for that character.
 --   * Settings (auto, raw, time) are saved per character; on/off and
 --     debug are global. Every save re-reads rune.store first. Prompts and
 --     rune.echo output are not logged; Rune's "log-echo" hook still
@@ -40,7 +44,7 @@
 --     charlog time on|off     prefix server lines with [HH:MM:SS] (default on)
 
 local T0 = os.clock()
-local VERSION = "2.12"
+local VERSION = "2.13"
 
 -- Command names: full command and short alias.
 local NAME = "characterLog"
@@ -50,8 +54,6 @@ local GMCP_PACKAGE = "Char.Base"          -- fallback name source
 local TIME_FORMAT = "[%H:%M:%S] "
 local PENDING_CAP = 300
 local TICK_SECONDS = 5
-local HEARTBEAT_TICKS = 6                 -- 6 x 5s = 30s
-local SESSION_MAX_AGE = 90
 
 -- Store keys keep their original names so saved settings survive renames.
 local SESSION_KEY = "charlog.session"
@@ -116,7 +118,7 @@ local started_by_us, writing = false, false
 local log_day                             -- YYYY-MM-DD of the file in use
 local pending = {}                        -- lines seen before the name
 local resume_checked = false
-local tick_count, load_ms = 0, 0
+local load_ms = 0
 
 -- Timestamp, cached per second.
 local last_sec, last_stamp = 0, ""
@@ -169,12 +171,6 @@ local function set_debug(v)
 end
 
 local function load_settings() apply_opts(saved(settings_key)) end
-
-local function marker(name, t)
-    store_update(SESSION_KEY, function(m) m.name, m.t = name, t end)
-end
-
-local function write_marker() if charname then marker(charname, os.time()) end end
 
 local function buffer_line(text)
     pending[#pending + 1] = text
@@ -285,18 +281,15 @@ end
 
 local adopt_name
 
--- Resume a fresh session marker once, on the first timer tick after load.
+-- Resume the remembered character once, on the first timer tick after load.
 local function check_resume()
     if resume_checked then return end
     resume_checked = true
-    local m = saved(SESSION_KEY)
-    if enabled and not charname and type(m.name) == "string" and m.name ~= ""
-        and type(m.t) == "number" and os.time() - m.t <= SESSION_MAX_AGE then
-        adopt_name(m.name)
-    end
+    local n = rune.session.get(SESSION_KEY)
+    if enabled and not charname and n and n ~= "" then adopt_name(n) end
 end
 
--- Housekeeping tick: status sync, midnight rollover, marker heartbeat.
+-- Housekeeping tick: resume check, status sync, midnight rollover.
 local function tick()
     check_resume()
     if not enabled or not charname then return end
@@ -307,12 +300,6 @@ local function tick()
         rune.log.stop()
         started_by_us, writing, log_day = false, false, nil
         start_log()
-    end
-
-    tick_count = tick_count + 1
-    if tick_count >= HEARTBEAT_TICKS then
-        tick_count = 0
-        write_marker()
     end
 end
 
@@ -328,7 +315,7 @@ function adopt_name(raw_name)
     settings_key = SETTINGS_PREFIX .. name
     log_dir = (rune.config_dir or ".") .. "/logs/" .. name
     load_settings()
-    write_marker()
+    rune.session.set(SESSION_KEY, name)
     dbg("character " .. name .. ", log directory " .. log_dir)
     if not auto_start then pending = {} end
     claim_or_start()
@@ -415,7 +402,7 @@ rune.hooks.on("disconnected", function()
     started_by_us, writing, log_day, resume_checked = false, false, nil, true
     charname, settings_key, log_dir = nil, nil, nil
     pending = {}
-    marker("", 0)
+    rune.session.delete(SESSION_KEY)
 end, { name = "charlog-disconnected" })
 
 -- Alias: one regex row for the full command and the short alias

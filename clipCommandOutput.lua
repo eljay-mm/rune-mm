@@ -1,12 +1,14 @@
 -- Filename: eljayPlugins/clipCommandOutput.lua
 -- Purpose: Copy the output of a command to the clipboard.
--- Version: 2.9
+-- Version: 2.11
 -- Date: 2026-Nov-15
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
+--   2.11   Added `clip echo on|off` to toggle Rune-output capture; persisted.
+--   2.10   Optionally capture Rune's own output (rune.echo) during a capture.
 --   2.9    Drop the startup store write; load time is kept in memory only.
 --   2.8    Finish empty captures on confirmed prompts; reset idle timers.
 --   2.7    Remove optional file-copy functionality.
@@ -20,6 +22,9 @@ TODO:
 -- How it works:
 --   * `clip <command>` sends the command to the MUD and captures its output.
 --   * Output and prompt hooks are enabled only during a capture.
+--   * With echo capture on, rune.echo is wrapped only during a capture so
+--     text printed by Rune and other plugins is recorded too. This plugin's
+--     own messages are never captured.
 --   * Captured lines are bounded and copied with rune.clipboard.set.
 --   * A capture ends on a confirmed prompt, timeout, or safety limit.
 --   * Typing either command without arguments shows help.
@@ -30,14 +35,16 @@ TODO:
 --   clip last               copy the previous capture again
 --   clip show               display the last capture
 --   clip on|off             enable / disable the plugin
+--   clip echo on|off        include / exclude Rune's own output in the clip
 --   clip debug on|off       enable / disable debug messages
 --
 -- Tweaks (top of file):
---   * IDLE        seconds without new output before the capture ends (0.2–30)
---   * FIRST_WAIT  seconds to wait for the first line of output
---   * MAX_LINES   maximum captured lines
---   * MAX_BYTES   maximum captured bytes
---   * TRIM_BLANK  drop leading/trailing blank lines from copied text
+--   * IDLE          seconds without new output before the capture ends (0.2–30)
+--   * FIRST_WAIT    seconds to wait for the first line of output
+--   * MAX_LINES     maximum captured lines
+--   * MAX_BYTES     maximum captured bytes
+--   * TRIM_BLANK    drop leading/trailing blank lines from copied text
+--   * INCLUDE_ECHO  default for echo capture (overridden by `clip echo`)
 
 local LOAD_STARTED = os.clock()
 
@@ -45,7 +52,7 @@ local LOAD_STARTED = os.clock()
 local NAME = "clipCommandOutput"
 local SHORT = "clip"
 
-local VERSION = "2.9"
+local VERSION = "2.11"
 local STORE_KEY = "eljay.clipCommandOutput"
 local MIN_IDLE = 0.2
 local MAX_IDLE = 30
@@ -59,12 +66,17 @@ local CONFIG = {
     MAX_LINES = 1000,
     MAX_BYTES = 100000,
     TRIM_BLANK = true,
+    INCLUDE_ECHO = true,
 }
 
 CONFIG.IDLE = math.max(MIN_IDLE, math.min(MAX_IDLE, CONFIG.IDLE))
 
 local TIMER_NAME = "clip_idle"
 local SETTINGS = {}
+
+-- The original echo; this plugin's own messages always use it so they are
+-- never captured by the wrapper below.
+local raw_echo = rune.echo
 
 local state = {
     capturing = false,
@@ -90,6 +102,9 @@ local function apply_settings(settings)
     if type(settings.debug) == "boolean" then
         CONFIG.DEBUG = settings.debug
     end
+    if type(settings.echo) == "boolean" then
+        CONFIG.INCLUDE_ECHO = settings.echo
+    end
 end
 
 apply_settings(read_settings())
@@ -102,7 +117,7 @@ local function update_settings(mutate)
     if ok then
         apply_settings(settings)
     elseif CONFIG.DEBUG then
-        rune.echo("[" .. NAME .. ":debug] could not persist settings: "
+        raw_echo("[" .. NAME .. ":debug] could not persist settings: "
             .. tostring(err))
     end
 end
@@ -120,12 +135,12 @@ local function paint(text)
 end
 
 local function say(message)
-    rune.echo(paint("[" .. NAME .. "] ") .. message)
+    raw_echo(paint("[" .. NAME .. "] ") .. message)
 end
 
 local function dbg(message)
     if CONFIG.DEBUG then
-        rune.echo(paint("[" .. NAME .. ":debug] ") .. message)
+        raw_echo(paint("[" .. NAME .. ":debug] ") .. message)
     end
 end
 
@@ -135,9 +150,10 @@ local h_output, h_prompt
 
 local function status_line()
     return string.format(
-        "v%s  enabled=%s debug=%s bindings=%d load=%dms",
+        "v%s  enabled=%s echo=%s debug=%s bindings=%d load=%dms",
         VERSION,
         tostring(CONFIG.ENABLED),
+        tostring(CONFIG.INCLUDE_ECHO),
         tostring(CONFIG.DEBUG),
         BINDINGS,
         LOAD_MS or 0
@@ -150,16 +166,17 @@ local HELP = {
     { SHORT .. " last", "copy the previous capture again" },
     { SHORT .. " show", "display the last capture" },
     { SHORT .. " on|off", "enable or disable the plugin" },
+    { SHORT .. " echo on|off", "include Rune's own output in the clip" },
     { SHORT .. " debug on|off", "toggle debug messages" },
 }
 
 local function emit(value)
     if type(value) == "string" and value ~= "" then
-        rune.echo(value)
+        raw_echo(value)
     elseif type(value) == "table" then
         for _, row in ipairs(value) do
             if type(row) == "string" then
-                rune.echo(row)
+                raw_echo(row)
             end
         end
     end
@@ -181,6 +198,25 @@ local function kill_timer()
     pcall(rune.timer.remove, TIMER_NAME)
 end
 
+local echo_wrapper
+
+local function set_echo_wrap(enabled)
+    if enabled and CONFIG.INCLUDE_ECHO then
+        if rune.echo ~= echo_wrapper then
+            local ok, err = pcall(function()
+                rune.echo = echo_wrapper
+            end)
+            if not ok then
+                dbg("could not wrap rune.echo: " .. tostring(err))
+            end
+        end
+    elseif rune.echo == echo_wrapper then
+        pcall(function()
+            rune.echo = raw_echo
+        end)
+    end
+end
+
 local function set_hooks(enabled)
     if enabled then
         h_output:enable()
@@ -189,10 +225,15 @@ local function set_hooks(enabled)
         h_output:disable()
         h_prompt:disable()
     end
+    set_echo_wrap(enabled)
 end
 
 local function clean_line(text)
     return (text:gsub("[%z\1-\8\11-\31\127]", ""))
+end
+
+local function strip_ansi(text)
+    return (text:gsub("\27%[[%d;?]*[%a]", ""))
 end
 
 local function build_text(lines)
@@ -280,31 +321,12 @@ local function arm_timer(seconds)
     end, { name = TIMER_NAME })
 end
 
-local function start_capture(command)
-    state.capturing = true
-    state.lines = {}
-    state.bytes = 0
-    state.command = command
-
-    set_hooks(true)
-    arm_timer(CONFIG.FIRST_WAIT)
-    dbg("capture started for '" .. command .. "'")
-end
-
-h_output = rune.hooks.on("output", function(line)
+-- Record one cleaned line, enforcing the line and byte caps.
+local function add_line(cleaned)
     if not state.capturing then
         return
     end
 
-    local ok, raw = pcall(function()
-        return line:clean()
-    end)
-    if not ok or type(raw) ~= "string" then
-        dbg("could not clean output line")
-        return
-    end
-
-    local cleaned = clean_line(raw)
     local separator_bytes = (#state.lines > 0) and 1 or 0
     local remaining = CONFIG.MAX_BYTES - state.bytes - separator_bytes
 
@@ -329,6 +351,43 @@ h_output = rune.hooks.on("output", function(line)
     else
         arm_timer(CONFIG.IDLE)
     end
+end
+
+echo_wrapper = function(first, ...)
+    if state.capturing and type(first) == "string" then
+        local plain = strip_ansi(first)
+        for piece in (plain .. "\n"):gmatch("(.-)\n") do
+            add_line(clean_line(piece))
+        end
+    end
+    return raw_echo(first, ...)
+end
+
+local function start_capture(command)
+    state.capturing = true
+    state.lines = {}
+    state.bytes = 0
+    state.command = command
+
+    set_hooks(true)
+    arm_timer(CONFIG.FIRST_WAIT)
+    dbg("capture started for '" .. command .. "'")
+end
+
+h_output = rune.hooks.on("output", function(line)
+    if not state.capturing then
+        return
+    end
+
+    local ok, raw = pcall(function()
+        return line:clean()
+    end)
+    if not ok or type(raw) ~= "string" then
+        dbg("could not clean output line")
+        return
+    end
+
+    add_line(clean_line(raw))
 end, { name = "clip_output", priority = 10 }):disable()
 
 h_prompt = rune.hooks.on("prompt", function(_, confirmed)
@@ -367,7 +426,7 @@ local function cmd_show()
 
     say("last capture:")
     for line in (state.last .. "\n"):gmatch("(.-)\n") do
-        rune.echo("  " .. line)
+        raw_echo("  " .. line)
     end
 end
 
@@ -385,6 +444,26 @@ local function cmd_debug(rest)
         settings.debug = enabled
     end)
     say("debug " .. (CONFIG.DEBUG and "on" or "off"))
+end
+
+local function cmd_echo(rest)
+    rest = type(rest) == "string" and rest:lower() or ""
+
+    if rest ~= "on" and rest ~= "off" then
+        say("echo capture is " .. (CONFIG.INCLUDE_ECHO and "on" or "off")
+            .. "  (usage: " .. SHORT .. " echo on|off)")
+        return
+    end
+
+    local enabled = rest == "on"
+    update_settings(function(settings)
+        settings.echo = enabled
+    end)
+
+    -- Apply immediately if a capture is already running.
+    set_echo_wrap(state.capturing)
+
+    say("echo capture " .. (CONFIG.INCLUDE_ECHO and "on" or "off"))
 end
 
 local function cmd_on()
@@ -413,6 +492,7 @@ end
 local SUBCOMMANDS = {
     last = cmd_last,
     show = cmd_show,
+    echo = cmd_echo,
     debug = cmd_debug,
     on = cmd_on,
     off = cmd_off,
@@ -457,7 +537,7 @@ rune.alias.exact(SHORT, handle)
 -- Load time lives in memory only (shown in the help footer); no store write.
 LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
 
-rune.echo(
+raw_echo(
     paint("[" .. NAME .. "] ")
     .. string.format("v%s loaded (%s or %s for help)", VERSION, NAME, SHORT)
 )

@@ -1,18 +1,18 @@
 -- Filename: eljayPlugins/characterLog.lua
 -- Purpose: Per-character, per-day session logging via rune.log (GMCP name)
--- Version: 2.13
--- Date: 2026-Nov-13
+-- Version: 2.15
+-- Date: 2026-Nov-15
 --[[
 - insert planning notes here between revisions.
 ]]
 --
 -- Changelog:
---   2.13 Session marker moved from rune.store (a disk write every 30s that
---        stalled past the watchdog) to rune.session (in memory, survives
---        /reload); heartbeat and marker age removed.
---   2.12 Back under 16000 bytes; adopt_name forward-declared (was an
---        accidental global); resume check merged; help title/row kept.
---   2.11 Reload resume deferred to the first timer tick; debug persisted.
+--   2.15 Queued writes: the output hook only appends to an in-memory queue,
+--        written with one rune.log.write call per flush (1s timer, 200
+--        lines, before your own echo, on stop/disconnect/rollover). The
+--        pre-name buffer is the same queue. Timer tick is now 1s.
+--   2.11-2.13  Marker kept in rune.session (no periodic disk write), resume
+--        on the first timer tick, debug persisted, under 16000 bytes.
 --   2.0-2.10  Daily files, charname.lua, reload-safe marker, toggles,
 --        jmc-style output, load time and char= in the footer.
 --
@@ -25,6 +25,11 @@
 --   * On load/login one row is printed: the full log path, which
 --     includes the character name.
 --   * Lines seen before the name is known are buffered, then written.
+--   * Log lines are queued in memory and written in one rune.log.write
+--     call every second (or at 200 lines, or before your own typed echo,
+--     on stop, disconnect and midnight rollover), so game output is not
+--     tied to disk speed. A client exit or /reload can lose the last
+--     second of lines.
 --   * Reload-safe: the character name is kept in rune.session (memory
 --     only, survives /reload, no disk writes) and cleared on disconnect;
 --     the first timer tick after load resumes it and takes over a log
@@ -44,7 +49,7 @@
 --     charlog time on|off     prefix server lines with [HH:MM:SS] (default on)
 
 local T0 = os.clock()
-local VERSION = "2.13"
+local VERSION = "2.15"
 
 -- Command names: full command and short alias.
 local NAME = "characterLog"
@@ -52,8 +57,9 @@ local SHORT = "charlog"
 
 local GMCP_PACKAGE = "Char.Base"          -- fallback name source
 local TIME_FORMAT = "[%H:%M:%S] "
-local PENDING_CAP = 300
-local TICK_SECONDS = 5
+local PENDING_CAP = 300                  -- queue cap before the name is known
+local BATCH = 200                         -- flush when the queue reaches this
+local TICK_SECONDS = 1                    -- timer: resume, rollover, flush
 
 -- Store keys keep their original names so saved settings survive renames.
 local SESSION_KEY = "charlog.session"
@@ -116,7 +122,7 @@ local charname, settings_key, log_dir
 local enabled, auto_start, raw_mode, timestamps = true, true, true, true
 local started_by_us, writing = false, false
 local log_day                             -- YYYY-MM-DD of the file in use
-local pending = {}                        -- lines seen before the name
+local queue = {}                          -- log lines waiting for a write
 local resume_checked = false
 local load_ms = 0
 
@@ -172,14 +178,12 @@ end
 
 local function load_settings() apply_opts(saved(settings_key)) end
 
-local function buffer_line(text)
-    pending[#pending + 1] = text
-    if #pending > PENDING_CAP then table.remove(pending, 1) end
-end
-
-local function flush_pending()
-    for _, text in ipairs(pending) do rune.log.write(text) end
-    pending = {}
+-- One rune.log.write call for everything queued. Before the character is
+-- known the queue is kept; with no active log it is dropped.
+local function flush()
+    if #queue == 0 or not charname then return end
+    if writing then rune.log.write(table.concat(queue, "\n")) end
+    queue = {}
 end
 
 -- Logging control
@@ -227,7 +231,7 @@ local function start_log()
 
     if path then
         started_by_us, writing, log_day = true, true, day
-        flush_pending()
+        flush()
         say("logging to " .. path)
     else
         say("could not start log: " .. tostring(err))
@@ -244,7 +248,7 @@ local function claim_or_start()
         if log_dir and norm(active):find(norm(log_dir), 1, true) then
             started_by_us = true
             log_day = norm(active):match("(%d%d%d%d%-%d%d%-%d%d)%.log$") or today()
-            pending = {}
+            queue = {}
             say("logging to " .. active)
         end
     elseif auto_start then
@@ -255,6 +259,7 @@ local function claim_or_start()
 end
 
 local function stop_log(quiet)
+    flush()
     if rune.log.stop() then
         started_by_us, writing, log_day = false, false, nil
         if not quiet then say("logging stopped") end
@@ -297,10 +302,13 @@ local function tick()
 
     if started_by_us and writing and log_day and today() ~= log_day then
         dbg("midnight rollover from " .. log_day)
+        flush()
         rune.log.stop()
         started_by_us, writing, log_day = false, false, nil
         start_log()
     end
+
+    flush()
 end
 
 function adopt_name(raw_name)
@@ -317,7 +325,7 @@ function adopt_name(raw_name)
     load_settings()
     rune.session.set(SESSION_KEY, name)
     dbg("character " .. name .. ", log directory " .. log_dir)
-    if not auto_start then pending = {} end
+    if not auto_start then queue = {} end
     claim_or_start()
 end
 
@@ -385,23 +393,36 @@ if rune.gmcp and rune.gmcp.on then
 end
 
 -- Replaces Rune's default "log-output" hook so timestamps can be added.
--- Hot path: returns at once when disabled or when no log is active.
+-- Hot path: returns at once when disabled or when no log is active;
+-- otherwise it only appends to the queue (flush() does the disk write).
 pcall(rune.hooks.disable, "log-output")
 
 rune.hooks.on("output", function(line)
     if not enabled or (charname and not writing) then return end
     local text = raw_mode and line:raw() or line:clean()
     if timestamps then text = stamp() .. text end
-    if charname then rune.log.write(text) else buffer_line(text) end
+    local n = #queue + 1
+    queue[n] = text
+    if not charname then
+        if n > PENDING_CAP then table.remove(queue, 1) end
+    elseif n >= BATCH then
+        flush()
+    end
 end, { priority = 200, name = "charlog-output" })
+
+-- Rune's "log-echo" hook (priority 200) writes your typed input at once;
+-- flush the queue first (priority 100) so the log keeps its order.
+rune.hooks.on("echo", function() flush() end,
+    { priority = 100, name = "charlog-flush" })
 
 -- Close our log on disconnect and forget the character, so the next
 -- connection starts cleanly when its name arrives.
 rune.hooks.on("disconnected", function()
+    flush()
     if started_by_us and rune.log.status() then rune.log.stop() end
     started_by_us, writing, log_day, resume_checked = false, false, nil, true
     charname, settings_key, log_dir = nil, nil, nil
-    pending = {}
+    queue = {}
     rune.session.delete(SESSION_KEY)
 end, { name = "charlog-disconnected" })
 
@@ -427,7 +448,7 @@ rune.alias.regex("^(?:" .. NAME .. "|" .. SHORT .. ")(\\s.*)?$", function(m)
             if charname then claim_or_start() elseif n then adopt_name(n) end
         else
             if started_by_us and rune.log.status() then stop_log(true) end
-            pending = {}
+            queue = {}
         end
     elseif action == "start" then start_log()
     elseif action == "stop" then stop_log()

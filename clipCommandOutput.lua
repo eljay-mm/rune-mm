@@ -1,12 +1,13 @@
 -- Filename: eljayPlugins/clipCommandOutput.lua
 -- Purpose: Copy the output of a command to the clipboard.
--- Version: 2.8
--- Date: 2026-Oct-24
+-- Version: 2.9
+-- Date: 2026-Nov-15
 --[[
 TODO:
 - insert planning notes here between revisions.
 ]]
 -- Changelog:
+--   2.9    Drop the startup store write; load time is kept in memory only.
 --   2.8    Finish empty captures on confirmed prompts; reset idle timers.
 --   2.7    Remove optional file-copy functionality.
 --   2.6    Remove next, cancel and idle commands; retain idle as a file tweak.
@@ -44,7 +45,7 @@ local LOAD_STARTED = os.clock()
 local NAME = "clipCommandOutput"
 local SHORT = "clip"
 
-local VERSION = "2.8"
+local VERSION = "2.9"
 local STORE_KEY = "eljay.clipCommandOutput"
 local MIN_IDLE = 0.2
 local MAX_IDLE = 30
@@ -453,10 +454,8 @@ end
 rune.alias.exact(NAME, handle)
 rune.alias.exact(SHORT, handle)
 
+-- Load time lives in memory only (shown in the help footer); no store write.
 LOAD_MS = math.floor((os.clock() - LOAD_STARTED) * 1000 + 0.5)
-update_settings(function(settings)
-    settings.load_ms = LOAD_MS
-end)
 
 rune.echo(
     paint("[" .. NAME .. "] ")

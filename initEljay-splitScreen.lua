@@ -94,10 +94,9 @@ local PLUGINS = {
   "basicAliases",
   "characterLog",
   "clipCommandOutput",
---  "crystalLocator",
+  "combatEventsTracker",
   "druidSpellTLAs",
   "eqdbResultsPicker",
---  "fauxSextant",
   "gotoAliases",
   "hangmanSolver",
   "herbAliases",
@@ -108,14 +107,10 @@ local PLUGINS = {
   "mapperShortKeys",
 --  "megaQuestSearch",
   "missingAffects",
---  "numPadBindings",
   "oocWikiSearch",
   "researchNotesPicker",
   "shopListPicker",
-  -- "spdxyCoordinates",
-  -- "spdxyPlaces", -- support module only
   "spellTLAs",
-  "statusTray",
   "vitalsChanges",
 }
 

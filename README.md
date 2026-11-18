@@ -113,6 +113,7 @@ which ones load; plugins commented out in its `PLUGINS` list are not enabled by 
 | `basicAliases.lua`        | General-purpose aliases and triggers for all characters.                                                             |
 | `characterLog.lua`        | Per-character, per-day session logging, named from GMCP.                                                             |
 | `clipCommandOutput.lua`   | Copies the output of a command to the clipboard.                                                                     |
+| `combatEventsTracker.lua` | Combat events and status tracker.                                                                                    |
 | `druidSpellTLAs.lua`      | Druid invoke and evoke spells with three-letter acronyms.                                                            |
 | `eqdbResultsPicker.lua`   | Turns equipment search results into a picker that runs `eqlookup`.                                                   |
 | `gotoAliases.lua`         | Aliases to run to gates, quest masters, banks, post offices and other places in the town you are in.                 |
